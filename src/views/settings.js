@@ -12,8 +12,7 @@ const modelOptions = {
   openai: [
     { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
     { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
-    { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe" },
-    { value: "gpt-4o-transcribe-diarize", labelKey: "settings.model.options.gpt4oTranscribeDiarize" }
+    { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe" }
   ]
 };
 
@@ -153,29 +152,26 @@ function setupShortcutSync() {
 }
 
 async function checkMicrophonePermissionStatus() {
+  const statusElement = document.getElementById("permissionStatus");
   try {
-    const statusElement = document.getElementById("permissionStatus");
     statusElement.textContent = t("settings.permission.checking");
     statusElement.className = "permission-status";
 
-    // Check system-level microphone permission through main process
-    if (
-      window.navigator &&
-      window.navigator.platform &&
-      window.navigator.platform.includes("Mac")
-    ) {
-      // For macOS, we rely on main process to check system permission
-      // Since Electron apps don't need browser-level permission
-      statusElement.textContent = t("settings.permission.availableElectron");
+    const result = await ipcRenderer.invoke("check-microphone-permission");
+    const status = result.status; // "granted" | "denied" | "restricted" | "not-determined"
+
+    if (status === "granted" || status === "not-determined") {
+      statusElement.textContent = t("settings.permission.granted");
       statusElement.className = "permission-status granted";
+    } else if (status === "restricted") {
+      statusElement.textContent = t("settings.permission.restricted");
+      statusElement.className = "permission-status denied";
     } else {
-      // For other platforms
-      statusElement.textContent = t("settings.permission.available");
-      statusElement.className = "permission-status granted";
+      statusElement.textContent = t("settings.permission.denied");
+      statusElement.className = "permission-status denied";
     }
   } catch (error) {
     console.error("Failed to check microphone permission:", error);
-    const statusElement = document.getElementById("permissionStatus");
     statusElement.textContent = t("settings.permission.error");
     statusElement.className = "permission-status denied";
   }

@@ -49,8 +49,7 @@ class OpenAITranscriptionService {
     return [
       'whisper-1',
       'gpt-4o-transcribe',
-      'gpt-4o-mini-transcribe',
-      'gpt-4o-transcribe-diarize'
+      'gpt-4o-mini-transcribe'
     ];
   }
 }

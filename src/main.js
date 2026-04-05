@@ -230,13 +230,15 @@ function isCancellationError(error) {
 }
 
 function cancelActiveTranscription(reason = "user") {
-  if (!activeTranscription) {
+  if (activeTranscriptions.size === 0) {
     return false;
   }
-  activeTranscription.cancelled = true;
-  activeTranscription.cancelReason = reason;
-  if (activeTranscription.abortController) {
-    activeTranscription.abortController.abort();
+  for (const t of activeTranscriptions.values()) {
+    t.cancelled = true;
+    t.cancelReason = reason;
+    if (t.abortController) {
+      t.abortController.abort();
+    }
   }
   return true;
 }
@@ -260,7 +262,7 @@ let shiftPressed = false;
 let altPressed = false;
 let isRecording = false;
 let stopRecordingDebounceTimer = null;
-let activeTranscription = null;
+let activeTranscriptions = new Map();
 let transcriptionRequestId = 0;
 let recordShortcut = normalizeRecordShortcut(
   store.get("shortcut", DEFAULT_RECORD_SHORTCUT)
@@ -930,11 +932,11 @@ ipcMain.handle("get-settings", () => {
     language: store.get("language", "auto"),
     uiLanguage: store.get("uiLanguage", "auto"),
     uiTheme: store.get("uiTheme", "elegant"),
-    model: store.get("model", "gpt-4o-transcribe"),
+    model: store.get("model", "gpt-4o-mini-transcribe"),
     microphone: store.get("microphone", "default"),
     autoLaunch: store.get("autoLaunch", false),
     startMinimized: store.get("startMinimized", false),
-    provider: store.get("provider", "groq"),
+    provider: store.get("provider", "openai"),
   };
 });
 
@@ -1019,12 +1021,12 @@ ipcMain.handle("transcribe-audio", async (event, audioBuffer, translateMode = fa
     cancelled: false,
     cancelReason: null,
   };
-  activeTranscription = currentTranscription;
+  activeTranscriptions.set(requestId, currentTranscription);
   try {
     if (currentTranscription.cancelled) {
       throw createCancellationError();
     }
-    const provider = store.get("provider", "groq");
+    const provider = store.get("provider", "openai");
     const apiKey = provider === 'openai'
       ? (store.get("apiKeyOpenAI", store.get("apiKey", "")))
       : (store.get("apiKeyGroq", store.get("apiKey", "")));
@@ -1033,7 +1035,7 @@ ipcMain.handle("transcribe-audio", async (event, audioBuffer, translateMode = fa
     }
 
     const language = store.get("language", "auto");
-    const model = store.get("model", "gpt-4o-transcribe");
+    const model = store.get("model", "gpt-4o-mini-transcribe");
     const dictionary = store.get('dictionary', '');
 
     // Get cached transcription service
@@ -1079,9 +1081,7 @@ ipcMain.handle("transcribe-audio", async (event, audioBuffer, translateMode = fa
     
     throw error;
   } finally {
-    if (activeTranscription && activeTranscription.id === requestId) {
-      activeTranscription = null;
-    }
+    activeTranscriptions.delete(requestId);
   }
 });
 
@@ -1237,6 +1237,15 @@ ipcMain.handle("show-permission-dialog", async () => {
   });
 
   return result.response;
+});
+
+// Check microphone permission status
+ipcMain.handle("check-microphone-permission", () => {
+  if (process.platform !== "darwin") {
+    return { status: "granted" };
+  }
+  const status = systemPreferences.getMediaAccessStatus("microphone");
+  return { status };
 });
 
 // Check accessibility permission status
