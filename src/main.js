@@ -523,7 +523,7 @@ async function setupGlobalHotkeys() {
       }
 
       if (e.keycode === UiohookKey.Escape) {
-        if (isRecording || activeTranscription) {
+        if (isRecording || activeTranscriptions.size > 0) {
           clearStopRecordingDebounce();
           isRecording = false;
           if (inputPromptWindow && inputPromptWindow.webContents) {
