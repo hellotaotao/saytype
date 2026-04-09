@@ -2,3 +2,4 @@ node_modules/
 .vscode/
 dist/
 TODO.md
+.claude/settings.local.json

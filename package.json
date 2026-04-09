@@ -1,6 +1,6 @@
 {
   "name": "whisp-line",
-  "version": "1.0.77",
+  "version": "1.0.79",
   "description": "Voice input method software built with Electron",
   "main": "src/main.js",
   "scripts": {
