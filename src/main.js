@@ -260,6 +260,7 @@ let accessibilityWatchdog = null; // Low-frequency permission watchdog (macOS on
 let ctrlPressed = false;
 let shiftPressed = false;
 let altPressed = false;
+let isQuitting = false;
 let isRecording = false;
 let stopRecordingDebounceTimer = null;
 let activeTranscriptions = new Map();
@@ -884,27 +885,19 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", async () => {
   // On macOS, don't quit when all windows are closed unless explicitly quitting
-  if (process.platform !== "darwin" || app.isQuitting) {
+  if (process.platform !== "darwin" || isQuitting) {
     await stopGlobalHotkeys();
     app.quit();
   }
 });
 
-app.on("will-quit", async (event) => {
-  event.preventDefault();
-  await stopGlobalHotkeys();
-  globalShortcut.unregisterAll();
-  app.exit(0);
-});
-
 app.on("before-quit", async (event) => {
-  if (!app.isQuitting) {
+  if (!isQuitting) {
     event.preventDefault();
-    // Mark that we're intentionally quitting
-    app.isQuitting = true;
-    // Additional cleanup before quit
+    isQuitting = true;
     await stopGlobalHotkeys();
-    app.quit();
+    globalShortcut.unregisterAll();
+    app.exit(0);
   }
 });
 

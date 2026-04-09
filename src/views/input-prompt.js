@@ -296,13 +296,16 @@ class VoiceInputPrompt {
     try {
       while (this.pendingInsertionOrder.length) {
         const nextId = this.pendingInsertionOrder[0];
-        const text = this.pendingInsertionsById.get(nextId);
-        if (!text) {
+        if (!this.pendingInsertionsById.has(nextId)) {
+          // Result not yet available — wait for next flush trigger
           break;
         }
-        await this.typeText(text, { suppressUi: true });
+        const text = this.pendingInsertionsById.get(nextId);
         this.pendingInsertionsById.delete(nextId);
         this.pendingInsertionOrder.shift();
+        if (text) {
+          await this.typeText(text, { suppressUi: true });
+        }
       }
     } finally {
       this.isFlushingInsertQueue = false;

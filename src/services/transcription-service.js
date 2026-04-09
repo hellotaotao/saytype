@@ -1,8 +1,11 @@
 const GroqTranscriptionService = require('./groq-transcription');
 const OpenAITranscriptionService = require('./openai-transcription');
 const fs = require("fs");
+const fsPromises = require("fs/promises");
 const path = require("path");
 const os = require("os");
+
+const MAX_AUDIO_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 
 class TranscriptionService {
   constructor(provider, apiKey) {
@@ -40,17 +43,14 @@ class TranscriptionService {
       fileExtension = '.wav';
     }
 
+    // Guard against excessively large recordings
+    if (audioBuffer.length > MAX_AUDIO_SIZE_BYTES) {
+      throw new Error(`Audio too large: ${audioBuffer.length} bytes (max ${MAX_AUDIO_SIZE_BYTES})`);
+    }
+
     // Save audio buffer to temporary file with correct extension
     const tempFile = path.join(os.tmpdir(), `audio_${Date.now()}${fileExtension}`);
-    fs.writeFileSync(tempFile, audioBuffer);
-
-    // Debug: log file info
-    const stats = fs.statSync(tempFile);
-    console.log(`📁 Audio file: ${path.basename(tempFile)} (${stats.size} bytes, ${fileExtension.slice(1).toUpperCase()} format)`);
-    
-    // Read first few bytes to check format signature
-    const headerBuffer = audioBuffer.slice(0, 12);
-    console.log(`🔍 File header:`, Array.from(headerBuffer).map(b => b.toString(16).padStart(2, '0')).join(' '));
+    await fsPromises.writeFile(tempFile, audioBuffer);
 
     try {
       // Determine the actual model to use
