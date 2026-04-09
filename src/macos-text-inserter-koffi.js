@@ -6,8 +6,7 @@
 if (process.platform !== 'darwin') {
   module.exports = {
     insertText: async () => {
-      console.log('macOS text insertion not available on this platform');
-      return false;
+          return false;
     }
   };
   return;
@@ -48,7 +47,6 @@ async function insertText(text, delayMs = 5) {
     throw new Error('Invalid text input');
   }
 
-  console.log('Inserting text via macOS CGEvent:', JSON.stringify(text.substring(0, 50)) + (text.length > 50 ? '...' : ''));
 
   try {
     // Convert string to UTF-16 code units (what macOS expects)
@@ -92,7 +90,6 @@ async function insertText(text, delayMs = 5) {
       }
     }
 
-    console.log(`Successfully sent ${utf16Units.length} characters via CGEvent`);
     return true;
 
   } catch (error) {

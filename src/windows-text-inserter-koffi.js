@@ -3,7 +3,6 @@ if (process.platform !== 'win32') {
   // Export empty function for non-Windows platforms
   module.exports = {
     insertText: async () => {
-      console.log('Windows text insertion not available on this platform');
       return false;
     }
   };
@@ -68,8 +67,6 @@ async function insertText(text) {
         throw new Error('Invalid text input');
     }
 
-    console.log('Inserting text via koffi SendInput:', JSON.stringify(text));
-    
     try {
         // Convert text to array of Unicode code points
         const chars = Array.from(text);
@@ -97,7 +94,6 @@ async function insertText(text) {
         
         // Send all inputs at once
         const structSize = koffi.sizeof(INPUT);
-        console.log(`Struct size: ${structSize}, Input count: ${inputs.length}`);
         
         const result = SendInput(inputs.length, inputs, structSize);
         
@@ -106,7 +102,6 @@ async function insertText(text) {
             console.error(`SendInput failed. Expected: ${inputs.length}, got: ${result}, LastError: ${lastError}`);
             
             // Try sending one character at a time as fallback
-            console.log('Trying one character at a time...');
             let successCount = 0;
             for (const input of inputs) {
                 try {
@@ -126,12 +121,9 @@ async function insertText(text) {
             if (successCount === 0) {
                 throw new Error(`SendInput completely failed. LastError: ${lastError}`);
             }
-            
-            console.log(`Partial success: ${successCount}/${inputs.length} characters sent`);
             return true;
         }
         
-        console.log(`Successfully sent ${result} key events`);
         return true;
         
     } catch (error) {

@@ -1,6 +1,8 @@
 const { ipcRenderer } = require("electron");
 const { initI18n, setLanguage, applyI18n, t } = window.WhispLineI18n;
 
+let isDev = false;
+
 const SHORT_PRESS_THRESHOLD_MS = 500;
 const DEFAULT_RECORD_SHORTCUT = "Ctrl+Shift";
 const DEFAULT_TRANSLATE_SHORTCUT = "Shift+Alt";
@@ -117,7 +119,6 @@ class VoiceInputPrompt {
 
     // Listen for cleanup microphone signal
     ipcRenderer.on("cleanup-microphone", () => {
-      console.log("Received cleanup signal from main process");
       this.cleanup();
     });
 
@@ -389,7 +390,7 @@ class VoiceInputPrompt {
         mimeType = "audio/webm;codecs=opus"; // Good compression, modern browsers
       }
       
-      console.log("Using audio format:", mimeType);
+      if (isDev) console.log("Using audio format:", mimeType);
       // Keep per-recording state so overlapping recordings don't clobber each other.
       const sessionId = ++this.recordingSessionId;
       const recordingSession = {
@@ -733,7 +734,6 @@ class VoiceInputPrompt {
       const pasteShortcut = this.getPasteShortcutLabel();
 
       if (result.method === "direct_typing") {
-        console.log("Text typed directly:", text);
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textTypedDirect");
           this.statusText.style.color = "var(--status-success)";
@@ -741,7 +741,6 @@ class VoiceInputPrompt {
         }
       } else if (result.method === "koffi_sendinput") {
         // Windows SendInput method
-        console.log("Text inserted via SendInput:", text);
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textInserted");
           this.statusText.style.color = "var(--status-success)";
@@ -750,7 +749,6 @@ class VoiceInputPrompt {
         }
       } else if (result.method === "cgevent_unicode") {
         // macOS CGEvent Unicode method
-        console.log("Text inserted via CGEvent:", text);
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textInserted");
           this.statusText.style.color = "var(--status-success)";
@@ -758,7 +756,6 @@ class VoiceInputPrompt {
           this.hidePrompt();
         }
       } else if (result.method === "clipboard_textinsert") {
-        console.log("Text inserted successfully:", text);
         const isPartial =
           typeof result.message === "string" &&
           result.message.includes("partially restored");
@@ -778,7 +775,6 @@ class VoiceInputPrompt {
           this.hidePrompt();
         }
       } else if (result.method === "clipboard") {
-        console.log("Text copied to clipboard:", text);
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textCopied", {
             shortcut: pasteShortcut,
@@ -885,6 +881,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const initialize = async () => {
     try {
       const settings = await ipcRenderer.invoke("get-settings");
+      isDev = settings?.isDev ?? false;
       initI18n(settings?.uiLanguage);
       applyTheme(settings?.uiTheme);
     } catch (error) {

@@ -18,9 +18,8 @@ class PermissionManager extends EventEmitter {
     try {
       const hasPermission = systemPreferences.isTrustedAccessibilityClient(false);
       this.currentAccessibilityPermission = hasPermission;
-      
+
       if (hasPermission) {
-        console.log("Accessibility permission already granted");
         return true;
       }
 
@@ -46,21 +45,19 @@ class PermissionManager extends EventEmitter {
 
     if (result.response === 0) {
       exec('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"');
-      
+
       const checkInterval = setInterval(async () => {
         const hasPermission = systemPreferences.isTrustedAccessibilityClient(false);
         if (hasPermission) {
-          console.log("Permission detected! Updating hotkey status...");
           clearInterval(checkInterval);
           await this.recheckAccessibilityPermission();
         }
       }, 2000);
-      
+
       setTimeout(() => {
         clearInterval(checkInterval);
-        console.log("Stopped automatic permission checking after timeout");
       }, 120000);
-      
+
     } else if (result.response === 2) {
       this.emit('quit-requested');
     }
@@ -73,20 +70,18 @@ class PermissionManager extends EventEmitter {
 
     try {
       const hasPermission = systemPreferences.isTrustedAccessibilityClient(false);
-      console.log("Rechecking accessibility permission:", hasPermission, "Previous state:", this.currentAccessibilityPermission);
-      
+
       if (hasPermission !== this.currentAccessibilityPermission) {
-        console.log(`Accessibility permission changed from ${this.currentAccessibilityPermission} to ${hasPermission}`);
         this.currentAccessibilityPermission = hasPermission;
-        
+
         this.emit('accessibility-permission-changed', {
           granted: hasPermission,
-          message: hasPermission 
+          message: hasPermission
             ? 'Accessibility permission granted! Global hotkeys are now active.'
             : 'Accessibility permission revoked. Global hotkeys are disabled.'
         });
       }
-      
+
       return hasPermission;
     } catch (error) {
       console.error("Failed to recheck accessibility permissions:", error);
@@ -102,7 +97,7 @@ class PermissionManager extends EventEmitter {
     try {
       const granted = systemPreferences.isTrustedAccessibilityClient(true);
       this.currentAccessibilityPermission = granted;
-      
+
       return {
         granted,
         status: granted ? "granted" : "prompt_shown",
@@ -146,16 +141,12 @@ class PermissionManager extends EventEmitter {
 
     try {
       const status = systemPreferences.getMediaAccessStatus('microphone');
-      console.log("Checking microphone permission for recording, status:", status);
-      
+
       if (status === 'granted') {
-        console.log("Microphone permission already granted");
         return true;
       }
-      
+
       if (status === 'not-determined') {
-        console.log("Microphone permission not determined, requesting...");
-        
         const result = await dialog.showMessageBox(null, {
           type: "info",
           title: "Microphone Permission Required",
@@ -167,20 +158,16 @@ class PermissionManager extends EventEmitter {
         });
 
         if (result.response === 1) {
-          console.log("User cancelled permission request");
           return false;
         }
 
         try {
           await systemPreferences.askForMediaAccess('microphone');
           const newStatus = systemPreferences.getMediaAccessStatus('microphone');
-          console.log("Permission request completed, new status:", newStatus);
-          
+
           if (newStatus === 'granted') {
-            console.log("Microphone permission successfully granted");
             return true;
           } else {
-            console.log("Microphone permission was not granted");
             await this.showMicrophonePermissionDeniedGuidance();
             return false;
           }
@@ -190,18 +177,17 @@ class PermissionManager extends EventEmitter {
           return false;
         }
       }
-      
+
       if (status === 'denied') {
-        console.log("Microphone permission previously denied");
         await this.showMicrophonePermissionDeniedGuidance();
         return false;
       }
-      
+
     } catch (error) {
       console.error("Failed to check microphone permissions:", error);
       return false;
     }
-    
+
     return false;
   }
 
@@ -228,28 +214,13 @@ class PermissionManager extends EventEmitter {
 
     try {
       const status = systemPreferences.getMediaAccessStatus('microphone');
-      console.log("Initial microphone permission check, status:", status);
-      
+
       if (status !== 'granted') {
-        console.log("Requesting microphone permission to register app in system settings...");
-        
         try {
-          const granted = await systemPreferences.askForMediaAccess('microphone');
-          const newStatus = systemPreferences.getMediaAccessStatus('microphone');
-          console.log("Permission request completed, granted:", granted, "new status:", newStatus);
-          
-          if (newStatus === 'granted') {
-            console.log("Microphone permission granted - app registered in system settings");
-          } else if (newStatus === 'denied') {
-            console.log("Microphone permission denied - app should now be visible in system settings for manual control");
-          }
-          
+          await systemPreferences.askForMediaAccess('microphone');
         } catch (err) {
           console.error("Failed to request initial microphone access:", err);
-          console.log("App should still be registered in system settings despite error");
         }
-      } else {
-        console.log("Microphone permission already granted");
       }
     } catch (error) {
       console.error("Failed to check initial microphone permissions:", error);

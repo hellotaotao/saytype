@@ -58,8 +58,6 @@ class TranscriptionService {
         ? (this.provider === 'openai' ? 'whisper-1' : 'whisper-large-v3')
         : model;
 
-      console.log(`🎙️  Provider: ${this.provider} | Using model: ${actualModel} | Language: ${language} | Translate mode: ${translateMode}`);
-
       // Call the appropriate service
       const result = await this.service.transcribe(tempFile, {
         model: actualModel,
@@ -69,8 +67,6 @@ class TranscriptionService {
         signal
       });
 
-      console.log(`✅ ${translateMode ? 'Translation' : 'Transcription'} completed: "${result.text}"`);
-      
       return result.text;
     } finally {
       // Clean up temp file

@@ -71,7 +71,6 @@ function getTranscriptionService(provider, apiKey) {
     try {
       const service = new TranscriptionService(provider, apiKey);
       transcriptionServiceCache.set(cacheKey, service);
-      console.log(`Created new transcription service for provider: ${provider}`);
     } catch (error) {
       console.error(`Failed to create transcription service for ${provider}:`, error);
       throw error;
@@ -84,7 +83,6 @@ function getTranscriptionService(provider, apiKey) {
 // Helper function to clear service cache (useful when API keys change)
 function clearTranscriptionServiceCache() {
   transcriptionServiceCache.clear();
-  console.log('Transcription service cache cleared');
 }
 
 function extractShortcutModifiers(value) {
@@ -272,10 +270,8 @@ let recordShortcut = normalizeRecordShortcut(
 // Set up permission manager event listeners
 permissionManager.on('accessibility-permission-changed', (data) => {
   if (data.granted && !hookStarted) {
-    console.log("Permission granted! Starting hotkeys...");
     setupGlobalHotkeys();
   } else if (!data.granted && hookStarted) {
-    console.log("Permission revoked! Stopping hotkeys...");
     stopGlobalHotkeys();
   }
   
@@ -493,7 +489,6 @@ async function setupGlobalHotkeys() {
 
     // Ensure any previous hook is stopped before starting new one
     if (hookStarted) {
-      console.log("Stopping existing hotkey listener before restart...");
       await stopGlobalHotkeys();
       // Small delay to ensure cleanup completes
       await new Promise(resolve => setTimeout(resolve, 200));
@@ -547,7 +542,6 @@ async function setupGlobalHotkeys() {
             .checkAndRequestMicrophonePermission()
             .then((hasPermission) => {
               if (!hasPermission) {
-                console.log("Recording cancelled due to lack of microphone permission");
                 return;
               }
 
@@ -566,7 +560,6 @@ async function setupGlobalHotkeys() {
               }
 
               if (!comboActive) {
-                console.log("Recording cancelled because shortcut was released before activation");
                 return;
               }
 
@@ -654,7 +647,7 @@ async function setupGlobalHotkeys() {
       return;
     }
     hookStarted = true;
-    console.log("Global hotkey listener started successfully");
+    if (isDevelopment) console.log("Global hotkey listener started");
 
     // Start low-frequency watchdog (every 2s) to ensure eventual recovery if permission is revoked without error event
     if (process.platform === 'darwin') {
@@ -696,8 +689,6 @@ function stopGlobalHotkeys() {
 
   return new Promise((resolve) => {
     try {
-      console.log("Stopping global hotkey listener...");
-
       // Remove all listeners first
       uIOhook.removeAllListeners();
       clearStopRecordingDebounce();
@@ -705,7 +696,6 @@ function stopGlobalHotkeys() {
       // Then stop the hook
       uIOhook.stop();
       hookStarted = false;
-      console.log("Global hotkey listener stopped successfully");
 
       // Clear watchdog if running
       if (accessibilityWatchdog) {
@@ -729,9 +719,7 @@ function stopGlobalHotkeys() {
       try {
         // Kill any remaining uiohook processes on macOS
         if (process.platform === "darwin") {
-          exec('pkill -f "WhispLine Helper"', (err) => {
-            if (err) console.log("No WhispLine Helper processes found to kill");
-            else console.log("Force killed WhispLine Helper processes");
+          exec('pkill -f "WhispLine Helper"', (_err) => {
             setTimeout(resolve, 100);
           });
         } else {
@@ -751,12 +739,9 @@ function cleanupOrphanedProcesses() {
     if (process.platform === 'darwin') {
       exec('pgrep -f "WhispLine Helper"', (error, stdout) => {
         if (!error && stdout.trim()) {
-          console.log("Found orphaned WhispLine Helper processes, cleaning up...");
           exec('pkill -f "WhispLine Helper"', (killError) => {
             if (killError) {
               console.error("Failed to cleanup orphaned processes:", killError);
-            } else {
-              console.log("Successfully cleaned up orphaned processes");
             }
             resolve();
           });
@@ -930,6 +915,7 @@ ipcMain.handle("get-settings", () => {
     autoLaunch: store.get("autoLaunch", false),
     startMinimized: store.get("startMinimized", false),
     provider: store.get("provider", "openai"),
+    isDev: isDevelopment,
   };
 });
 
@@ -968,10 +954,8 @@ ipcMain.handle("save-settings", async (event, settings) => {
   try {
     if (settings.autoLaunch) {
       await autoLauncher.enable();
-      console.log("Auto-launch enabled");
     } else {
       await autoLauncher.disable();
-      console.log("Auto-launch disabled");
     }
   } catch (error) {
     console.error("Failed to update auto-launch setting:", error);
@@ -996,8 +980,6 @@ ipcMain.handle("hide-input-prompt", () => {
 });
 
 ipcMain.handle("cleanup-microphone", () => {
-  // This handler is called when the renderer process needs to clean up microphone resources
-  console.log("Microphone cleanup requested from renderer process");
   return true;
 });
 
@@ -1059,7 +1041,7 @@ ipcMain.handle("transcribe-audio", async (event, audioBuffer, translateMode = fa
     return resultText;
   } catch (error) {
     if (currentTranscription.cancelled || isCancellationError(error)) {
-      console.log(`${translateMode ? 'Translation' : 'Transcription'} cancelled by user`);
+      if (isDevelopment) console.log(`${translateMode ? 'Translation' : 'Transcription'} cancelled by user`);
       throw createCancellationError();
     }
     console.error(`${translateMode ? 'Translation' : 'Transcription'} error:`, error);
@@ -1084,7 +1066,7 @@ ipcMain.handle("type-text", async (event, text) => {
       // macOS: Try CGEvent direct Unicode insertion first
       if (macosTextInserter) {
         try {
-          console.log("Attempting macOS text insertion via CGEvent:", JSON.stringify(text.substring(0, 50)) + (text.length > 50 ? '...' : ''));
+          if (isDevelopment) console.log("Attempting macOS text insertion via CGEvent:", JSON.stringify(text.substring(0, 50)) + (text.length > 50 ? '...' : ''));
           await macosTextInserter.insertText(text);
           
           return {
@@ -1104,40 +1086,34 @@ ipcMain.handle("type-text", async (event, text) => {
       try {
         // Set our text to clipboard
         clipboard.writeText(text);
-        console.log("Text copied to clipboard:", JSON.stringify(text));
-        
+
         // Try text insertion only when Accessibility permission is granted
         const canInsert = permissionManager.hasAccessibilityPermission();
         if (canInsert) {
           await performTextInsertion();
+          // Restore original clipboard after automatic paste completes
+          setTimeout(async () => {
+            await restoreCompleteClipboard(originalClipboardData);
+          }, 500);
         }
-        
-        // Restore original clipboard content after a short delay
-        setTimeout(async () => {
-          await restoreCompleteClipboard(originalClipboardData);
-        }, 500);
-        
+        // When canInsert is false, leave transcribed text in clipboard so user can manually Cmd+V
+
         // Provide user feedback based on clipboard complexity
         let message = canInsert
           ? "Text inserted automatically (clipboard preserved)."
           : "Text copied to clipboard. Press Cmd+V to paste.";
-        if (originalClipboardData.isComplexContent) {
+        if (canInsert && originalClipboardData.isComplexContent) {
           message = "Text inserted automatically. Note: complex clipboard content may be partially restored.";
         }
-        
+
         return {
           success: true,
           method: canInsert ? "clipboard_textinsert" : "clipboard",
           message: message,
         };
       } catch (insertError) {
-        console.log("Text insertion failed, user needs to paste manually:", insertError.message);
-        
-        // If text insertion failed, we should still restore clipboard
-        setTimeout(async () => {
-          await restoreCompleteClipboard(originalClipboardData);
-        }, 100);
-        
+        console.error("Text insertion failed, falling back to clipboard paste:", insertError.message);
+        // Insertion failed — leave text in clipboard so user can manually paste
         return {
           success: true,
           method: "clipboard",
@@ -1148,7 +1124,7 @@ ipcMain.handle("type-text", async (event, text) => {
       // Windows: Try koffi text insertion first, fallback to clipboard
       if (windowsTextInserter) {
         try {
-          console.log("Attempting Windows text insertion via koffi:", JSON.stringify(text));
+          if (isDevelopment) console.log("Attempting Windows text insertion via koffi:", JSON.stringify(text.substring(0, 50)) + (text.length > 50 ? '...' : ''));
           await windowsTextInserter.insertText(text);
           
           return {
@@ -1253,7 +1229,6 @@ ipcMain.handle("request-accessibility-permission", async () => {
 
 // Manual recheck accessibility permission (for settings page button)
 ipcMain.handle("recheck-accessibility-permission", async () => {
-  console.log("Manual accessibility permission recheck requested");
   const hasPermission = await permissionManager.recheckAccessibilityPermission();
   return {
     granted: hasPermission,
@@ -1329,7 +1304,7 @@ async function saveCompleteClipboard() {
   // Simple check for complex content
   data.isComplexContent = formats.length > 5;
 
-  console.log("Original clipboard saved with formats:", formats);
+  if (isDevelopment) console.log("Original clipboard saved with formats:", formats);
   return data;
 }
 
@@ -1372,7 +1347,7 @@ async function restoreCompleteClipboard(clipboardData) {
       }
     }
 
-    console.log("Original clipboard restored");
+    if (isDevelopment) console.log("Original clipboard restored");
 
   } catch (error) {
     // Fallback to text only
