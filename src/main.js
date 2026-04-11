@@ -414,6 +414,11 @@ function createInputPromptWindow() {
     focusable: false,
   });
 
+  // Make the overlay appear on every macOS Space (including full-screen apps),
+  // otherwise it stays bound to the Space where it was created and silently
+  // "recording with no UI" happens after the user switches desktops.
+  inputPromptWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
   inputPromptWindow.loadFile(path.join(__dirname, "views/input-prompt.html"));
   inputPromptWindow.webContents.on("did-finish-load", () => {
     inputPromptWindow.webContents.send("shortcut-updated", buildShortcutPayload());
