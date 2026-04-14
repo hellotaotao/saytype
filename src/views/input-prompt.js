@@ -229,8 +229,7 @@ class VoiceInputPrompt {
       let status = t("inputPrompt.recordingWithDuration", { duration });
       if (this.transcriptionInProgressCount > 0) {
         status += `${t("inputPrompt.statusSeparator")}${t(
-          "inputPrompt.transcribingCount",
-          { count: this.transcriptionInProgressCount }
+          "inputPrompt.transcribing"
         )}`;
       }
       this.statusText.textContent = status;
@@ -239,9 +238,7 @@ class VoiceInputPrompt {
     }
 
     if (this.transcriptionInProgressCount > 0) {
-      this.statusText.textContent = t("inputPrompt.transcribingCount", {
-        count: this.transcriptionInProgressCount,
-      });
+      this.statusText.textContent = t("inputPrompt.transcribing");
       this.statusText.style.color = "";
       return;
     }
