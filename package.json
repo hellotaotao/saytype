@@ -1,6 +1,6 @@
 {
   "name": "whisp-line",
-  "version": "1.0.81",
+  "version": "1.0.83",
   "description": "Voice input method software built with Electron",
   "main": "src/main.js",
   "scripts": {
@@ -71,6 +71,28 @@
         "NSSystemAdministrationUsageDescription": "WhispLine needs system administration access for global keyboard shortcuts.",
         "LSMinimumSystemVersion": "10.15.0"
       }
+    },
+    "dmg": {
+      "title": "Install WhispLine",
+      "backgroundColor": "#f5f7fa",
+      "iconSize": 120,
+      "window": {
+        "width": 680,
+        "height": 440
+      },
+      "contents": [
+        {
+          "x": 210,
+          "y": 170,
+          "type": "file"
+        },
+        {
+          "x": 470,
+          "y": 170,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "win": {
       "icon": "assets/icon.ico",
