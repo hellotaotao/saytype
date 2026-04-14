@@ -24,6 +24,10 @@ function logMicrophoneCleanup(...args) {
   console.log(...args);
 }
 
+function hasMeaningfulText(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 class VoiceInputPrompt {
   constructor() {
     this.isRecording = false;
@@ -293,6 +297,7 @@ class VoiceInputPrompt {
 
     this.isFlushingInsertQueue = true;
     this.updateStatusText();
+    let insertedAny = false;
 
     try {
       while (this.pendingInsertionOrder.length) {
@@ -304,8 +309,9 @@ class VoiceInputPrompt {
         const text = this.pendingInsertionsById.get(nextId);
         this.pendingInsertionsById.delete(nextId);
         this.pendingInsertionOrder.shift();
-        if (text) {
+        if (hasMeaningfulText(text)) {
           await this.typeText(text, { suppressUi: true });
+          insertedAny = true;
         }
       }
     } finally {
@@ -313,9 +319,15 @@ class VoiceInputPrompt {
     }
 
     if (!this.isRecording && !this.starting && !this.pendingInsertionOrder.length) {
-      this.statusText.textContent = t("inputPrompt.textInserted");
-      this.statusText.style.color = "var(--status-success)";
-      setTimeout(() => this.hidePrompt(), 1200);
+      if (insertedAny) {
+        this.statusText.textContent = t("inputPrompt.textInserted");
+        this.statusText.style.color = "var(--status-success)";
+        setTimeout(() => this.hidePrompt(), 1200);
+      } else {
+        this.statusText.textContent = t("inputPrompt.noSpeech");
+        this.statusText.style.color = "var(--status-warning)";
+        setTimeout(() => this.hidePrompt(), 1500);
+      }
     } else {
       this.updateStatusText();
     }
@@ -688,6 +700,15 @@ class VoiceInputPrompt {
 
   async handleTextProcessingFailure(text, messageOverride, options = {}) {
     const { suppressUi = false } = options;
+    if (!hasMeaningfulText(text)) {
+      if (!suppressUi) {
+        this.statusText.textContent = t("inputPrompt.noSpeech");
+        this.statusText.style.color = "var(--status-warning)";
+        setTimeout(() => this.hidePrompt(), 1500);
+      }
+      return;
+    }
+
     const fallbackMessage =
       typeof messageOverride === "string" && messageOverride.trim()
         ? messageOverride
@@ -720,12 +741,29 @@ class VoiceInputPrompt {
   }
 
   async typeText(text, options = {}) {
+    const { suppressUi = false } = options;
+    if (!hasMeaningfulText(text)) {
+      if (!suppressUi) {
+        this.statusText.textContent = t("inputPrompt.noSpeech");
+        this.statusText.style.color = "var(--status-warning)";
+        setTimeout(() => this.hidePrompt(), 1500);
+      }
+      return;
+    }
+
     // Send the transcribed text to the active application
     try {
-      const { suppressUi = false } = options;
       const result = await ipcRenderer.invoke("type-text", text);
 
       if (!result || !result.success) {
+        if (result?.skippedNoText) {
+          if (!suppressUi) {
+            this.statusText.textContent = t("inputPrompt.noSpeech");
+            this.statusText.style.color = "var(--status-warning)";
+            setTimeout(() => this.hidePrompt(), 1500);
+          }
+          return;
+        }
         console.warn("Text processing failed in main process:", result);
         await this.handleTextProcessingFailure(text, result?.message, { suppressUi });
         return;

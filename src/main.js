@@ -47,14 +47,21 @@ if (process.platform === 'win32') {
 const store = new Store();
 const DEFAULT_RECORD_SHORTCUT = "Ctrl+Shift";
 const TRANSLATE_SHORTCUT = "Shift+Alt";
+const START_RECORDING_DEBOUNCE_MS = 120;
 const STOP_RECORDING_DEBOUNCE_MS = 250;
-const MODIFIER_ORDER = ["Ctrl", "Shift", "Alt"];
+const MODIFIER_ORDER = ["Ctrl", "Shift", "Alt", "Meta"];
 const MODIFIER_ALIASES = {
   ctrl: "Ctrl",
   control: "Ctrl",
   shift: "Shift",
   alt: "Alt",
   option: "Alt",
+  meta: "Meta",
+  command: "Meta",
+  cmd: "Meta",
+  super: "Meta",
+  win: "Meta",
+  windows: "Meta",
 };
 const db = new DatabaseManager();
 const permissionManager = new PermissionManager();
@@ -113,6 +120,7 @@ function parseShortcut(shortcut) {
     ctrl: ordered.includes("Ctrl"),
     shift: ordered.includes("Shift"),
     alt: ordered.includes("Alt"),
+    meta: ordered.includes("Meta"),
     label: ordered.join("+"),
   };
 }
@@ -133,9 +141,83 @@ function isShortcutActive(shortcut) {
   if (!parsed) {
     return false;
   }
-  return (!parsed.ctrl || ctrlPressed) &&
-    (!parsed.shift || shiftPressed) &&
-    (!parsed.alt || altPressed);
+  return parsed.ctrl === ctrlPressed &&
+    parsed.shift === shiftPressed &&
+    parsed.alt === altPressed &&
+    parsed.meta === metaPressed;
+}
+
+function isModifierKeycode(keycode) {
+  return keycode === UiohookKey.Ctrl ||
+    keycode === UiohookKey.CtrlR ||
+    keycode === UiohookKey.Shift ||
+    keycode === UiohookKey.ShiftR ||
+    keycode === UiohookKey.Alt ||
+    keycode === UiohookKey.AltR ||
+    keycode === UiohookKey.Meta ||
+    keycode === UiohookKey.MetaRight;
+}
+
+function getActiveShortcutMode() {
+  if (isShortcutActive(recordShortcut)) {
+    return { translateMode: false };
+  }
+  if (isShortcutActive(TRANSLATE_SHORTCUT)) {
+    return { translateMode: true };
+  }
+  return null;
+}
+
+function clearStartRecordingDebounce() {
+  if (startRecordingDebounceTimer) {
+    clearTimeout(startRecordingDebounceTimer);
+    startRecordingDebounceTimer = null;
+  }
+}
+
+function startRecordingFromHotkey() {
+  if (isRecording || startRecordingDebounceTimer) {
+    return;
+  }
+
+  startRecordingDebounceTimer = setTimeout(() => {
+    startRecordingDebounceTimer = null;
+
+    if (isRecording) {
+      return;
+    }
+
+    const activeMode = getActiveShortcutMode();
+    if (!activeMode) {
+      return;
+    }
+
+    // Delay short enough to feel instant, but filters combo hotkeys that add another key immediately.
+    permissionManager
+      .checkAndRequestMicrophonePermission()
+      .then((hasPermission) => {
+        if (!hasPermission || isRecording) {
+          return;
+        }
+
+        // Re-evaluate in case key state changed while waiting for permission.
+        const latestMode = getActiveShortcutMode();
+        if (!latestMode) {
+          return;
+        }
+
+        isRecording = true;
+        if (inputPromptWindow) {
+          // Reposition to the active display before showing
+          positionInputPromptOnActiveDisplay(100);
+          inputPromptWindow.showInactive();
+          inputPromptWindow.webContents.send("start-recording", latestMode.translateMode);
+        }
+      })
+      .catch((error) => {
+        console.error("Error checking microphone permission:", error);
+      });
+  }, START_RECORDING_DEBOUNCE_MS);
 }
 
 function clearStopRecordingDebounce() {
@@ -258,9 +340,11 @@ let accessibilityWatchdog = null; // Low-frequency permission watchdog (macOS on
 let ctrlPressed = false;
 let shiftPressed = false;
 let altPressed = false;
+let metaPressed = false;
 let isQuitting = false;
 let isRecording = false;
 let stopRecordingDebounceTimer = null;
+let startRecordingDebounceTimer = null;
 let activeTranscriptions = new Map();
 let transcriptionRequestId = 0;
 let recordShortcut = normalizeRecordShortcut(
@@ -514,6 +598,14 @@ async function setupGlobalHotkeys() {
       if (e.keycode === UiohookKey.Alt || e.keycode === UiohookKey.AltR) {
         altPressed = true;
       }
+      // Meta/Command key
+      if (e.keycode === UiohookKey.Meta || e.keycode === UiohookKey.MetaRight) {
+        metaPressed = true;
+      }
+
+      if (!isModifierKeycode(e.keycode)) {
+        clearStartRecordingDebounce();
+      }
 
       if (isRecording) {
         const recordShortcutActive = isShortcutActive(recordShortcut);
@@ -526,6 +618,7 @@ async function setupGlobalHotkeys() {
       if (e.keycode === UiohookKey.Escape) {
         if (isRecording || activeTranscriptions.size > 0) {
           clearStopRecordingDebounce();
+          clearStartRecordingDebounce();
           isRecording = false;
           if (inputPromptWindow && inputPromptWindow.webContents) {
             inputPromptWindow.webContents.send("cancel-recording");
@@ -537,53 +630,12 @@ async function setupGlobalHotkeys() {
 
       // Start recording when the configured shortcut or translation shortcut is pressed
       if (!isRecording) {
-        const recordShortcutActive = isShortcutActive(recordShortcut);
-        const translateShortcutActive = isShortcutActive(TRANSLATE_SHORTCUT);
-
-        if (recordShortcutActive || translateShortcutActive) {
+        const activeMode = getActiveShortcutMode();
+        if (activeMode) {
           clearStopRecordingDebounce();
-          // Check microphone permission before starting recording
-          permissionManager
-            .checkAndRequestMicrophonePermission()
-            .then((hasPermission) => {
-              if (!hasPermission) {
-                return;
-              }
-
-              // Re-evaluate the shortcut state in case the user released keys while waiting
-              let comboActive = false;
-              let currentTranslateMode = false;
-              const recordActiveNow = isShortcutActive(recordShortcut);
-              const translateActiveNow = isShortcutActive(TRANSLATE_SHORTCUT);
-
-              if (recordActiveNow) {
-                comboActive = true;
-                currentTranslateMode = false;
-              } else if (translateActiveNow) {
-                comboActive = true;
-                currentTranslateMode = true;
-              }
-
-              if (!comboActive) {
-                return;
-              }
-
-              if (isRecording) {
-                // Another recording was already started while waiting for permission
-                return;
-              }
-
-              isRecording = true;
-              if (inputPromptWindow) {
-                // Reposition to the active display before showing
-                positionInputPromptOnActiveDisplay(100);
-                inputPromptWindow.showInactive();
-                inputPromptWindow.webContents.send("start-recording", currentTranslateMode);
-              }
-            })
-            .catch((error) => {
-              console.error("Error checking microphone permission:", error);
-            });
+          startRecordingFromHotkey();
+        } else {
+          clearStartRecordingDebounce();
         }
       }
       } catch (handlerErr) {
@@ -605,14 +657,19 @@ async function setupGlobalHotkeys() {
       if (e.keycode === UiohookKey.Alt || e.keycode === UiohookKey.AltR) {
         altPressed = false;
       }
+      // Meta/Command key released
+      if (e.keycode === UiohookKey.Meta || e.keycode === UiohookKey.MetaRight) {
+        metaPressed = false;
+      }
 
       // Stop recording when neither the record nor translation shortcut is pressed
-      const recordShortcutActive = isShortcutActive(recordShortcut);
-      const translateShortcutActive = isShortcutActive(TRANSLATE_SHORTCUT);
-      if (isRecording && !(recordShortcutActive || translateShortcutActive)) {
+      const activeMode = getActiveShortcutMode();
+      if (isRecording && !activeMode) {
         scheduleStopRecording();
-      } else if (recordShortcutActive || translateShortcutActive) {
+      } else if (activeMode) {
         clearStopRecordingDebounce();
+      } else {
+        clearStartRecordingDebounce();
       }
       } catch (handlerErr) {
         console.error("uIOhook keyup handler error:", handlerErr);
@@ -697,6 +754,11 @@ function stopGlobalHotkeys() {
       // Remove all listeners first
       uIOhook.removeAllListeners();
       clearStopRecordingDebounce();
+      clearStartRecordingDebounce();
+      ctrlPressed = false;
+      shiftPressed = false;
+      altPressed = false;
+      metaPressed = false;
 
       // Then stop the hook
       uIOhook.stop();
@@ -1067,6 +1129,14 @@ ipcMain.handle("transcribe-audio", async (event, audioBuffer, translateMode = fa
 
 ipcMain.handle("type-text", async (event, text) => {
   try {
+    if (typeof text !== "string" || !text.trim()) {
+      return {
+        success: false,
+        skippedNoText: true,
+        message: "No text to insert.",
+      };
+    }
+
     if (process.platform === "darwin") {
       // macOS: Try CGEvent direct Unicode insertion first
       if (macosTextInserter) {
