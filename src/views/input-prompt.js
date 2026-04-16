@@ -214,10 +214,7 @@ class VoiceInputPrompt {
     }
 
     if (this.isFlushingInsertQueue) {
-      const readyCount = Math.max(1, this.getReadyInsertionCount());
-      this.statusText.textContent = t("inputPrompt.insertingCount", {
-        count: readyCount,
-      });
+      this.statusText.textContent = t("inputPrompt.inserting");
       this.statusText.style.color = "var(--status-success)";
       return;
     }
