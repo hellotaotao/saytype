@@ -659,7 +659,13 @@ class VoiceInputPrompt {
       }
     } finally {
       this.transcriptionInProgressCount = Math.max(0, this.transcriptionInProgressCount - 1);
-      this.updateStatusText();
+      // Only refresh status when concurrent transcriptions are still running.
+      // If count reached 0, the try/catch or flushPendingInsertions have already
+      // set the terminal status ("Cancelled", "No speech", "Text inserted", etc.)
+      // — calling updateStatusText() here would overwrite them with an empty string.
+      if (this.transcriptionInProgressCount > 0) {
+        this.updateStatusText();
+      }
       await this.flushPendingInsertions();
     }
   }
