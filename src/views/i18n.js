@@ -183,6 +183,7 @@
         textProcessingFailed: "Text processing failed - trying clipboard fallback",
         textCopiedFallback: "Text copied to clipboard - Press {shortcut} to paste",
         errorCouldNotProcess: "Error: Could not process text",
+        insertFailed: "Insertion failed",
       },
     },
     zh: {
@@ -365,6 +366,7 @@
         textProcessingFailed: "文本处理失败，正在尝试剪贴板回退",
         textCopiedFallback: "文本已复制到剪贴板 - 按 {shortcut} 粘贴",
         errorCouldNotProcess: "错误：无法处理文本",
+        insertFailed: "插入失败",
       },
     },
   };

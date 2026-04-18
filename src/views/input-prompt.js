@@ -51,6 +51,8 @@ class VoiceInputPrompt {
     this.pendingInsertionsById = new Map();
     this.isFlushingInsertQueue = false;
     this.recordingTimerId = null;
+    this.hidePromptTimerId = null;
+    this.actualHideTimerId = null;
     this.recordShortcut = DEFAULT_RECORD_SHORTCUT;
     this.translateShortcut = DEFAULT_TRANSLATE_SHORTCUT;
 
@@ -123,6 +125,11 @@ class VoiceInputPrompt {
 
     // Listen for cleanup microphone signal
     ipcRenderer.on("cleanup-microphone", () => {
+      // Ignore stale cleanup if a new recording is already in flight,
+      // otherwise it would tear down the freshly acquired mediaStream.
+      if (this.isRecording || this.starting) {
+        return;
+      }
       this.cleanup();
     });
 
@@ -262,6 +269,28 @@ class VoiceInputPrompt {
     }
   }
 
+  clearHidePromptTimer() {
+    if (this.hidePromptTimerId) {
+      clearTimeout(this.hidePromptTimerId);
+      this.hidePromptTimerId = null;
+    }
+  }
+
+  scheduleHidePrompt(delayMs) {
+    this.clearHidePromptTimer();
+    this.hidePromptTimerId = setTimeout(() => {
+      this.hidePromptTimerId = null;
+      this.hidePrompt();
+    }, delayMs);
+  }
+
+  clearActualHideTimer() {
+    if (this.actualHideTimerId) {
+      clearTimeout(this.actualHideTimerId);
+      this.actualHideTimerId = null;
+    }
+  }
+
   removePendingInsertion(sessionId) {
     this.pendingInsertionsById.delete(sessionId);
     this.pendingInsertionOrder = this.pendingInsertionOrder.filter(
@@ -292,6 +321,8 @@ class VoiceInputPrompt {
     this.isFlushingInsertQueue = true;
     this.updateStatusText();
     let insertedAny = false;
+    let allDirect = true;
+    let lastFailureMessage = null;
 
     try {
       while (this.pendingInsertionOrder.length) {
@@ -304,8 +335,14 @@ class VoiceInputPrompt {
         this.pendingInsertionsById.delete(nextId);
         this.pendingInsertionOrder.shift();
         if (hasMeaningfulText(text)) {
-          await this.typeText(text, { suppressUi: true });
-          insertedAny = true;
+          const result = await this.typeText(text, { suppressUi: true });
+          if (result?.ok) {
+            insertedAny = true;
+            if (!result.direct) allDirect = false;
+          } else if (result && !result.noText) {
+            allDirect = false;
+            if (result.message) lastFailureMessage = result.message;
+          }
         }
       }
     } finally {
@@ -313,14 +350,25 @@ class VoiceInputPrompt {
     }
 
     if (!this.isRecording && !this.starting && !this.pendingInsertionOrder.length) {
+      // Best path: text already appeared in the focused field — close silently.
+      if (insertedAny && allDirect) {
+        this.hidePrompt();
+        return;
+      }
+      this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
       if (insertedAny) {
+        // Clipboard fallback succeeded — brief acknowledgement.
         this.statusText.textContent = t("inputPrompt.textInserted");
         this.statusText.style.color = "var(--status-success)";
-        setTimeout(() => this.hidePrompt(), 1200);
+        this.scheduleHidePrompt(1200);
+      } else if (lastFailureMessage) {
+        this.statusText.textContent = t("inputPrompt.insertFailed");
+        this.statusText.style.color = "var(--status-warning-strong)";
+        this.scheduleHidePrompt(2500);
       } else {
         this.statusText.textContent = t("inputPrompt.noSpeech");
         this.statusText.style.color = "var(--status-warning)";
-        setTimeout(() => this.hidePrompt(), 1500);
+        this.scheduleHidePrompt(1500);
       }
     } else {
       this.updateStatusText();
@@ -335,6 +383,8 @@ class VoiceInputPrompt {
   async startRecording() {
     if (this.isRecording || this.starting) return;
 
+    this.clearHidePromptTimer();
+    this.clearActualHideTimer();
     this.starting = true;
     try {
       // Show prompt immediately
@@ -489,6 +539,8 @@ class VoiceInputPrompt {
     this.cancelInProgress = true;
     this.stopRequested = true;
     this.stopRecordingTimer();
+    this.clearHidePromptTimer();
+    this.clearActualHideTimer();
     this.clearPendingInsertions();
 
     if (this.transcriptionInProgressCount > 0) {
@@ -497,7 +549,7 @@ class VoiceInputPrompt {
       this.statusText.textContent = "";
       this.cleanup();
       this.stopWaveAnimation();
-      setTimeout(() => this.hidePrompt(), 300);
+      this.scheduleHidePrompt(300);
       return;
     }
 
@@ -511,7 +563,7 @@ class VoiceInputPrompt {
     this.statusText.textContent = "";
     this.cleanup();
     this.stopWaveAnimation();
-    setTimeout(() => this.hidePrompt(), 300);
+    this.scheduleHidePrompt(300);
   }
 
   cleanup(options = {}) {
@@ -601,7 +653,7 @@ class VoiceInputPrompt {
           this.audioChunks = [];
           this.statusText.textContent = t("inputPrompt.cancelled");
           this.statusText.style.color = "var(--status-warning)";
-          setTimeout(() => this.hidePrompt(), 300);
+          this.scheduleHidePrompt(300);
         }
         return;
       }
@@ -611,7 +663,7 @@ class VoiceInputPrompt {
         if (allowUi) {
           this.statusText.textContent = t("inputPrompt.noAudio");
           this.statusText.style.color = "var(--status-warning)";
-          setTimeout(() => this.hidePrompt(), 1500);
+          this.scheduleHidePrompt(1500);
         }
         return;
       }
@@ -637,7 +689,7 @@ class VoiceInputPrompt {
         this.removePendingInsertion(sessionId);
         if (allowUi) {
           this.statusText.textContent = t("inputPrompt.noSpeech");
-          setTimeout(() => this.hidePrompt(), 2000);
+          this.scheduleHidePrompt(2000);
         }
       }
     } catch (error) {
@@ -651,10 +703,10 @@ class VoiceInputPrompt {
         if (isCancelled) {
           this.statusText.textContent = t("inputPrompt.cancelled");
           this.statusText.style.color = "var(--status-warning)";
-          setTimeout(() => this.hidePrompt(), 300);
+          this.scheduleHidePrompt(300);
         } else {
           this.statusText.textContent = t("inputPrompt.transcriptionFailed");
-          setTimeout(() => this.hidePrompt(), 3000);
+          this.scheduleHidePrompt(3000);
         }
       }
     } finally {
@@ -695,7 +747,7 @@ class VoiceInputPrompt {
     this.promptText.textContent = t(errorMessageKey);
     this.statusText.textContent = t("inputPrompt.checkMicrophone");
 
-    setTimeout(() => this.hidePrompt(), 3000);
+    this.scheduleHidePrompt(3000);
   }
 
   async handleTextProcessingFailure(text, messageOverride, options = {}) {
@@ -704,7 +756,7 @@ class VoiceInputPrompt {
       if (!suppressUi) {
         this.statusText.textContent = t("inputPrompt.noSpeech");
         this.statusText.style.color = "var(--status-warning)";
-        setTimeout(() => this.hidePrompt(), 1500);
+        this.scheduleHidePrompt(1500);
       }
       return;
     }
@@ -728,14 +780,14 @@ class VoiceInputPrompt {
           shortcut: pasteShortcut,
         });
         this.statusText.style.color = "var(--status-warning)";
-        setTimeout(() => this.hidePrompt(), 3000);
+        this.scheduleHidePrompt(3000);
       }
     } catch (clipboardError) {
       console.error("Failed to copy to clipboard:", clipboardError);
       if (!suppressUi) {
         this.statusText.textContent = t("inputPrompt.errorCouldNotProcess");
         this.statusText.style.color = "var(--status-danger)";
-        setTimeout(() => this.hidePrompt(), 3000);
+        this.scheduleHidePrompt(3000);
       }
     }
   }
@@ -746,9 +798,9 @@ class VoiceInputPrompt {
       if (!suppressUi) {
         this.statusText.textContent = t("inputPrompt.noSpeech");
         this.statusText.style.color = "var(--status-warning)";
-        setTimeout(() => this.hidePrompt(), 1500);
+        this.scheduleHidePrompt(1500);
       }
-      return;
+      return { ok: false, noText: true };
     }
 
     // Send the transcribed text to the active application
@@ -760,22 +812,28 @@ class VoiceInputPrompt {
           if (!suppressUi) {
             this.statusText.textContent = t("inputPrompt.noSpeech");
             this.statusText.style.color = "var(--status-warning)";
-            setTimeout(() => this.hidePrompt(), 1500);
+            this.scheduleHidePrompt(1500);
           }
-          return;
+          return { ok: false, noText: true };
         }
         console.warn("Text processing failed in main process:", result);
         await this.handleTextProcessingFailure(text, result?.message, { suppressUi });
-        return;
+        return { ok: false, message: result?.message };
       }
 
+      const directMethods = new Set([
+        "direct_typing",
+        "koffi_sendinput",
+        "cgevent_unicode",
+      ]);
+      const isDirect = directMethods.has(result.method);
       const pasteShortcut = this.getPasteShortcutLabel();
 
       if (result.method === "direct_typing") {
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textTypedDirect");
           this.statusText.style.color = "var(--status-success)";
-          setTimeout(() => this.hidePrompt(), 1500);
+          this.scheduleHidePrompt(1500);
         }
       } else if (result.method === "koffi_sendinput") {
         // Windows SendInput method
@@ -818,7 +876,7 @@ class VoiceInputPrompt {
             shortcut: pasteShortcut,
           });
           this.statusText.style.color = "var(--status-warning)";
-          setTimeout(() => this.hidePrompt(), 3000);
+          this.scheduleHidePrompt(3000);
         }
       } else {
         if (!suppressUi) {
@@ -827,9 +885,11 @@ class VoiceInputPrompt {
           this.hidePrompt();
         }
       }
+      return { ok: true, method: result.method, direct: isDirect };
     } catch (error) {
       console.error("Failed to process text:", error);
       await this.handleTextProcessingFailure(text, null, options);
+      return { ok: false, message: error?.message };
     }
   }
 
@@ -890,6 +950,8 @@ class VoiceInputPrompt {
     // Force cleanup of any remaining resources
     this.cleanup();
     this.stopRecordingTimer();
+    this.clearHidePromptTimer();
+    this.clearActualHideTimer();
     this.clearPendingInsertions();
     this.isFlushingInsertQueue = false;
     
@@ -908,7 +970,8 @@ class VoiceInputPrompt {
     this.cancelledShortPress = false;
     this.cancelInProgress = false;
 
-    setTimeout(() => {
+    this.actualHideTimerId = setTimeout(() => {
+      this.actualHideTimerId = null;
       ipcRenderer.invoke("hide-input-prompt");
     }, 300);
   }
