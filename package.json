@@ -79,7 +79,6 @@
         "CFBundleIdentifier": "com.tao.whispline",
         "NSMicrophoneUsageDescription": "WhispLine needs microphone access to transcribe your voice input.",
         "NSAppleEventsUsageDescription": "WhispLine needs Apple Events access to insert text into other applications.",
-        "NSSystemAdministrationUsageDescription": "WhispLine needs system administration access for global keyboard shortcuts.",
         "LSMinimumSystemVersion": "10.15.0"
       }
     },

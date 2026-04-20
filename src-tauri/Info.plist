@@ -10,8 +10,6 @@
   <string>WhispLine needs microphone access to transcribe your voice input.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>WhispLine needs Apple Events access to insert text into other applications.</string>
-  <key>NSSystemAdministrationUsageDescription</key>
-  <string>WhispLine needs system administration access for global keyboard shortcuts.</string>
   <key>LSMinimumSystemVersion</key>
   <string>10.15.0</string>
 </dict>

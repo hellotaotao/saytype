@@ -36,8 +36,8 @@ class PermissionManager extends EventEmitter {
     const result = await dialog.showMessageBox(null, {
       type: "warning",
       title: "Accessibility Permission Required",
-      message: "WhispLine needs accessibility permission to capture global keyboard shortcuts and insert transcribed text automatically.",
-      detail: "Please grant accessibility permission in System Preferences to use global keyboard shortcuts and automatic text insertion.\n\nThe app will work with microphone-only mode and manual pasting if you prefer not to grant this permission.",
+      message: "WhispLine needs Accessibility permission for global hotkeys and automatic paste into other apps. It does not require Input Monitoring.",
+      detail: "Please grant Accessibility permission in System Settings if you want global hotkeys and automatic paste.\n\nWithout it, the app can still run in microphone-only mode and fall back to manual pasting.",
       buttons: ["Open System Preferences", "Continue without shortcuts", "Quit"],
       defaultId: 0,
       cancelId: 2,
