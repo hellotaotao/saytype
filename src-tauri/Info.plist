@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>WhispLine</string>
+  <key>CFBundleName</key>
+  <string>WhispLine</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>WhispLine needs microphone access to transcribe your voice input.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>WhispLine needs Apple Events access to insert text into other applications.</string>
+  <key>NSSystemAdministrationUsageDescription</key>
+  <string>WhispLine needs system administration access for global keyboard shortcuts.</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>10.15.0</string>
+</dict>
+</plist>

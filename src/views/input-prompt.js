@@ -1,4 +1,8 @@
-const { ipcRenderer } = require("electron");
+if (typeof document !== "undefined" && document.documentElement) {
+  document.documentElement.setAttribute("data-input-prompt-js-ran", "1");
+}
+
+const ipc = window.__WHISPLINE_IPC__;
 const { initI18n, setLanguage, applyI18n, t } = window.WhispLineI18n;
 
 let isDev = false;
@@ -77,7 +81,7 @@ class VoiceInputPrompt {
   }
 
   setupEventListeners() {
-    ipcRenderer.on("shortcut-updated", (event, payload) => {
+    ipc.on("shortcut-updated", (event, payload) => {
       if (!payload) {
         return;
       }
@@ -87,7 +91,7 @@ class VoiceInputPrompt {
       this.updateShortcutHint(recordShortcut, translateShortcut);
     });
 
-    ipcRenderer.on("ui-language-updated", (event, payload) => {
+    ipc.on("ui-language-updated", (event, payload) => {
       if (!payload) {
         return;
       }
@@ -96,7 +100,7 @@ class VoiceInputPrompt {
       this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
     });
 
-    ipcRenderer.on("ui-theme-updated", (event, payload) => {
+    ipc.on("ui-theme-updated", (event, payload) => {
       if (!payload) {
         return;
       }
@@ -104,7 +108,7 @@ class VoiceInputPrompt {
     });
 
     // Listen for start recording from main process
-    ipcRenderer.on("start-recording", async (event, translateMode = false) => {
+    ipc.on("start-recording", async (event, translateMode = false) => {
       if (this.isRecording || this.starting) {
         return;
       }
@@ -114,17 +118,17 @@ class VoiceInputPrompt {
     });
 
     // Listen for stop recording from main process
-    ipcRenderer.on("stop-recording", () => {
+    ipc.on("stop-recording", () => {
       this.stopRequested = true;
       this.stopRecording();
     });
 
-    ipcRenderer.on("cancel-recording", () => {
+    ipc.on("cancel-recording", () => {
       this.cancelRecording();
     });
 
     // Listen for cleanup microphone signal
-    ipcRenderer.on("cleanup-microphone", () => {
+    ipc.on("cleanup-microphone", () => {
       // Ignore stale cleanup if a new recording is already in flight,
       // otherwise it would tear down the freshly acquired mediaStream.
       if (this.isRecording || this.starting) {
@@ -134,7 +138,7 @@ class VoiceInputPrompt {
     });
 
     // Legacy support for toggle recording
-    ipcRenderer.on("toggle-recording", async () => {
+    ipc.on("toggle-recording", async () => {
       if (!this.isRecording) {
         await this.startRecording();
       } else {
@@ -157,7 +161,7 @@ class VoiceInputPrompt {
 
   async syncShortcutFromSettings() {
     try {
-      const settings = await ipcRenderer.invoke("get-settings");
+      const settings = await ipc.invoke("get-settings");
       if (!settings) {
         return;
       }
@@ -544,7 +548,7 @@ class VoiceInputPrompt {
     this.clearPendingInsertions();
 
     if (this.transcriptionInProgressCount > 0) {
-      ipcRenderer.invoke("cancel-transcription").catch(() => {});
+      ipc.invoke("cancel-transcription").catch(() => {});
       this.promptText.textContent = t("inputPrompt.cancelled");
       this.statusText.textContent = "";
       this.cleanup();
@@ -672,9 +676,9 @@ class VoiceInputPrompt {
         type: mimeType || "audio/webm", // Use actual recording format
       });
       const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioBuffer = Buffer.from(arrayBuffer);
+      const audioBuffer = Array.from(new Uint8Array(arrayBuffer));
 
-      const transcription = await ipcRenderer.invoke(
+      const transcription = await ipc.invoke(
         "transcribe-audio",
         audioBuffer,
         translateMode,
@@ -805,7 +809,7 @@ class VoiceInputPrompt {
 
     // Send the transcribed text to the active application
     try {
-      const result = await ipcRenderer.invoke("type-text", text);
+      const result = await ipc.invoke("type-text", text);
 
       if (!result || !result.success) {
         if (result?.skippedNoText) {
@@ -972,25 +976,29 @@ class VoiceInputPrompt {
 
     this.actualHideTimerId = setTimeout(() => {
       this.actualHideTimerId = null;
-      ipcRenderer.invoke("hide-input-prompt");
+      ipc.invoke("hide-input-prompt");
     }, 300);
   }
 }
 
-// Initialize when DOM is loaded
-document.addEventListener("DOMContentLoaded", () => {
-  const initialize = async () => {
-    try {
-      const settings = await ipcRenderer.invoke("get-settings");
-      isDev = settings?.isDev ?? false;
-      initI18n(settings?.uiLanguage);
-      applyTheme(settings?.uiTheme);
-    } catch (error) {
-      console.error("Failed to load UI language settings:", error);
-      initI18n("auto");
-      applyTheme("elegant");
-    }
-    new VoiceInputPrompt();
-  };
-  initialize();
-});
+async function initializeInputPromptPage() {
+  try {
+    const settings = await ipc.invoke("get-settings");
+    isDev = settings?.isDev ?? false;
+    initI18n(settings?.uiLanguage);
+    applyTheme(settings?.uiTheme);
+  } catch (error) {
+    console.error("Failed to load UI language settings:", error);
+    initI18n("auto");
+    applyTheme("elegant");
+  }
+  new VoiceInputPrompt();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => {
+    void initializeInputPromptPage();
+  }, { once: true });
+} else {
+  void initializeInputPromptPage();
+}

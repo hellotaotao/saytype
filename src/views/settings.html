@@ -9,14 +9,6 @@
   <link rel="stylesheet" href="settings.css">
 </head>
 <body>
-  <div class="title-bar">
-    <div class="title-bar-title" data-i18n="settings.title">Settings - WhispLine</div>
-    <div class="title-bar-controls">
-      <button class="title-bar-close" onclick="closeSettings()">
-        <span class="material-icons">close</span>
-      </button>
-    </div>
-  </div>
   <div class="container">
     <div class="sidebar">
       <div class="sidebar-section">
@@ -295,14 +287,15 @@
       </div>
 
       <div class="save-section">
-        <button class="btn btn-secondary" onclick="closeSettings()">
+        <button class="btn btn-secondary" id="closeSettingsButton" type="button">
           <span data-i18n="settings.cancel">Cancel</span>
         </button>
-        <button class="btn" onclick="saveSettings()" data-i18n="settings.save">Save</button>
+        <button class="btn" id="saveSettingsButton" type="button" data-i18n="settings.save">Save</button>
       </div>
     </div>
   </div>
 
+  <script src="ipc-bridge.js"></script>
   <script src="i18n.js"></script>
   <script src="settings.js"></script>
 </body>

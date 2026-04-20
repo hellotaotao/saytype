@@ -61,13 +61,15 @@ body {
     sans-serif;
   margin: 0;
   padding: 0;
+  height: 100vh;
+  overflow: hidden;
   background: var(--settings-bg);
   color: var(--settings-text);
 }
 
 .container {
   display: flex;
-  height: calc(100vh - 40px);
+  height: 100vh;
 }
 
 .sidebar {
@@ -222,56 +224,6 @@ body {
 
 .btn-secondary:hover {
   background: var(--settings-button-secondary-hover);
-}
-
-/* Custom title bar styles */
-.title-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 40px;
-  background: var(--settings-titlebar-bg);
-  border-bottom: 1px solid var(--settings-titlebar-border);
-  padding: 0 20px;
-  -webkit-app-region: drag;
-}
-
-.title-bar-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--settings-text);
-}
-
-.title-bar-controls {
-  display: flex;
-  align-items: center;
-  -webkit-app-region: no-drag;
-}
-
-.title-bar-close {
-  width: 30px;
-  height: 30px;
-  border: none;
-  background: transparent;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.2s;
-}
-
-.title-bar-close:hover {
-  background: var(--settings-close-hover);
-  color: white;
-}
-
-.title-bar-close .material-icons {
-  font-size: 18px;
-}
-
-.container {
-  height: calc(100vh - 40px);
 }
 
 .input {

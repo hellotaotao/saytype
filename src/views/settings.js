@@ -1,29 +1,113 @@
-const { ipcRenderer } = require("electron");
-const { initI18n, setLanguage, applyI18n, t } = window.WhispLineI18n;
+let ipc = null;
+let initI18n = () => "en";
+let setLanguage = () => "en";
+let applyI18n = () => {};
+let t = (key) => key;
 
+if (typeof document !== "undefined" && document.documentElement) {
+  document.documentElement.setAttribute("data-settings-js-ran", "1");
+}
+
+const READY_TIMEOUT_MS = 3000;
+const READY_POLL_MS = 25;
 const themeOptions = new Set(["midnight", "elegant"]);
 
-// Define available models per API provider
 const modelOptions = {
   groq: [
     { value: "whisper-large-v3", labelKey: "settings.model.options.whisperLargeV3" },
-    { value: "whisper-large-v3-turbo", labelKey: "settings.model.options.whisperLargeV3Turbo" }
+    { value: "whisper-large-v3-turbo", labelKey: "settings.model.options.whisperLargeV3Turbo" },
   ],
   openai: [
     { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
     { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
-    { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe" }
-  ]
+    { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe" },
+  ],
 };
 
-// Update model dropdown based on selected provider
+let currentSettings = {};
+let pageEventsBound = false;
+let shortcutSyncBound = false;
+let themeSyncBound = false;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function translate(key, vars) {
+  try {
+    return typeof t === "function" ? t(key, vars) : key;
+  } catch {
+    return key;
+  }
+}
+
+function resolveTheme(value) {
+  return themeOptions.has(value) ? value : "elegant";
+}
+
+function applyTheme(value) {
+  document.documentElement.setAttribute("data-theme", resolveTheme(value));
+}
+
+function getDependencies() {
+  const bridge = window.__WHISPLINE_IPC__;
+  const i18nApi = window.WhispLineI18n;
+
+  if (
+    bridge &&
+    typeof bridge.invoke === "function" &&
+    typeof bridge.on === "function" &&
+    i18nApi &&
+    typeof i18nApi.initI18n === "function" &&
+    typeof i18nApi.setLanguage === "function" &&
+    typeof i18nApi.applyI18n === "function" &&
+    typeof i18nApi.t === "function"
+  ) {
+    return { bridge, i18nApi };
+  }
+
+  return null;
+}
+
+async function waitForDependencies() {
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const dependencies = getDependencies();
+    if (dependencies) {
+      return dependencies;
+    }
+    await delay(READY_POLL_MS);
+  }
+
+  return getDependencies();
+}
+
+async function initializeDependencies() {
+  if (ipc) {
+    return;
+  }
+
+  const dependencies = getDependencies() || (await waitForDependencies());
+  if (!dependencies) {
+    throw new Error("settings runtime dependencies unavailable");
+  }
+
+  ipc = dependencies.bridge;
+  ({ initI18n, setLanguage, applyI18n, t } = dependencies.i18nApi);
+}
+
 function updateModelOptions(provider) {
   const select = document.getElementById("modelSelect");
+  if (!select) {
+    return;
+  }
+
   select.innerHTML = "";
   (modelOptions[provider] || []).forEach((opt) => {
     const option = document.createElement("option");
     option.value = opt.value;
-    option.textContent = opt.labelKey ? t(opt.labelKey) : opt.label || opt.value;
+    option.textContent = opt.labelKey ? translate(opt.labelKey) : opt.label || opt.value;
     select.appendChild(option);
   });
 }
@@ -31,7 +115,10 @@ function updateModelOptions(provider) {
 function toggleApiKeyVisibility(provider) {
   const keyGroq = document.getElementById("apiKeyGroq");
   const keyOpenAI = document.getElementById("apiKeyOpenAI");
-  if (!keyGroq || !keyOpenAI) return;
+  if (!keyGroq || !keyOpenAI) {
+    return;
+  }
+
   if (provider === "openai") {
     keyGroq.classList.add("hidden");
     keyOpenAI.classList.remove("hidden");
@@ -41,93 +128,270 @@ function toggleApiKeyVisibility(provider) {
   }
 }
 
-function resolveTheme(value) {
-  return themeOptions.has(value) ? value : "elegant";
+function setSelectValue(element, value, fallback) {
+  if (!element) {
+    return;
+  }
+
+  const hasOption = Array.from(element.options).some((option) => option.value === value);
+  element.value = hasOption ? value : fallback;
 }
 
-function applyTheme(value) {
-  const resolved = resolveTheme(value);
-  document.documentElement.setAttribute("data-theme", resolved);
+function handleProviderChange(event) {
+  const provider = event.target.value || "groq";
+  updateModelOptions(provider);
+  toggleApiKeyVisibility(provider);
 }
 
-let currentSettings = {};
+function handleThemeChange(event) {
+  applyTheme(event.target.value);
+}
 
-async function loadSettings() {
-  try {
-    currentSettings = await ipcRenderer.invoke("get-settings");
-    initI18n(currentSettings.uiLanguage);
-    applyTheme(currentSettings.uiTheme);
-    // Initialize provider and models
-    const providerSelect = document.getElementById("providerSelect");
-    providerSelect.value = currentSettings.provider || "groq";
-    updateModelOptions(providerSelect.value);
-    // Toggle which API key input is visible for current provider
-    if (typeof toggleApiKeyVisibility === "function") {
-      toggleApiKeyVisibility(providerSelect.value);
+function handleUiLanguageChange(event) {
+  setLanguage(event.target.value);
+  applyI18n(document);
+  void checkMicrophonePermissionStatus();
+  void checkAccessibilityStatus();
+}
+
+function handleSidebarClick(event) {
+  const item = event.currentTarget;
+  document.querySelectorAll(".sidebar-item").forEach((node) => {
+    node.classList.remove("active");
+  });
+  item.classList.add("active");
+
+  const target = item.getAttribute("data-section");
+  document.querySelectorAll(".content-section").forEach((section) => {
+    section.classList.remove("active");
+  });
+
+  const content = document.getElementById(`section-${target}`);
+  if (content) {
+    content.classList.add("active");
+  }
+}
+
+function bindEventHandlers() {
+  if (pageEventsBound) {
+    return;
+  }
+
+  const providerSelect = document.getElementById("providerSelect");
+  const checkPermissionButton = document.getElementById("checkPermission");
+  const checkAccessibilityButton = document.getElementById("checkAccessibility");
+  const closeSettingsButton = document.getElementById("closeSettingsButton");
+  const saveSettingsButton = document.getElementById("saveSettingsButton");
+  const uiLanguageSelect = document.getElementById("uiLanguageSelect");
+  const themeSelect = document.getElementById("themeSelect");
+
+  providerSelect?.addEventListener("change", handleProviderChange);
+  checkPermissionButton?.addEventListener("click", () => {
+    void checkMicrophonePermissionStatus();
+  });
+  checkAccessibilityButton?.addEventListener("click", () => {
+    void recheckAccessibilityPermission();
+  });
+  closeSettingsButton?.addEventListener("click", () => {
+    void closeSettings();
+  });
+  saveSettingsButton?.addEventListener("click", () => {
+    void saveSettings();
+  });
+  uiLanguageSelect?.addEventListener("change", handleUiLanguageChange);
+  themeSelect?.addEventListener("change", handleThemeChange);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void closeSettings();
     }
+  });
 
-    const apiKeyGroq = document.getElementById("apiKeyGroq");
-    const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
-    apiKeyGroq.value =
-      currentSettings.apiKeyGroq || currentSettings.apiKey || "";
-    apiKeyOpenAI.value = currentSettings.apiKeyOpenAI || "";
+  document.querySelectorAll(".sidebar-item").forEach((item) => {
+    item.addEventListener("click", handleSidebarClick);
+  });
+
+  window.closeSettings = closeSettings;
+  window.saveSettings = saveSettings;
+  pageEventsBound = true;
+}
+
+function setupShortcutSync() {
+  if (shortcutSyncBound || !ipc) {
+    return;
+  }
+
+  shortcutSyncBound = true;
+  ipc.on("shortcut-updated", (_event, payload) => {
+    if (!payload || !payload.recordShortcut) {
+      return;
+    }
 
     const shortcutSelect = document.getElementById("shortcutSelect");
-    if (shortcutSelect) {
-      const shortcutValue = currentSettings.shortcut || "Ctrl+Shift";
-      const hasOption = Array.from(shortcutSelect.options).some(
-        (opt) => opt.value === shortcutValue
-      );
-      shortcutSelect.value = hasOption ? shortcutValue : "Ctrl+Shift";
+    setSelectValue(shortcutSelect, payload.recordShortcut, "Ctrl+Shift");
+  });
+}
+
+function setupThemeSync() {
+  if (themeSyncBound || !ipc) {
+    return;
+  }
+
+  themeSyncBound = true;
+  ipc.on("ui-theme-updated", (_event, payload) => {
+    if (!payload) {
+      return;
     }
 
+    applyTheme(payload.theme);
+    setSelectValue(document.getElementById("themeSelect"), resolveTheme(payload.theme), "elegant");
+  });
+}
+
+async function checkMicrophonePermissionStatus() {
+  if (!ipc) {
+    return;
+  }
+
+  const statusElement = document.getElementById("permissionStatus");
+  if (!statusElement) {
+    return;
+  }
+
+  try {
+    statusElement.textContent = translate("settings.permission.checking");
+    statusElement.className = "permission-status";
+
+    const result = await ipc.invoke("check-microphone-permission");
+    const status = result.status;
+
+    if (status === "granted" || status === "not-determined") {
+      statusElement.textContent = translate("settings.permission.granted");
+      statusElement.className = "permission-status granted";
+    } else if (status === "restricted") {
+      statusElement.textContent = translate("settings.permission.restricted");
+      statusElement.className = "permission-status denied";
+    } else {
+      statusElement.textContent = translate("settings.permission.denied");
+      statusElement.className = "permission-status denied";
+    }
+  } catch (error) {
+    console.error("Failed to check microphone permission:", error);
+    statusElement.textContent = translate("settings.permission.error");
+    statusElement.className = "permission-status denied";
+  }
+}
+
+async function checkAccessibilityStatus() {
+  if (!ipc) {
+    return;
+  }
+
+  const statusElement = document.getElementById("accessibilityStatus");
+  if (!statusElement) {
+    return;
+  }
+
+  try {
+    statusElement.textContent = translate("settings.permission.checking");
+    statusElement.className = "permission-status";
+
+    const result = await ipc.invoke("check-accessibility-permission");
+    if (result.granted) {
+      statusElement.textContent = translate("settings.accessibility.granted");
+      statusElement.className = "permission-status granted";
+    } else if (result.status === "not_required") {
+      statusElement.textContent = translate("settings.accessibility.notRequired");
+      statusElement.className = "permission-status granted";
+    } else {
+      statusElement.textContent = translate("settings.accessibility.denied");
+      statusElement.className = "permission-status denied";
+    }
+  } catch (error) {
+    console.error("Failed to check accessibility permission:", error);
+    statusElement.textContent = translate("settings.permission.error");
+    statusElement.className = "permission-status denied";
+  }
+}
+
+async function recheckAccessibilityPermission() {
+  if (!ipc) {
+    return;
+  }
+
+  const statusElement = document.getElementById("accessibilityStatus");
+  if (!statusElement) {
+    return;
+  }
+
+  try {
+    statusElement.textContent = translate("settings.accessibility.rechecking");
+    statusElement.className = "permission-status";
+
+    const result = await ipc.invoke("recheck-accessibility-permission");
+    if (result.granted) {
+      statusElement.textContent = translate("settings.accessibility.granted");
+      statusElement.className = "permission-status granted";
+    } else {
+      statusElement.textContent = translate("settings.accessibility.denied");
+      statusElement.className = "permission-status denied";
+    }
+  } catch (error) {
+    console.error("Failed to recheck accessibility permission:", error);
+    statusElement.textContent = translate("settings.permission.error");
+    statusElement.className = "permission-status denied";
+  }
+}
+
+async function loadSettings() {
+  await initializeDependencies();
+
+  try {
+    currentSettings = await ipc.invoke("get-settings");
+    initI18n(currentSettings.uiLanguage);
+    applyTheme(currentSettings.uiTheme);
+
+    const provider = currentSettings.provider || "groq";
+    const providerSelect = document.getElementById("providerSelect");
+    const shortcutSelect = document.getElementById("shortcutSelect");
     const uiLanguageSelect = document.getElementById("uiLanguageSelect");
-    if (uiLanguageSelect) {
-      const uiLanguageValue = currentSettings.uiLanguage || "auto";
-      const hasOption = Array.from(uiLanguageSelect.options).some(
-        (opt) => opt.value === uiLanguageValue
-      );
-      uiLanguageSelect.value = hasOption ? uiLanguageValue : "auto";
-      uiLanguageSelect.addEventListener("change", () => {
-        setLanguage(uiLanguageSelect.value);
-        applyI18n(document);
-        checkMicrophonePermissionStatus();
-        checkAccessibilityStatus();
-      });
-    }
-
     const themeSelect = document.getElementById("themeSelect");
-    if (themeSelect) {
-      const themeValue = resolveTheme(currentSettings.uiTheme);
-      const hasOption = Array.from(themeSelect.options).some(
-        (opt) => opt.value === themeValue
-      );
-      themeSelect.value = hasOption ? themeValue : "elegant";
-      themeSelect.addEventListener("change", () => {
-        applyTheme(themeSelect.value);
-      });
-    }
-
-    // Set the selected language
     const languageSelect = document.getElementById("languageSelect");
-    if (currentSettings.language) {
-      languageSelect.value = currentSettings.language;
-    }
-
-    // Set the selected model
     const modelSelect = document.getElementById("modelSelect");
-    if (currentSettings.model) modelSelect.value = currentSettings.model;
-
-    // Configure auto-launch and start-minimized controls
     const autoLaunchCheck = document.getElementById("autoLaunchCheck");
     const startMinimizedCheck = document.getElementById("startMinimizedCheck");
-    autoLaunchCheck.checked = currentSettings.autoLaunch;
-    startMinimizedCheck.checked = currentSettings.startMinimized;
+    const apiKeyGroq = document.getElementById("apiKeyGroq");
+    const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
 
-    // Check initial permission status
-    await checkMicrophonePermissionStatus();
-    await checkAccessibilityStatus();
-    setupShortcutSync();
+    setSelectValue(providerSelect, provider, "groq");
+    updateModelOptions(provider);
+    toggleApiKeyVisibility(provider);
+
+    if (apiKeyGroq) {
+      apiKeyGroq.value = currentSettings.apiKeyGroq || currentSettings.apiKey || "";
+    }
+    if (apiKeyOpenAI) {
+      apiKeyOpenAI.value = currentSettings.apiKeyOpenAI || "";
+    }
+
+    setSelectValue(shortcutSelect, currentSettings.shortcut || "Ctrl+Shift", "Ctrl+Shift");
+    setSelectValue(uiLanguageSelect, currentSettings.uiLanguage || "auto", "auto");
+    setSelectValue(themeSelect, resolveTheme(currentSettings.uiTheme), "elegant");
+    setSelectValue(languageSelect, currentSettings.language || "auto", "auto");
+    setSelectValue(modelSelect, currentSettings.model, modelSelect?.options[0]?.value || "");
+
+    if (autoLaunchCheck) {
+      autoLaunchCheck.checked = !!currentSettings.autoLaunch;
+    }
+    if (startMinimizedCheck) {
+      startMinimizedCheck.checked = !!currentSettings.startMinimized;
+    }
+
+    await Promise.all([
+      checkMicrophonePermissionStatus(),
+      checkAccessibilityStatus(),
+    ]);
   } catch (error) {
     console.error("Failed to load settings:", error);
     initI18n("auto");
@@ -135,181 +399,82 @@ async function loadSettings() {
   }
 }
 
-function setupShortcutSync() {
-  ipcRenderer.on("shortcut-updated", (event, payload) => {
-    if (!payload || !payload.recordShortcut) {
-      return;
-    }
-    const shortcutSelect = document.getElementById("shortcutSelect");
-    if (!shortcutSelect) {
-      return;
-    }
-    const hasOption = Array.from(shortcutSelect.options).some(
-      (opt) => opt.value === payload.recordShortcut
-    );
-    shortcutSelect.value = hasOption ? payload.recordShortcut : "Ctrl+Shift";
-  });
-}
-
-async function checkMicrophonePermissionStatus() {
-  const statusElement = document.getElementById("permissionStatus");
-  try {
-    statusElement.textContent = t("settings.permission.checking");
-    statusElement.className = "permission-status";
-
-    const result = await ipcRenderer.invoke("check-microphone-permission");
-    const status = result.status; // "granted" | "denied" | "restricted" | "not-determined"
-
-    if (status === "granted" || status === "not-determined") {
-      statusElement.textContent = t("settings.permission.granted");
-      statusElement.className = "permission-status granted";
-    } else if (status === "restricted") {
-      statusElement.textContent = t("settings.permission.restricted");
-      statusElement.className = "permission-status denied";
-    } else {
-      statusElement.textContent = t("settings.permission.denied");
-      statusElement.className = "permission-status denied";
-    }
-  } catch (error) {
-    console.error("Failed to check microphone permission:", error);
-    statusElement.textContent = t("settings.permission.error");
-    statusElement.className = "permission-status denied";
-  }
-}
-
-async function checkAccessibilityStatus() {
-  try {
-    const statusElement = document.getElementById("accessibilityStatus");
-    statusElement.textContent = t("settings.permission.checking");
-    statusElement.className = "permission-status";
-
-    const result = await ipcRenderer.invoke(
-      "check-accessibility-permission"
-    );
-
-    let statusText, statusClass;
-    if (result.granted) {
-      statusText = t("settings.accessibility.granted");
-      statusClass = "granted";
-    } else if (result.status === "not_required") {
-      statusText = t("settings.accessibility.notRequired");
-      statusClass = "granted";
-    } else {
-      statusText = t("settings.accessibility.denied");
-      statusClass = "denied";
-    }
-
-    statusElement.textContent = statusText;
-    statusElement.className = `permission-status ${statusClass}`;
-  } catch (error) {
-    console.error("Failed to check accessibility permission:", error);
-    const statusElement = document.getElementById("accessibilityStatus");
-    statusElement.textContent = t("settings.permission.error");
-    statusElement.className = "permission-status denied";
-  }
-}
-
-async function recheckAccessibilityPermission() {
-  try {
-    const statusElement = document.getElementById("accessibilityStatus");
-    statusElement.textContent = t("settings.accessibility.rechecking");
-    statusElement.className = "permission-status";
-
-    const result = await ipcRenderer.invoke(
-      "recheck-accessibility-permission"
-    );
-
-    let statusText, statusClass;
-    if (result.granted) {
-      statusText = t("settings.accessibility.granted");
-      statusClass = "granted";
-    } else {
-      statusText = t("settings.accessibility.denied");
-      statusClass = "denied";
-    }
-
-    statusElement.textContent = statusText;
-    statusElement.className = `permission-status ${statusClass}`;
-  } catch (error) {
-    console.error("Failed to recheck accessibility permission:", error);
-    const statusElement = document.getElementById("accessibilityStatus");
-    statusElement.textContent = t("settings.permission.error");
-    statusElement.className = "permission-status denied";
-  }
-}
-
 async function saveSettings() {
   try {
-    const provider = document.getElementById("providerSelect").value;
+    await initializeDependencies();
+
+    const provider = document.getElementById("providerSelect")?.value || "groq";
     const themeSelect = document.getElementById("themeSelect");
     const settings = {
-      apiKeyGroq: document.getElementById("apiKeyGroq").value,
-      apiKeyOpenAI: document.getElementById("apiKeyOpenAI").value,
-      shortcut: document.getElementById("shortcutSelect").value,
-      language: document.getElementById("languageSelect").value,
-      uiLanguage: document.getElementById("uiLanguageSelect").value,
+      apiKeyGroq: document.getElementById("apiKeyGroq")?.value || "",
+      apiKeyOpenAI: document.getElementById("apiKeyOpenAI")?.value || "",
+      shortcut: document.getElementById("shortcutSelect")?.value || "Ctrl+Shift",
+      language: document.getElementById("languageSelect")?.value || "auto",
+      uiLanguage: document.getElementById("uiLanguageSelect")?.value || "auto",
       uiTheme: resolveTheme(themeSelect ? themeSelect.value : "elegant"),
-      model: document.getElementById("modelSelect").value,
+      model: document.getElementById("modelSelect")?.value || "",
       microphone: currentSettings.microphone,
-      autoLaunch: document.getElementById("autoLaunchCheck").checked,
-      startMinimized: document.getElementById("startMinimizedCheck").checked,
-      provider
+      autoLaunch: !!document.getElementById("autoLaunchCheck")?.checked,
+      startMinimized: !!document.getElementById("startMinimizedCheck")?.checked,
+      provider,
     };
 
-    await ipcRenderer.invoke("save-settings", settings);
-    window.close();
+    await ipc.invoke("save-settings", settings);
+    await closeSettings();
   } catch (error) {
     console.error("Failed to save settings:", error);
-    alert(t("settings.saveError"));
+    alert(translate("settings.saveError"));
   }
 }
 
-function closeSettings() {
-  window.close();
+async function closeSettings() {
+  try {
+    await initializeDependencies();
+    await ipc.invoke("close-settings");
+  } catch (error) {
+    console.error("Failed to close settings:", error);
+  }
 }
 
-// Load settings when page loads
-document.addEventListener("DOMContentLoaded", loadSettings);
+window.closeSettings = closeSettings;
+window.saveSettings = saveSettings;
+if (typeof document !== "undefined" && document.documentElement) {
+  document.documentElement.setAttribute("data-settings-handlers-exposed", "1");
+}
 
-// Listen to provider changes
-document.getElementById("providerSelect").addEventListener("change", (e) => {
-  updateModelOptions(e.target.value);
-  if (typeof toggleApiKeyVisibility === "function") {
-    toggleApiKeyVisibility(e.target.value);
+async function bootstrapSettingsPage() {
+  try {
+    if (document?.documentElement) {
+      document.documentElement.setAttribute("data-settings-bootstrap-started", "1");
+    }
+    await initializeDependencies();
+    bindEventHandlers();
+    setupShortcutSync();
+    setupThemeSync();
+    await loadSettings();
+    if (document?.documentElement) {
+      document.documentElement.setAttribute("data-settings-bootstrap-complete", "1");
+    }
+  } catch (error) {
+    console.error("Failed to initialize settings page:", error);
+    if (document?.documentElement) {
+      document.documentElement.setAttribute(
+        "data-settings-bootstrap-error",
+        String(error?.message || error)
+      );
+    }
+    applyTheme("elegant");
+    const fallbackI18n = window.WhispLineI18n;
+    if (fallbackI18n && typeof fallbackI18n.initI18n === "function") {
+      fallbackI18n.initI18n("auto");
+    }
   }
-});
+}
 
-// Permission check buttons
-document
-  .getElementById("checkPermission")
-  .addEventListener("click", checkMicrophonePermissionStatus);
-
-document
-  .getElementById("checkAccessibility")
-  .addEventListener("click", recheckAccessibilityPermission);
-
-ipcRenderer.on("ui-theme-updated", (event, payload) => {
-  if (!payload) return;
-  applyTheme(payload.theme);
-  const themeSelect = document.getElementById("themeSelect");
-  if (themeSelect) {
-    themeSelect.value = resolveTheme(payload.theme);
-  }
-});
-
-// Sidebar navigation
-document.querySelectorAll(".sidebar-item").forEach((item) => {
-  item.addEventListener("click", () => {
-    document
-      .querySelectorAll(".sidebar-item")
-      .forEach((i) => i.classList.remove("active"));
-    item.classList.add("active");
-
-    const target = item.getAttribute("data-section");
-    document
-      .querySelectorAll(".content-section")
-      .forEach((sec) => sec.classList.remove("active"));
-    const content = document.getElementById(`section-${target}`);
-    if (content) content.classList.add("active");
-  });
-});
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => {
+    void bootstrapSettingsPage();
+  }, { once: true });
+} else {
+  void bootstrapSettingsPage();
+}

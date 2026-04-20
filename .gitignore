@@ -3,3 +3,6 @@ node_modules/
 dist/
 TODO.md
 .claude/settings.local.json
+src-tauri/target/
+src-tauri/gen/
+.claude/

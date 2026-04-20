@@ -1,0 +1,100 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "WhispLine",
+  "version": "1.0.84",
+  "identifier": "com.tao.whispline",
+  "build": {
+    "frontendDist": "../src/views",
+    "beforeDevCommand": null,
+    "beforeBuildCommand": null
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "WhispLine",
+        "url": "main.html",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 700,
+        "minHeight": 500,
+        "visible": false,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "titleBarStyle": "Visible"
+      },
+      {
+        "label": "settings",
+        "title": "Settings - WhispLine",
+        "url": "settings.html",
+        "width": 900,
+        "height": 750,
+        "visible": false,
+        "center": true,
+        "resizable": false,
+        "decorations": true,
+        "titleBarStyle": "Visible",
+        "shadow": true,
+        "focus": true,
+        "parent": "main"
+      },
+      {
+        "label": "input-prompt",
+        "title": "Voice Input",
+        "url": "input-prompt.html",
+        "width": 400,
+        "height": 100,
+        "visible": false,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg"
+    ],
+    "category": "public.app-category.productivity",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15.0",
+      "signingIdentity": null,
+      "hardenedRuntime": true,
+      "entitlements": "../build/entitlements.mac.plist",
+      "infoPlist": "Info.plist",
+      "dmg": {
+        "windowSize": {
+          "width": 680,
+          "height": 440
+        },
+        "appPosition": {
+          "x": 210,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 470,
+          "y": 170
+        }
+      }
+    }
+  }
+}
