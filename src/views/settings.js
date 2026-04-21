@@ -28,6 +28,8 @@ let currentSettings = {};
 let pageEventsBound = false;
 let shortcutSyncBound = false;
 let themeSyncBound = false;
+let pendingAccessibilityRecheck = false;
+let accessibilityRecheckTimer = null;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,7 +192,7 @@ function bindEventHandlers() {
     void checkMicrophonePermissionStatus();
   });
   checkAccessibilityButton?.addEventListener("click", () => {
-    void recheckAccessibilityPermission();
+    void handleAccessibilityPermission();
   });
   closeSettingsButton?.addEventListener("click", () => {
     void closeSettings();
@@ -208,6 +210,15 @@ function bindEventHandlers() {
     }
   });
 
+  window.addEventListener("focus", () => {
+    scheduleAccessibilityRecheck();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      scheduleAccessibilityRecheck();
+    }
+  });
+
   document.querySelectorAll(".sidebar-item").forEach((item) => {
     item.addEventListener("click", handleSidebarClick);
   });
@@ -215,6 +226,85 @@ function bindEventHandlers() {
   window.closeSettings = closeSettings;
   window.saveSettings = saveSettings;
   pageEventsBound = true;
+}
+
+function renderAccessibilityStatus(result) {
+  const statusElement = document.getElementById("accessibilityStatus");
+  if (!statusElement) {
+    return;
+  }
+
+  if (!result) {
+    statusElement.textContent = translate("settings.permission.error");
+    statusElement.className = "permission-status denied";
+    return;
+  }
+
+  if (result.granted) {
+    statusElement.textContent = translate("settings.accessibility.granted");
+    statusElement.className = "permission-status granted";
+  } else if (result.status === "not_required") {
+    statusElement.textContent = translate("settings.accessibility.notRequired");
+    statusElement.className = "permission-status granted";
+  } else {
+    statusElement.textContent = translate("settings.accessibility.denied");
+    statusElement.className = "permission-status denied";
+  }
+}
+
+function scheduleAccessibilityRecheck() {
+  if (!pendingAccessibilityRecheck) {
+    return;
+  }
+
+  if (accessibilityRecheckTimer) {
+    window.clearTimeout(accessibilityRecheckTimer);
+  }
+
+  accessibilityRecheckTimer = window.setTimeout(() => {
+    accessibilityRecheckTimer = null;
+    pendingAccessibilityRecheck = false;
+    void recheckAccessibilityPermission();
+  }, 400);
+}
+
+async function requestAccessibilityPermission() {
+  if (!ipc) {
+    return null;
+  }
+
+  const statusElement = document.getElementById("accessibilityStatus");
+  if (!statusElement) {
+    return null;
+  }
+
+  try {
+    statusElement.textContent = translate("settings.accessibility.rechecking");
+    statusElement.className = "permission-status";
+
+    const result = await ipc.invoke("request-accessibility-permission");
+    renderAccessibilityStatus(result);
+    return result;
+  } catch (error) {
+    console.error("Failed to request accessibility permission:", error);
+    renderAccessibilityStatus(null);
+    return null;
+  }
+}
+
+async function handleAccessibilityPermission() {
+  const result = await requestAccessibilityPermission();
+  if (!result || result.granted || result.status === "not_required") {
+    return;
+  }
+
+  try {
+    pendingAccessibilityRecheck = true;
+    await ipc.invoke("show-permission-dialog");
+  } catch (error) {
+    pendingAccessibilityRecheck = false;
+    console.error("Failed to open accessibility settings:", error);
+  }
 }
 
 function setupShortcutSync() {
@@ -285,12 +375,12 @@ async function checkMicrophonePermissionStatus() {
 
 async function checkAccessibilityStatus() {
   if (!ipc) {
-    return;
+    return null;
   }
 
   const statusElement = document.getElementById("accessibilityStatus");
   if (!statusElement) {
-    return;
+    return null;
   }
 
   try {
@@ -298,31 +388,23 @@ async function checkAccessibilityStatus() {
     statusElement.className = "permission-status";
 
     const result = await ipc.invoke("check-accessibility-permission");
-    if (result.granted) {
-      statusElement.textContent = translate("settings.accessibility.granted");
-      statusElement.className = "permission-status granted";
-    } else if (result.status === "not_required") {
-      statusElement.textContent = translate("settings.accessibility.notRequired");
-      statusElement.className = "permission-status granted";
-    } else {
-      statusElement.textContent = translate("settings.accessibility.denied");
-      statusElement.className = "permission-status denied";
-    }
+    renderAccessibilityStatus(result);
+    return result;
   } catch (error) {
     console.error("Failed to check accessibility permission:", error);
-    statusElement.textContent = translate("settings.permission.error");
-    statusElement.className = "permission-status denied";
+    renderAccessibilityStatus(null);
+    return null;
   }
 }
 
 async function recheckAccessibilityPermission() {
   if (!ipc) {
-    return;
+    return null;
   }
 
   const statusElement = document.getElementById("accessibilityStatus");
   if (!statusElement) {
-    return;
+    return null;
   }
 
   try {
@@ -330,17 +412,12 @@ async function recheckAccessibilityPermission() {
     statusElement.className = "permission-status";
 
     const result = await ipc.invoke("recheck-accessibility-permission");
-    if (result.granted) {
-      statusElement.textContent = translate("settings.accessibility.granted");
-      statusElement.className = "permission-status granted";
-    } else {
-      statusElement.textContent = translate("settings.accessibility.denied");
-      statusElement.className = "permission-status denied";
-    }
+    renderAccessibilityStatus(result);
+    return result;
   } catch (error) {
     console.error("Failed to recheck accessibility permission:", error);
-    statusElement.textContent = translate("settings.permission.error");
-    statusElement.className = "permission-status denied";
+    renderAccessibilityStatus(null);
+    return null;
   }
 }
 

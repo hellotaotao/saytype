@@ -314,13 +314,16 @@ pub fn check_accessibility_permission() -> AccessibilityStatus {
 }
 
 #[tauri::command]
-pub fn request_accessibility_permission() -> AccessibilityStatus {
-  accessibility_status(true)
+pub fn request_accessibility_permission(app: AppHandle, state: State<'_, AppState>) -> AccessibilityStatus {
+  sync_accessibility_status(app, state, accessibility_status(true))
 }
 
 #[tauri::command]
 pub fn recheck_accessibility_permission(app: AppHandle, state: State<'_, AppState>) -> AccessibilityStatus {
-  let status = accessibility_status(false);
+  sync_accessibility_status(app, state, accessibility_status(false))
+}
+
+fn sync_accessibility_status(app: AppHandle, state: State<'_, AppState>, status: AccessibilityStatus) -> AccessibilityStatus {
   let mut previous = state.accessibility.lock().unwrap();
   let changed = previous.map(|value| value != status.granted).unwrap_or(true);
   let became_granted = previous.map(|value| !value && status.granted).unwrap_or(status.granted);
