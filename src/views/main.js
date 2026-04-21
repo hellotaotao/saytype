@@ -32,7 +32,7 @@ async function initializeMainPage() {
     const version = await ipc.invoke("get-app-version");
     const element = document.getElementById("appVersion");
     if (element) {
-      element.textContent = `v${version}`;
+      element.textContent = `v${version} · Tauri`;
     }
   } catch (error) {
     console.error("Failed to load app version", error);
