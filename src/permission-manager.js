@@ -36,7 +36,7 @@ class PermissionManager extends EventEmitter {
     const result = await dialog.showMessageBox(null, {
       type: "warning",
       title: "Accessibility Permission Required",
-      message: "WhispLine needs Accessibility permission for global hotkeys and automatic paste into other apps. It does not require Input Monitoring.",
+      message: "SayType needs Accessibility permission for global hotkeys and automatic paste into other apps. It does not require Input Monitoring.",
       detail: "Please grant Accessibility permission in System Settings if you want global hotkeys and automatic paste.\n\nWithout it, the app can still run in microphone-only mode and fall back to manual pasting.",
       buttons: ["Open System Preferences", "Continue without shortcuts", "Quit"],
       defaultId: 0,
@@ -150,7 +150,7 @@ class PermissionManager extends EventEmitter {
         const result = await dialog.showMessageBox(null, {
           type: "info",
           title: "Microphone Permission Required",
-          message: "WhispLine needs microphone access to transcribe your voice.",
+          message: "SayType needs microphone access to transcribe your voice.",
           detail: "Please grant microphone permission in the next dialog to use voice input features.",
           buttons: ["Grant Permission", "Cancel"],
           defaultId: 0,
@@ -195,8 +195,8 @@ class PermissionManager extends EventEmitter {
     const result = await dialog.showMessageBox(null, {
       type: "warning",
       title: "Microphone Permission Needed",
-      message: "WhispLine cannot access your microphone.",
-      detail: "To use voice input features, please:\n\n1. Go to System Preferences > Security & Privacy > Privacy > Microphone\n2. Enable microphone access for WhispLine\n3. Try using the voice input again\n\nAlternatively, you can continue using the app without voice input.",
+      message: "SayType cannot access your microphone.",
+      detail: "To use voice input features, please:\n\n1. Go to System Preferences > Security & Privacy > Privacy > Microphone\n2. Enable microphone access for SayType\n3. Try using the voice input again\n\nAlternatively, you can continue using the app without voice input.",
       buttons: ["Open System Preferences", "Continue Without Voice"],
       defaultId: 0,
       cancelId: 1,

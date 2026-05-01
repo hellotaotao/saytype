@@ -12,7 +12,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
   TrayIconBuilder::with_id("main-tray")
     .icon(app.default_window_icon().unwrap().clone())
     .menu(&menu)
-    .tooltip("WhispLine")
+    .tooltip("SayType")
     .show_menu_on_left_click(false)
     .on_menu_event(|app, event| match event.id.as_ref() {
       "show" => show_main_window(app),

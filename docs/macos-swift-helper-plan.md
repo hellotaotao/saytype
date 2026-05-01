@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-WhispLine may become SayType, but the core product promise stays the same: hold a global shortcut, speak, transcribe, and insert text into the currently focused macOS app. The weakest part of that promise is not transcription; it is reliable insertion into arbitrary target apps after the user grants macOS permissions.
+SayType (formerly WhispLine), but the core product promise stays the same: hold a global shortcut, speak, transcribe, and insert text into the currently focused macOS app. The weakest part of that promise is not transcription; it is reliable insertion into arbitrary target apps after the user grants macOS permissions.
 
 A native Swift helper is worth adding because it can concentrate macOS-specific input, focus, Accessibility, clipboard, and fallback behavior in a small, testable binary. It does not bypass Accessibility permission. Instead, after permission is granted, it should make focused-target detection, direct insertion, paste-based insertion, clipboard restore, focus recovery, and app-specific behavior more predictable than spreading those concerns across Rust FFI, AppleScript, web UI fallbacks, and legacy Electron code.
 
@@ -64,7 +64,7 @@ This plan is based on the current repository paths and code shape, not on a prod
 - Focused application and focused UI element detection.
 - Direct text insertion through Accessibility or Core Graphics where appropriate.
 - Clipboard-safe paste insertion with bounded clipboard restore.
-- Focus recovery after WhispLine/SayType UI hides.
+- Focus recovery after SayType UI hides.
 - App-specific insertion strategies and fallback selection.
 - Local helper diagnostics that avoid transcript content.
 
@@ -76,7 +76,7 @@ This plan is based on the current repository paths and code shape, not on a prod
 - Dictionary or prompt management.
 - Activity history.
 - Cross-platform insertion behavior for Windows or Linux.
-- Renaming the product from WhispLine to SayType.
+- Product rename is now SayType; old repo paths and compatibility references remain WhispLine for now.
 
 ### Explicit Non-Goal
 
@@ -120,7 +120,7 @@ Transport options:
 
 Responsibilities:
 
-- Maintain last focused target before WhispLine/SayType UI appears.
+- Maintain last focused target before SayType UI appears.
 - Keep a short-lived clipboard restore token.
 - Cache target app metadata and insertion strategy.
 - Provide lower-latency insert and paste calls.
@@ -286,7 +286,7 @@ Request:
   "id": "req_insert_001",
   "command": "insert-text",
   "payload": {
-    "text": "Hello from WhispLine.",
+    "text": "Hello from SayType.",
     "target": {
       "bundleId": "com.apple.Notes"
     },
@@ -473,8 +473,8 @@ General fallback order for Phase 1:
 
 The current Tauri config uses:
 
-- product name `WhispLine`
-- bundle identifier `com.tao.whispline`
+- product name `SayType`
+- bundle identifier `com.tao.saytype`
 - hardened runtime enabled
 - macOS entitlements at `build/entitlements.mac.plist`
 - DMG target
@@ -489,13 +489,13 @@ Future helper packaging should account for:
 - Notarize the complete app bundle/DMG after the helper is included.
 - Verify Gatekeeper assessment on a clean machine.
 - Confirm whether the helper itself or the main app appears in Accessibility settings. The intended user experience should be documented before release.
-- Keep Info.plist permission descriptions aligned with the product name, especially if WhispLine is renamed to SayType.
+- Keep Info.plist permission descriptions aligned with the product name, now that the product name is SayType.
 - Revisit entitlements only if the helper requires new capabilities. Do not broaden entitlements preemptively.
 - Build universal or per-architecture helper binaries consistently with the Tauri macOS build target.
 
 Open packaging question:
 
-- If the helper is executed as a separate process, macOS TCC behavior may attribute Accessibility trust to the helper binary rather than only the parent app. The implementation phase must test whether users need to grant permission to WhispLine/SayType, the helper, or both. This is one reason Phase 1 should include explicit permission verification before shipping.
+- If the helper is executed as a separate process, macOS TCC behavior may attribute Accessibility trust to the helper binary rather than only the parent app. The implementation phase must test whether users need to grant permission to SayType, the helper, or both. This is one reason Phase 1 should include explicit permission verification before shipping.
 
 ## Verification and Manual Test Plan
 
@@ -510,7 +510,7 @@ This repo does not currently have an automated test framework for this behavior.
 
 ### Permission UX
 
-- Reset Accessibility permission with `tccutil reset Accessibility com.tao.whispline`.
+- Reset Accessibility permission with `tccutil reset Accessibility com.tao.saytype`.
 - Launch the app and confirm hotkey/insertion status clearly reports denied permission.
 - Request permission through the app and confirm macOS opens the expected Privacy & Security pane.
 - Grant permission, relaunch if needed, and confirm status changes to granted.
@@ -612,7 +612,7 @@ These are future work items only. They should not be implemented as part of this
 
 9. Update permission copy if needed.
    - Likely modified files: `src-tauri/Info.plist`, `src/views/i18n.js`, `README.md`.
-   - Purpose: accurately explain Accessibility and microphone usage, especially if product naming changes to SayType.
+   - Purpose: accurately explain Accessibility and microphone usage, especially now that product naming changed to SayType.
 
 10. Add a manual QA checklist.
     - Likely new file: `docs/macos-swift-helper-test-plan.md` or an expanded section in this file.

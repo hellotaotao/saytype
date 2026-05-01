@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const APP_IDENTIFIER: &str = "com.tao.whispline";
+pub const APP_IDENTIFIER: &str = "com.tao.saytype";
 pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const HISTORY_FILE_NAME: &str = "transcription-history.json";
 pub const DEFAULT_RECORD_SHORTCUT: &str = "Ctrl+Shift";

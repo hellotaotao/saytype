@@ -325,7 +325,7 @@ function cancelActiveTranscription(reason = "user") {
 
 // Auto-launch setup
 const autoLauncher = new AutoLaunch({
-  name: 'WhispLine',
+  name: 'SayType',
   path: app.getPath('exe'),
 });
 
@@ -556,7 +556,7 @@ function createTray() {
     ]);
 
     tray.setContextMenu(contextMenu);
-    tray.setToolTip("WhispLine");
+    tray.setToolTip("SayType");
 
     tray.on("double-click", () => {
       mainWindow.show();
@@ -786,7 +786,7 @@ function stopGlobalHotkeys() {
       try {
         // Kill any remaining uiohook processes on macOS
         if (process.platform === "darwin") {
-          exec('pkill -f "WhispLine Helper"', (_err) => {
+          exec('pkill -f "SayType Helper"', (_err) => {
             setTimeout(resolve, 100);
           });
         } else {
@@ -804,9 +804,9 @@ function stopGlobalHotkeys() {
 function cleanupOrphanedProcesses() {
   return new Promise((resolve) => {
     if (process.platform === 'darwin') {
-      exec('pgrep -f "WhispLine Helper"', (error, stdout) => {
+      exec('pgrep -f "SayType Helper"', (error, stdout) => {
         if (!error && stdout.trim()) {
-          exec('pkill -f "WhispLine Helper"', (killError) => {
+          exec('pkill -f "SayType Helper"', (killError) => {
             if (killError) {
               console.error("Failed to cleanup orphaned processes:", killError);
             }
@@ -837,10 +837,10 @@ app.whenReady().then(async () => {
   // Set up application menu to enable standard editing shortcuts
   const template = [
     {
-      label: "WhispLine",
+      label: "SayType",
       submenu: [
         {
-          label: "About WhispLine",
+          label: "About SayType",
           role: "about"
         },
         {
@@ -857,7 +857,7 @@ app.whenReady().then(async () => {
           type: "separator"
         },
         {
-          label: "Quit WhispLine",
+          label: "Quit SayType",
           accelerator: process.platform === "darwin" ? "Command+Q" : "Ctrl+Q",
           click: async () => {
             app.isQuitting = true;
@@ -1272,7 +1272,7 @@ ipcMain.handle("show-permission-dialog", async () => {
   const result = await dialog.showMessageBox(mainWindow, {
     type: "info",
     title: "Text Insertion Permission",
-    message: "WhispLine needs permission to insert text into applications.",
+    message: "SayType needs permission to insert text into applications.",
     detail:
       "The app will copy text to your clipboard as a fallback method. You can manually paste the transcribed text where needed.",
     buttons: ["Continue with Clipboard", "Cancel"],

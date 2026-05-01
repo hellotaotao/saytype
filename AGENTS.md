@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-WhispLine is an Electron app. Core logic lives in `src/`, with the main process in `src/main.js` and renderer UI in `src/views/` (HTML/CSS/JS). Platform-specific helpers live alongside (e.g., `src/macos-text-inserter-koffi.js`). Build assets and entitlements are in `assets/` and `build/`, while packaged artifacts output to `dist/`.
+SayType (formerly WhispLine) is an Electron app. Core logic lives in `src/`, with the main process in `src/main.js` and renderer UI in `src/views/` (HTML/CSS/JS). Platform-specific helpers live alongside (e.g., `src/macos-text-inserter-koffi.js`). Build assets and entitlements are in `assets/` and `build/`, while packaged artifacts output to `dist/`.
 
 ## Build, Test, and Development Commands
 - `npm install` installs dependencies.

@@ -1,5 +1,5 @@
 {
-  "name": "whisp-line",
+  "name": "saytype",
   "version": "1.0.87",
   "description": "Voice input method software built with Tauri",
   "main": "src/main.js",
@@ -47,8 +47,8 @@
     "uiohook-napi": "^1.5.4"
   },
   "build": {
-    "appId": "com.tao.whispline",
-    "productName": "WhispLine",
+    "appId": "com.tao.saytype",
+    "productName": "SayType",
     "directories": {
       "output": "dist"
     },
@@ -75,16 +75,16 @@
         }
       ],
       "extendInfo": {
-        "CFBundleDisplayName": "WhispLine",
-        "CFBundleName": "WhispLine",
-        "CFBundleIdentifier": "com.tao.whispline",
-        "NSMicrophoneUsageDescription": "WhispLine needs microphone access to transcribe your voice input.",
-        "NSAppleEventsUsageDescription": "WhispLine needs Apple Events access to insert text into other applications.",
+        "CFBundleDisplayName": "SayType",
+        "CFBundleName": "SayType",
+        "CFBundleIdentifier": "com.tao.saytype",
+        "NSMicrophoneUsageDescription": "SayType needs microphone access to transcribe your voice input.",
+        "NSAppleEventsUsageDescription": "SayType needs Apple Events access to insert text into other applications.",
         "LSMinimumSystemVersion": "10.15.0"
       }
     },
     "dmg": {
-      "title": "Install WhispLine",
+      "title": "Install SayType",
       "backgroundColor": "#f5f7fa",
       "iconSize": 120,
       "window": {

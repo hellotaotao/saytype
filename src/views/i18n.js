@@ -53,7 +53,7 @@
         copyTitle: "Copy text",
       },
       settings: {
-        title: "Settings - WhispLine",
+        title: "Settings - SayType",
         sidebarTitle: "Settings",
         section: {
           general: "General",
@@ -112,7 +112,7 @@
         },
         autoLaunch: {
           title: "Start with system",
-          description: "Automatically start WhispLine when your computer starts up.",
+          description: "Automatically start SayType when your computer starts up.",
           aria: "Start with system",
         },
         startMinimized: {
@@ -237,7 +237,7 @@
         copyTitle: "复制文本",
       },
       settings: {
-        title: "设置 - WhispLine",
+        title: "设置 - SayType",
         sidebarTitle: "设置",
         section: {
           general: "常规",
@@ -296,7 +296,7 @@
         },
         autoLaunch: {
           title: "开机自启",
-          description: "电脑启动时自动运行 WhispLine。",
+          description: "电脑启动时自动运行 SayType。",
           aria: "开机自启",
         },
         startMinimized: {

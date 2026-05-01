@@ -1,4 +1,4 @@
-# WhispLine
+# SayType
 
 A voice input method software built with Electron that allows you to dictate text in any application using hotkeys and AI transcription.
 
@@ -21,7 +21,7 @@ A voice input method software built with Electron that allows you to dictate tex
 
 ## Usage
 
-1. Launch WhispLine
+1. Launch SayType
 2. Configure your Groq API key in Settings
 3. Hold down Ctrl+Shift to start recording
 4. Speak into your microphone while holding the keys
@@ -68,8 +68,8 @@ npm run dev
 
 ## Reset macOS permissions for repeated testing
 ```
-tccutil reset Accessibility com.tao.WhispLine
-tccutil reset Microphone com.tao.WhispLine
+tccutil reset Accessibility com.tao.saytype
+tccutil reset Microphone com.tao.saytype
 ```
 
 ## Requirements

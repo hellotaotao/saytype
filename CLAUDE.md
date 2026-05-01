@@ -19,7 +19,7 @@ npm run build:linux   # Build for Linux
 
 ## Architecture Overview
 
-WhispLine is an Electron-based voice input application that transcribes speech to text using AI. The app runs in the system tray and provides global hotkey support.
+SayType (formerly SayType) is an Electron-based voice input application that transcribes speech to text using AI. The app runs in the system tray and provides global hotkey support.
 
 ### Core Components
 

@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "WhispLine",
+  "productName": "SayType",
   "version": "1.0.87",
-  "identifier": "com.tao.whispline",
+  "identifier": "com.tao.saytype",
   "build": {
     "frontendDist": "../src/views",
     "beforeDevCommand": null,
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "WhispLine (Tauri)",
+        "title": "SayType",
         "url": "main.html",
         "width": 1200,
         "height": 800,
@@ -28,7 +28,7 @@
       },
       {
         "label": "settings",
-        "title": "Settings - WhispLine (Tauri)",
+        "title": "Settings - SayType",
         "url": "settings.html",
         "width": 900,
         "height": 750,
