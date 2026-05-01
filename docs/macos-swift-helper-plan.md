@@ -76,7 +76,7 @@ This plan is based on the current repository paths and code shape, not on a prod
 - Dictionary or prompt management.
 - Activity history.
 - Cross-platform insertion behavior for Windows or Linux.
-- Product rename is now SayType; old repo paths and compatibility references remain WhispLine for now.
+- Product rename is now SayType; local code folders have moved to `SayType` / `SayType-website`, while legacy compatibility references may still use WhispLine where technically required.
 
 ### Explicit Non-Goal
 
