@@ -5,9 +5,13 @@ use crate::state::AppState;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
 use chrono::Utc;
+#[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
 use core_foundation::boolean::CFBoolean;
+#[cfg(target_os = "macos")]
 use core_foundation::dictionary::CFDictionary;
+#[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
 #[cfg(target_os = "macos")]
 use objc::{class, msg_send, sel, sel_impl};
@@ -15,7 +19,9 @@ use objc::{class, msg_send, sel, sel_impl};
 use objc::runtime::Object;
 use serde::Serialize;
 use serde_json::{json, Value};
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::time::Duration;

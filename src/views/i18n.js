@@ -79,8 +79,6 @@
         },
         permission: {
           checking: "Checking...",
-          availableElectron: "✅ Available (Electron app)",
-          available: "✅ Available",
           granted: "✅ Granted",
           denied: "❌ Denied — please enable in System Settings",
           restricted: "❌ Restricted by system policy",
@@ -178,7 +176,6 @@
         microphoneBusy: "Microphone is busy",
         microphoneUnsupported: "Microphone settings not supported",
         checkMicrophone: "Please check your microphone settings",
-        textTypedDirect: "Text typed directly",
         textInserted: "Text inserted",
         textInsertedAuto: "Text inserted automatically",
         textInsertedPartial:
@@ -263,8 +260,6 @@
         },
         permission: {
           checking: "检查中...",
-          availableElectron: "✅ 可用（Electron 应用）",
-          available: "✅ 可用",
           granted: "✅ 已授权",
           denied: "❌ 已拒绝 — 请在系统设置中开启",
           restricted: "❌ 受系统策略限制",
@@ -361,7 +356,6 @@
         microphoneBusy: "麦克风正被占用",
         microphoneUnsupported: "麦克风设置不受支持",
         checkMicrophone: "请检查麦克风设置",
-        textTypedDirect: "文本已直接输入",
         textInserted: "文本已插入",
         textInsertedAuto: "文本已自动插入",
         textInsertedPartial: "文本已自动插入（剪贴板可能仅部分恢复）",

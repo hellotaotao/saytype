@@ -401,7 +401,7 @@ class VoiceInputPrompt {
       }
 
       // Create media stream directly using getUserMedia
-      // In Electron, system-level permissions are handled by main process
+      // On macOS, microphone/Accessibility permissions are handled by the OS and the Rust backend
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 44100,
@@ -825,29 +825,11 @@ class VoiceInputPrompt {
         return { ok: false, message: result?.message };
       }
 
-      const directMethods = new Set([
-        "direct_typing",
-        "koffi_sendinput",
-        "cgevent_unicode",
-      ]);
+      const directMethods = new Set(["cgevent_unicode"]);
       const isDirect = directMethods.has(result.method);
       const pasteShortcut = this.getPasteShortcutLabel();
 
-      if (result.method === "direct_typing") {
-        if (!suppressUi) {
-          this.statusText.textContent = t("inputPrompt.textTypedDirect");
-          this.statusText.style.color = "var(--status-success)";
-          this.scheduleHidePrompt(1500);
-        }
-      } else if (result.method === "koffi_sendinput") {
-        // Windows SendInput method
-        if (!suppressUi) {
-          this.statusText.textContent = t("inputPrompt.textInserted");
-          this.statusText.style.color = "var(--status-success)";
-          // Hide prompt immediately after successful insertion on Windows
-          this.hidePrompt();
-        }
-      } else if (result.method === "cgevent_unicode") {
+      if (result.method === "cgevent_unicode") {
         // macOS CGEvent Unicode method
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textInserted");

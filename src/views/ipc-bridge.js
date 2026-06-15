@@ -97,15 +97,6 @@
     return hasWindow() && (!!window.__TAURI__ || !!window.__TAURI_INTERNALS__);
   }
 
-  function hasElectronRuntime() {
-    return (
-      hasWindow() &&
-      !!window.process &&
-      !!window.process.versions &&
-      !!window.process.versions.electron
-    );
-  }
-
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -115,10 +106,6 @@
     let internals = getTauriInternals();
     if (api || internals) {
       return { api, internals };
-    }
-
-    if (hasElectronRuntime()) {
-      return null;
     }
 
     const deadline = Date.now() + TAURI_READY_TIMEOUT_MS;
@@ -170,11 +157,6 @@
       if (resolvedRuntime.internals) {
         return resolvedRuntime.internals.invoke(command, payload);
       }
-    }
-
-    if (hasElectronRuntime()) {
-      const { ipcRenderer } = require("electron");
-      return ipcRenderer.invoke(channel, ...args);
     }
 
     throw new Error(`ipc-bridge: runtime unavailable for channel \"${channel}\"`);
@@ -244,13 +226,6 @@
           return;
         }
 
-        return;
-      }
-
-      if (hasElectronRuntime()) {
-        const { ipcRenderer } = require("electron");
-        ipcRenderer.on(channel, handler);
-        cleanup = () => ipcRenderer.removeListener(channel, handler);
         return;
       }
 

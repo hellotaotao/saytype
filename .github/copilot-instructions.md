@@ -1,42 +1,35 @@
-# WhispLine – AI Coding Instructions
+# SayType – AI Coding Instructions
 
-Concise guidance for AI agents to be productive in this codebase.
+Concise guidance for AI agents working on this branch.
 
 ## Big picture
-- Electron tray app for hold-to-record voice dictation. Global hotkeys via `uiohook-napi`: hold Ctrl+Shift to record; Shift+Alt for English output (translate mode).
-- Data flow: hotkey → show `input-prompt.html` → `getUserMedia` + `MediaRecorder` → Blob → `ipcRenderer.invoke("transcribe-audio", buffer, translateMode, mimeType)` → main `transcription-service.js` → provider SDK (Groq/OpenAI) → text → `type-text` with clipboard-based insertion → activity persisted.
+- **Tauri 2** tray app for hold-to-record voice dictation. **Rust backend** (`src-tauri/src/`) + **web frontend** (`src/views/`). This branch is **Tauri-only**; the legacy Electron app is on `main`.
+- Global hotkey: hold `Ctrl+Shift` to record; `Shift+Alt` for English output (translate mode).
+- Data flow: hotkey (Rust `hotkey.rs`, CGEventTap on macOS) → emits event → renderer shows `input-prompt.html` → `getUserMedia` + `MediaRecorder` → Blob → `bridge.invoke("transcribe-audio", buffer, translateMode, mimeType)` → Rust `commands::transcribe_audio` (reqwest multipart → Groq/OpenAI) → text → `bridge.invoke("type-text", text)` → Rust `commands::type_text` (CGEvent insert → clipboard fallback) → history appended in `migration.rs`.
 
 ## Key files
-- `src/main.js`: windows/tray lifecycle, hotkeys, and IPC handlers:
-  - transcribe: `ipcMain.handle("transcribe-audio")`
-  - text insertion: `ipcMain.handle("type-text")`
-  - prompt visibility/cleanup: `hide-input-prompt`, `cleanup-microphone`
-- `src/views/input-prompt.html`: recording UI + audio capture. Chooses `mimeType` (prefers `audio/mp4` if supported else `audio/webm;codecs=opus`), accumulates chunks, sends to main.
-- `src/services/transcription-service.js`: writes a temp file in `os.tmpdir()`; picks extension from MIME (`.m4a`/`.webm`/`.wav`), selects model, delegates to provider, cleans up.
-- Providers:
-  - `src/services/groq-transcription.js`: `whisper-large-v3(-turbo)`, uses `groq-sdk` (`audio.transcriptions/translations`).
-  - `src/services/openai-transcription.js`: `whisper-1`, `gpt-4o(-mini)-transcribe`, via `openai` SDK.
-- `src/permission-manager.js`: mic + Accessibility checks (macOS). Text insertion on macOS uses clipboard save/restore and AppleScript Cmd+V.
-- `src/database-manager.js`: persists transcription activity; main notifies `activity-updated`.
+- `src-tauri/src/lib.rs`: Tauri builder, setup (migration, tray, hotkey, config), window-close-hides, per-window entry-script injection, `invoke_handler!` registration.
+- `src-tauri/src/commands.rs`: every `#[tauri::command]` — settings, permissions (mic/Accessibility), `transcribe_audio`, `cancel_transcription`, `type_text`, history, dictionary.
+- `src-tauri/src/hotkey.rs`: global hold-to-record; macOS CGEventTap, else `rdev`.
+- `src-tauri/src/settings.rs` / `migration.rs`: JSON config + legacy-data migration + history helpers.
+- `src/views/ipc-bridge.js`: `window.__WHISPLINE_IPC__` with `invoke`/`on`; maps channel names → Tauri commands/events.
+- `src/views/input-prompt.html` / `.js`: recording UI + audio capture (prefers `audio/mp4`, else `audio/webm;codecs=opus`).
 
 ## Conventions and behavior
-- Settings via `electron-store`: keys like `provider` (default `groq`), `model` (e.g., `whisper-large-v3-turbo`), `language`, `dictionary`, `apiKeyGroq`, `apiKeyOpenAI`.
+- Settings persist as JSON via `settings.rs`: `provider` (default `groq`), `model`, `language`, `dictionary`, `apiKeyGroq`, `apiKeyOpenAI`.
 - Translate mode forces model: OpenAI → `whisper-1`; Groq → `whisper-large-v3`. Otherwise use stored `model`.
-- Audio is not transcoded; temp-file extension must match MIME. Renderer passes actual `recordingMimeType` with the buffer.
-- IPC is the contract between main and renderers—do not change channel names casually.
+- Audio is not transcoded; the renderer passes the actual recording MIME with the buffer; Rust picks the file extension from it.
+- IPC channel names are the contract between renderer and Rust — do not rename casually.
 
 ## Developer workflows
-- Install/run: `npm install`; dev: `npm run dev`; prod: `npm start` (VS Code task: “Start WhispLine”).
-- Build: `npm run build` (or platform-specific scripts if present).
-- macOS permissions reset to re-test flows:
-  - `tccutil reset Accessibility com.tao.WhispLine`
-  - `tccutil reset Microphone com.tao.WhispLine`
-
-## Integration notes
-- Audio formats: `audio/mp4` (m4a/AAC) or `audio/webm;codecs=opus` (WebM/Opus) from renderer; both accepted by Groq/OpenAI. Prefer consistent MIME at the recorder to avoid mismatched extensions.
-- Native deps: `uiohook-napi` is native; rebuilds may be needed across platforms.
+- Install/run: `npm install` (only `@tauri-apps/cli`); dev: `npm run dev` (= `tauri dev`). Building needs a Rust toolchain.
+- Build: `npm run build` (or `build:mac` / `build:win` / `build:linux`).
+- Rust tests: `cd src-tauri && cargo test`.
+- macOS permission reset for re-testing:
+  - `tccutil reset Accessibility com.tao.saytype`
+  - `tccutil reset Microphone com.tao.saytype`
 
 ## When adding features
-- Respect existing IPC channels and window responsibilities. If adding settings, wire through `electron-store` and `settings.html`.
-- For new transcription models, update provider `getSupportedModels()` and ensure `transcription-service` mapping (translate mode) stays coherent.
-- Keep temporary-file handling and cleanup intact; avoid blocking the main thread.
+- New IPC command → update **three** places: `#[tauri::command]` in `commands.rs`, registration in `lib.rs`, and the `tauriCommands`/`tauriArgs` maps in `ipc-bridge.js`.
+- Keep new UI strings in `src/views/i18n.js`.
+- Text insertion and the global hotkey are macOS-only today; Windows/Linux insertion is not yet implemented in Rust.

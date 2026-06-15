@@ -2,66 +2,89 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Branch note:** This branch is the **Tauri** implementation and is **Tauri-only** — there is no Electron code here. The legacy Electron version lives on the `main` branch and is kept as the shipping/production app until Tauri is proven stable. Do not reintroduce Electron dependencies on this branch.
+
 ## Development Commands
 
 ```bash
-# Development
-npm start              # Run in production mode
-npm run dev           # Run in development mode with --dev flag
-npm install           # Install dependencies
+npm install            # Install JS tooling (only @tauri-apps/cli)
+npm run dev            # Run the app in dev mode (tauri dev)
+npm start              # Alias for tauri dev
 
-# Building
-npm run build         # Build for all platforms
-npm run build:mac     # Build for macOS
-npm run build:win     # Build for Windows  
-npm run build:linux   # Build for Linux
+npm run build          # Bump build patch + tauri build (current host target)
+npm run build:mac      # Build for macOS (aarch64-apple-darwin)
+npm run build:win      # Build for Windows (x86_64-pc-windows-msvc)
+npm run build:linux    # Build for Linux (x86_64-unknown-linux-gnu)
 ```
+
+Building requires a **Rust toolchain** (`rustup`) in addition to Node + `@tauri-apps/cli`.
+`npm run version:tauri:patch` (run automatically by the build scripts) bumps the patch
+version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` via
+`scripts/bump-tauri-version.js`.
 
 ## Architecture Overview
 
-SayType (formerly SayType) is an Electron-based voice input application that transcribes speech to text using AI. The app runs in the system tray and provides global hotkey support.
+SayType is a Tauri 2 voice-input app: a **Rust backend** (`src-tauri/src/`) hosting a
+**web frontend** (`src/views/`). It runs in the system tray with a global hold-to-record
+hotkey, transcribes speech via a cloud Whisper API, and inserts the text into the focused app.
 
-### Core Components
+### Rust backend (`src-tauri/src/`)
 
-- **Main Process** (`src/main.js`): Electron main process handling windows, system tray, global hotkeys, and IPC
-- **Permission Manager** (`src/permission-manager.js`): Client-side permission handling for microphone access
-- **UI Views** (`src/views/`): HTML interfaces for main window, settings, and input prompt overlay
+- `main.rs` — thin entry, calls `whispline_lib::run()`.
+- `lib.rs` — builds the Tauri app: manages `AppState`; on `setup` runs migration, creates the
+  tray, reads config, checks Accessibility, and starts the hotkey listener; on window close
+  hides `main`/`settings` instead of quitting; on page load **injects the per-window entry
+  script** (`main.js` / `settings.js` / `input-prompt.js`) into the webview; registers all
+  `#[tauri::command]` handlers.
+- `commands.rs` — all Tauri commands: settings get/save, window control, microphone cleanup,
+  `transcribe_audio` (reqwest multipart → Groq/OpenAI, model/translate handling),
+  `cancel_transcription`, `type_text` (macOS CGEvent Unicode insert → clipboard + osascript
+  Cmd+V fallback), permission checks (microphone via AVFoundation, Accessibility via
+  `AXIsProcessTrustedWithOptions`), history, and dictionary.
+- `hotkey.rs` — global hold-to-record. On macOS uses a CGEventTap (only when Accessibility is
+  trusted); elsewhere falls back to `rdev::listen`. Parses the modifier-only shortcut
+  (default `Ctrl+Shift`) and emits start/stop/cancel recording events.
+- `settings.rs` — JSON config read/write in the app data dir, shortcut normalization,
+  auto-launch, API-key selection.
+- `migration.rs` — one-time import of legacy WhispLine (Electron) `electron-store` config and
+  history JSON into the new location; also the history read/write helpers used by commands.
+- `tray.rs`, `state.rs` — system tray and shared app state (Accessibility status, hotkey handle).
 
-### Key Architecture Patterns
+### Frontend (`src/views/`)
 
-1. **Multi-Window Architecture**: 
-   - Main window (hidden by default, shows on tray click)
-   - Settings window (modal dialog)
-   - Input prompt window (overlay for recording visualization)
+- HTML/CSS/JS for three windows: `main`, `settings`, `input-prompt` (declared in
+  `src-tauri/tauri.conf.json`, served from `frontendDist: ../src/views`, no bundler).
+- `ipc-bridge.js` — the IPC abstraction. Exposes `window.__WHISPLINE_IPC__` with
+  `invoke(channel, ...args)` and `on(channel, handler)`, mapping renderer channel names
+  (e.g. `transcribe-audio`) to Tauri commands (`transcribe_audio`) and Tauri event listeners.
+- `i18n.js` — UI strings (add new copy here).
 
-2. **Global Hotkey System**: Uses `uiohook-napi` for cross-platform global keyboard shortcuts (Ctrl+Shift hold-to-record)
+### IPC contract
 
-3. **Permission Flow**: Comprehensive permission checking for microphone and accessibility (macOS) with fallback to clipboard-based text insertion
+Renderer → Rust: `bridge.invoke("type-text", text)` → Tauri `invoke("type_text", { text })`.
+Rust → Renderer: `app.emit("shortcut-updated", …)` / `"ui-theme-updated"` /
+`"accessibility-permission-changed"`, received via `bridge.on(...)`.
 
-4. **IPC Communication**: Extensive use of `ipcMain.handle()` and `ipcRenderer.invoke()` for main/renderer communication
+**When adding a new IPC command, update three places:** the `#[tauri::command]` in
+`commands.rs`, its registration in the `invoke_handler!` list in `lib.rs`, and the
+`tauriCommands` (and `tauriArgs` if it takes arguments) maps in `ipc-bridge.js`.
 
-### Critical Dependencies
+## Platform-Specific Considerations
 
-- **uiohook-napi**: Global keyboard event capture (requires accessibility permissions on macOS)
-- **groq-sdk**: AI transcription via Groq's Whisper API  
-- **electron-store**: Persistent settings storage
+- **macOS**: requires Microphone and Accessibility permissions; entitlements at
+  `build/entitlements.mac.plist` (referenced by `tauri.conf.json`). Text insertion and the
+  global hotkey are implemented for macOS; **Windows/Linux insertion is not yet implemented**
+  in the Rust backend.
+- Reset macOS permissions when re-testing:
+  ```
+  tccutil reset Accessibility com.tao.saytype
+  tccutil reset Microphone com.tao.saytype
+  ```
 
-### Platform-Specific Considerations
+## Development Notes
 
-- **macOS**: Requires microphone and accessibility permissions, has special entitlements file
-- **Windows/Linux**: Uses NSIS/AppImage packaging respectively
-- Permission dialogs and system settings integration vary by platform
-
-### File Structure
-
-- `src/main.js`: Main Electron process with window management and global hotkey setup
-- `src/permission-manager.js`: Browser-side permission utilities and device enumeration  
-- `src/views/`: HTML/CSS/JS for each window interface
-- `build/`: Platform-specific build configuration (entitlements, etc.)
-
-### Development Notes
-
-- App uses `electron-store` for settings persistence
-- Global shortcuts are hardcoded to Ctrl+Shift (not user-configurable)
-- Text insertion falls back to clipboard copy on permission failures
-- Temporary audio files created in system temp directory during transcription
+- Global shortcut is hold `Ctrl+Shift` to record (hardcoded default); Shift+Alt triggers
+  translate mode. Text insertion falls back to clipboard + auto-paste when direct insert fails.
+- There is no JS runtime dependency: the frontend is plain static HTML/CSS/JS. All business
+  logic (transcription, settings, history, hotkey, insertion) lives in Rust.
+- Rust unit tests exist (e.g. `migration.rs`, `settings.rs`); run with `cargo test` in `src-tauri/`.
