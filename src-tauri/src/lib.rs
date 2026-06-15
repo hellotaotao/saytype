@@ -122,6 +122,15 @@ pub fn run() {
       commands::get_dictionary,
       commands::save_dictionary,
     ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|_app_handle, _event| {
+      // macOS: clicking the Dock icon (or relaunching the app) when no window
+      // is visible — e.g. after starting minimized — should bring the main
+      // window back, matching standard macOS behavior.
+      #[cfg(target_os = "macos")]
+      if let tauri::RunEvent::Reopen { .. } = _event {
+        tray::show_main_window(_app_handle);
+      }
+    });
 }
