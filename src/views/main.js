@@ -15,6 +15,13 @@ function applyTheme(value) {
 }
 
 async function initializeMainPage() {
+  // The entry script runs twice (the <script> tag plus the Rust on-page-load
+  // injection); guard so listeners and data loads are only wired up once.
+  if (window.__sayTypeMainStarted) {
+    return;
+  }
+  window.__sayTypeMainStarted = true;
+
   let settings = null;
   try {
     settings = await ipc.invoke("get-settings");

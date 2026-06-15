@@ -384,6 +384,39 @@ class VoiceInputPrompt {
     this.pendingInsertionsById.clear();
   }
 
+  async hasUsableApiKey() {
+    try {
+      const settings = await ipc.invoke("get-settings");
+      if (!settings) {
+        return true;
+      }
+      // Mirror the backend's selected_api_key(): OpenAI uses the OpenAI key
+      // (falling back to the legacy shared key), any other provider uses Groq.
+      const key =
+        settings.provider === "openai"
+          ? settings.apiKeyOpenAI || settings.apiKey
+          : settings.apiKeyGroq || settings.apiKey;
+      return hasMeaningfulText(key);
+    } catch (error) {
+      console.error("Failed to check API key before recording:", error);
+      // Don't block recording on a settings-read failure — the backend will
+      // still return a clear error if the key really is missing.
+      return true;
+    }
+  }
+
+  showApiKeyRequired() {
+    this.clearHidePromptTimer();
+    this.clearActualHideTimer();
+    this.stopWaveAnimation();
+    this.promptElement.classList.add("visible");
+    this.promptElement.classList.remove("recording");
+    this.promptText.textContent = t("inputPrompt.noApiKeyTitle");
+    this.statusText.textContent = t("inputPrompt.noApiKey");
+    this.statusText.style.color = "var(--status-warning-strong)";
+    this.scheduleHidePrompt(2800);
+  }
+
   async startRecording() {
     if (this.isRecording || this.starting) return;
 
@@ -391,6 +424,13 @@ class VoiceInputPrompt {
     this.clearActualHideTimer();
     this.starting = true;
     try {
+      // Pre-flight: without an API key the request can only fail, so tell the
+      // user immediately instead of recording and failing after they speak.
+      if (!(await this.hasUsableApiKey())) {
+        this.showApiKeyRequired();
+        return;
+      }
+
       // Show prompt immediately
       this.promptElement.classList.add("visible");
       this.promptText.textContent = t("inputPrompt.starting");
@@ -699,18 +739,36 @@ class VoiceInputPrompt {
     } catch (error) {
       console.error("Transcription error:", error);
       this.removePendingInsertion(sessionId);
+      // Tauri rejects with the command's Err value, which is the raw string for
+      // a Result<_, String>, so handle both string and Error shapes.
+      const message =
+        typeof error === "string"
+          ? error
+          : typeof error?.message === "string"
+            ? error.message
+            : String(error ?? "");
       const isCancelled =
-        error &&
-        (error.name === "TranscriptionCancelledError" ||
-          (typeof error.message === "string" && error.message.includes("TRANSCRIPTION_CANCELLED")));
+        (error && error.name === "TranscriptionCancelledError") ||
+        message.includes("TRANSCRIPTION_CANCELLED");
       if (allowUi) {
         if (isCancelled) {
           this.statusText.textContent = t("inputPrompt.cancelled");
           this.statusText.style.color = "var(--status-warning)";
           this.scheduleHidePrompt(300);
+        } else if (/api key not configured/i.test(message) || /no api key/i.test(message)) {
+          this.statusText.textContent = t("inputPrompt.noApiKey");
+          this.statusText.style.color = "var(--status-warning-strong)";
+          this.scheduleHidePrompt(3500);
+        } else if (/unauthorized/i.test(message) || /invalid api key/i.test(message) || /\b401\b/.test(message)) {
+          this.statusText.textContent = t("inputPrompt.invalidApiKey");
+          this.statusText.style.color = "var(--status-warning-strong)";
+          this.scheduleHidePrompt(3500);
         } else {
-          this.statusText.textContent = t("inputPrompt.transcriptionFailed");
-          this.scheduleHidePrompt(3000);
+          this.statusText.textContent = message
+            ? t("inputPrompt.transcriptionFailedReason", { reason: message })
+            : t("inputPrompt.transcriptionFailed");
+          this.statusText.style.color = "var(--status-warning-strong)";
+          this.scheduleHidePrompt(4000);
         }
       }
     } finally {
@@ -964,6 +1022,16 @@ class VoiceInputPrompt {
 }
 
 async function initializeInputPromptPage() {
+  // This entry script is delivered twice — once via the <script> tag in
+  // input-prompt.html and once via the on-page-load injection from the Rust
+  // backend. Without a guard both run and construct two VoiceInputPrompt
+  // instances, so every utterance is recorded, transcribed and inserted twice.
+  // The flag lives on `window` so both script scopes share it.
+  if (window.__sayTypeInputPromptStarted) {
+    return;
+  }
+  window.__sayTypeInputPromptStarted = true;
+
   try {
     const settings = await ipc.invoke("get-settings");
     isDev = settings?.isDev ?? false;

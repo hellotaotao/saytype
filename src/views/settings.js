@@ -520,6 +520,13 @@ if (typeof document !== "undefined" && document.documentElement) {
 }
 
 async function bootstrapSettingsPage() {
+  // The entry script runs twice (the <script> tag plus the Rust on-page-load
+  // injection); guard so the page is only bootstrapped once.
+  if (window.__sayTypeSettingsStarted) {
+    return;
+  }
+  window.__sayTypeSettingsStarted = true;
+
   try {
     if (document?.documentElement) {
       document.documentElement.setAttribute("data-settings-bootstrap-started", "1");
