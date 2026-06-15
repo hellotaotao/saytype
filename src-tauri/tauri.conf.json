@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SayType",
-  "version": "1.0.88",
+  "version": "1.0.89",
   "identifier": "com.tao.saytype",
   "build": {
     "frontendDist": "../src/views",

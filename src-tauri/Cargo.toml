@@ -1,6 +1,6 @@
 [package]
 name = "whispline"
-version = "1.0.88"
+version = "1.0.89"
 description = "Voice input method software"
 authors = ["Tao"]
 license = "PolyForm-Noncommercial-1.0.0"
