@@ -1,19 +1,29 @@
 #!/usr/bin/env node
 "use strict";
 
-// Copies the freshly built macOS .dmg out of Tauri's deep bundle directory
-// (src-tauri/target/<triple>/release/bundle/dmg/) into a top-level dist/ folder
-// and reveals it in Finder, so you don't have to dig for the installer.
+// Post-build artifact handling for macOS.
 //
-// Usage: node scripts/collect-artifacts.js [target-triple]
-//   - With a triple (e.g. aarch64-apple-darwin) it looks under that target dir.
-//   - Without one it uses the host build dir (src-tauri/target/release/bundle).
+// ALWAYS (the essential part): copy the freshly built .dmg out of Tauri's deep
+// bundle directory (src-tauri/target/<triple>/release/bundle/dmg/) into a
+// top-level dist/ folder, so every built version is archived there, and reveal
+// it in Finder.
+//
+// With --install (opt-in convenience): also mount that .dmg, copy SayType.app
+// into /Applications over the old version, detach, and relaunch it.
+//
+// Usage: node scripts/collect-artifacts.js [target-triple] [--install]
+//   - target-triple e.g. aarch64-apple-darwin (omit for a host build dir)
+//   - --install also installs the app into /Applications
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
-const triple = process.argv[2] || "";
+const args = process.argv.slice(2);
+const triple = args.find((arg) => !arg.startsWith("--")) || "";
+const wantInstall = args.includes("--install");
+
 const repoRoot = path.resolve(__dirname, "..");
 const bundleDir = path.join(repoRoot, "src-tauri", "target", triple, "release", "bundle");
 const dmgDir = path.join(bundleDir, "dmg");
@@ -43,19 +53,93 @@ for (const src of dmgs) {
   copied.push(dest);
 }
 
-console.log("\n[collect-artifacts] installer copied to dist/:");
+console.log("\n[collect-artifacts] installer archived to dist/:");
 for (const dest of copied) {
   console.log("  " + path.relative(repoRoot, dest));
 }
 
+// Newest dmg drives both the Finder reveal and the optional install.
+const newestDmg = copied
+  .map((p) => ({ p, mtime: fs.statSync(p).mtimeMs }))
+  .sort((a, b) => b.mtime - a.mtime)[0].p;
+
+if (wantInstall && process.platform === "darwin") {
+  installToApplications(newestDmg);
+}
+
 // Reveal the newest installer in Finder (macOS only, best-effort).
 if (process.platform === "darwin") {
-  const newest = copied
-    .map((p) => ({ p, mtime: fs.statSync(p).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime)[0].p;
   try {
-    execFileSync("open", ["-R", newest]);
+    execFileSync("open", ["-R", newestDmg]);
   } catch {
     // Revealing in Finder is a convenience only; ignore failures.
+  }
+}
+
+function installToApplications(dmgPath) {
+  const appName = "SayType.app";
+  const destApp = path.join("/Applications", appName);
+
+  // Quit the currently running app so the bundle can be replaced.
+  try {
+    execFileSync("osascript", ["-e", 'tell application "SayType" to quit']);
+  } catch {
+    /* not running */
+  }
+  try {
+    execFileSync("pkill", ["-f", "SayType.app/Contents/MacOS/"]);
+  } catch {
+    /* not running */
+  }
+
+  // Mount at a unique temp path so a leftover/duplicate volume name can't
+  // collide (which would mount as "SayType 1" and leak), and detach is exact.
+  const mountPoint = fs.mkdtempSync(path.join(os.tmpdir(), "saytype-dmg-"));
+  let mounted = false;
+  try {
+    execFileSync("hdiutil", [
+      "attach",
+      "-nobrowse",
+      "-noverify",
+      "-noautoopen",
+      "-mountpoint",
+      mountPoint,
+      dmgPath,
+    ]);
+    mounted = true;
+
+    const srcApp = path.join(mountPoint, appName);
+    if (!fs.existsSync(srcApp)) {
+      throw new Error(`${appName} not found in mounted dmg`);
+    }
+    fs.rmSync(destApp, { recursive: true, force: true });
+    execFileSync("ditto", [srcApp, destApp]);
+    console.log(`[collect-artifacts] installed ${appName} → /Applications (over old version)`);
+  } catch (error) {
+    console.warn(`[collect-artifacts] install skipped: ${error.message}`);
+  } finally {
+    if (mounted) {
+      try {
+        execFileSync("hdiutil", ["detach", mountPoint, "-quiet"]);
+      } catch {
+        try {
+          execFileSync("hdiutil", ["detach", mountPoint, "-force", "-quiet"]);
+        } catch {
+          /* leave it mounted rather than fail the build */
+        }
+      }
+    }
+    try {
+      fs.rmSync(mountPoint, { recursive: true, force: true });
+    } catch {
+      /* temp mountpoint cleanup is best-effort */
+    }
+  }
+
+  // Relaunch the freshly installed app.
+  try {
+    execFileSync("open", [destApp]);
+  } catch {
+    /* best-effort */
   }
 }

@@ -12,7 +12,8 @@ npm run dev            # Run the app in dev mode (tauri dev)
 npm start              # Alias for tauri dev
 
 npm run build          # Bump build patch + tauri build (current host target)
-npm run build:mac      # Build for macOS (aarch64-apple-darwin)
+npm run build:mac      # Build for macOS (aarch64-apple-darwin) → archives dmg to dist/
+npm run build:mac:install  # Same as build:mac, then install the app into /Applications
 npm run build:win      # Build for Windows (x86_64-pc-windows-msvc)
 npm run build:linux    # Build for Linux (x86_64-unknown-linux-gnu)
 ```
@@ -21,6 +22,12 @@ Building requires a **Rust toolchain** (`rustup`) in addition to Node + `@tauri-
 `npm run version:tauri:patch` (run automatically by the build scripts) bumps the patch
 version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` via
 `scripts/bump-tauri-version.js`.
+
+The mac build scripts set `CI=true` (so tauri skips the Finder-prettifying AppleScript that
+fails in non-interactive shells) and run `scripts/collect-artifacts.js`, which **always copies
+the built `.dmg` into `dist/`** — `dist/` is the kept archive of every version's installer, so
+this step must not be skipped. `build:mac:install` additionally mounts that dmg and copies
+`SayType.app` into `/Applications` over the old version, then relaunches it.
 
 ## Architecture Overview
 
