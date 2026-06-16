@@ -438,6 +438,7 @@ async function loadSettings() {
     const modelSelect = document.getElementById("modelSelect");
     const autoLaunchCheck = document.getElementById("autoLaunchCheck");
     const startMinimizedCheck = document.getElementById("startMinimizedCheck");
+    const keepMicWarmCheck = document.getElementById("keepMicWarmCheck");
     const apiKeyGroq = document.getElementById("apiKeyGroq");
     const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
 
@@ -463,6 +464,10 @@ async function loadSettings() {
     }
     if (startMinimizedCheck) {
       startMinimizedCheck.checked = !!currentSettings.startMinimized;
+    }
+    if (keepMicWarmCheck) {
+      // Default ON when the field is absent (older configs).
+      keepMicWarmCheck.checked = currentSettings.keepMicWarm !== false;
     }
 
     await Promise.all([
@@ -493,6 +498,7 @@ async function saveSettings() {
       microphone: currentSettings.microphone,
       autoLaunch: !!document.getElementById("autoLaunchCheck")?.checked,
       startMinimized: !!document.getElementById("startMinimizedCheck")?.checked,
+      keepMicWarm: document.getElementById("keepMicWarmCheck")?.checked !== false,
       provider,
     };
 

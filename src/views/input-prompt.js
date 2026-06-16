@@ -114,6 +114,13 @@ class VoiceInputPrompt {
       applyTheme(payload.theme);
     });
 
+    ipc.on("keep-mic-warm-updated", (event, payload) => {
+      if (!payload) {
+        return;
+      }
+      this.keepMicWarm = payload.keepMicWarm !== false;
+    });
+
     // Listen for start recording from main process
     ipc.on("start-recording", async (event, translateMode = false) => {
       if (this.isRecording || this.starting) {
@@ -178,6 +185,7 @@ class VoiceInputPrompt {
       if (!settings) {
         return;
       }
+      this.keepMicWarm = settings.keepMicWarm !== false;
       this.updateShortcutHint(
         settings.shortcut || DEFAULT_RECORD_SHORTCUT,
         settings.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT
