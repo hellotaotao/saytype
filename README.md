@@ -38,6 +38,9 @@ npm run build:linux
 
 Then open Settings to configure your API key.
 
+To publish a signed macOS `.dmg` to GitHub Releases (built automatically on a
+`v*` tag), see [RELEASING.md](RELEASING.md).
+
 ## Usage
 
 1. Launch SayType
