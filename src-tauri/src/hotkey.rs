@@ -9,7 +9,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 
-pub const START_DEBOUNCE: Duration = Duration::from_millis(120);
+// Recording starts the instant the modifier combo is down — there is no startup
+// gate. A press shorter than this is treated as a mis-trigger and discarded
+// (see handle_event Release / NonModifierPress). Anchored on the key-down time,
+// so it's unaffected by the frontend's getUserMedia cold-start.
+pub const CANCEL_THRESHOLD: Duration = Duration::from_millis(500);
+// After the combo is released we still wait briefly before stopping, so a small
+// stagger between the two modifier keys lifting doesn't clip the audio tail.
 pub const STOP_DEBOUNCE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +174,7 @@ pub struct HotkeyState {
   record_shortcut: Shortcut,
   translate_shortcut: Shortcut,
   is_recording: bool,
-  start_deadline: Option<Instant>,
+  record_started_at: Option<Instant>,
   stop_deadline: Option<Instant>,
   pending: Vec<Action>,
 }
@@ -180,7 +186,7 @@ impl HotkeyState {
       record_shortcut,
       translate_shortcut,
       is_recording: false,
-      start_deadline: None,
+      record_started_at: None,
       stop_deadline: None,
       pending: Vec::new(),
     }
@@ -199,37 +205,47 @@ impl HotkeyState {
   pub fn handle_event(&mut self, event: KeyEvent, now: Instant) {
     match event {
       KeyEvent::NonModifierPress => {
-        self.start_deadline = None;
-        if self.is_recording && self.active_mode().is_some() {
-          self.stop_deadline = None;
+        // A non-modifier pressed right after the combo (e.g. Ctrl+Shift+Arrow)
+        // means the user wanted a shortcut, not to record — discard the
+        // just-started recording. Only during probation, so an accidental
+        // keypress deep into a real recording doesn't nuke it.
+        if self.is_recording && self.in_probation(now) {
+          self.cancel_recording();
         }
       }
       KeyEvent::Press(key) => {
         if key == Key::Escape {
           if self.is_recording {
-            self.is_recording = false;
-            self.pending.push(Action::Cancel);
+            self.cancel_recording();
           }
-          self.start_deadline = None;
           self.stop_deadline = None;
           return;
         }
 
         let is_modifier = self.modifiers.press(key);
         if !is_modifier {
-          self.start_deadline = None;
-          if self.is_recording && self.active_mode().is_some() {
-            self.stop_deadline = None;
+          // Non-modifier (rdev path) — same combo-key discard as above.
+          if self.is_recording && self.in_probation(now) {
+            self.cancel_recording();
           }
           return;
         }
 
         if self.is_recording && self.active_mode().is_some() {
+          // Combo re-formed (e.g. a modifier re-pressed) — keep recording.
           self.stop_deadline = None;
+          return;
         }
 
-        if !self.is_recording && self.active_mode().is_some() && self.start_deadline.is_none() {
-          self.start_deadline = Some(now + START_DEBOUNCE);
+        // Combo just completed: start recording immediately — no startup gate.
+        // Mis-triggers are handled after the fact (short release / combo key).
+        if !self.is_recording && self.active_mode().is_some() {
+          if let Some(translate_mode) = self.active_mode() {
+            self.is_recording = true;
+            self.record_started_at = Some(now);
+            self.stop_deadline = None;
+            self.pending.push(Action::Start { translate_mode });
+          }
         }
       }
       KeyEvent::Release(key) => {
@@ -239,35 +255,48 @@ impl HotkeyState {
         }
 
         if self.active_mode().is_some() {
+          // Still a valid combo (an unrelated modifier lifted) — keep recording.
           self.stop_deadline = None;
-        } else {
-          if self.is_recording && self.stop_deadline.is_none() {
+        } else if self.is_recording && self.stop_deadline.is_none() {
+          // Combo broken. Too short → mis-trigger, discard. Otherwise stop after
+          // STOP_DEBOUNCE so a stagger between the keys lifting doesn't clip the
+          // tail. Held time is measured from key-down, independent of the
+          // frontend's mic cold-start.
+          let held = self
+            .record_started_at
+            .map(|started| now.saturating_duration_since(started))
+            .unwrap_or_default();
+          if held < CANCEL_THRESHOLD {
+            self.cancel_recording();
+          } else {
             self.stop_deadline = Some(now + STOP_DEBOUNCE);
           }
-          self.start_deadline = None;
         }
       }
     }
   }
 
-  pub fn handle_tick(&mut self, now: Instant) {
-    if let Some(deadline) = self.start_deadline {
-      if now >= deadline {
-        self.start_deadline = None;
-        if !self.is_recording {
-          if let Some(translate_mode) = self.active_mode() {
-            self.is_recording = true;
-            self.pending.push(Action::Start { translate_mode });
-          }
-        }
-      }
-    }
+  fn in_probation(&self, now: Instant) -> bool {
+    self
+      .record_started_at
+      .map(|started| now.saturating_duration_since(started) < CANCEL_THRESHOLD)
+      .unwrap_or(false)
+  }
 
+  fn cancel_recording(&mut self) {
+    self.is_recording = false;
+    self.record_started_at = None;
+    self.stop_deadline = None;
+    self.pending.push(Action::Cancel);
+  }
+
+  pub fn handle_tick(&mut self, now: Instant) {
     if let Some(deadline) = self.stop_deadline {
       if now >= deadline {
         self.stop_deadline = None;
         if self.is_recording && self.active_mode().is_none() {
           self.is_recording = false;
+          self.record_started_at = None;
           self.pending.push(Action::Stop);
         }
       }
@@ -275,12 +304,7 @@ impl HotkeyState {
   }
 
   pub fn next_deadline(&self) -> Option<Instant> {
-    match (self.start_deadline, self.stop_deadline) {
-      (Some(a), Some(b)) => Some(a.min(b)),
-      (Some(a), None) => Some(a),
-      (None, Some(b)) => Some(b),
-      (None, None) => None,
-    }
+    self.stop_deadline
   }
 
   pub fn drain_actions(&mut self) -> Vec<Action> {
@@ -643,26 +667,50 @@ mod tests {
   }
 
   #[test]
-  fn start_emits_after_debounce() {
+  fn start_emits_immediately_on_combo() {
     let mut state = fresh_state();
     let start = Instant::now();
     state.handle_event(KeyEvent::Press(Key::ControlLeft), start);
     state.handle_event(KeyEvent::Press(Key::ShiftLeft), start);
-    state.handle_tick(start + START_DEBOUNCE + Duration::from_millis(1));
+    // No debounce/tick: recording starts the instant the combo is down.
     assert_eq!(state.drain_actions(), vec![Action::Start { translate_mode: false }]);
   }
 
   #[test]
-  fn stop_emits_after_release() {
+  fn long_press_release_emits_stop() {
     let mut state = fresh_state();
     let start = Instant::now();
     state.handle_event(KeyEvent::Press(Key::ControlLeft), start);
     state.handle_event(KeyEvent::Press(Key::ShiftLeft), start);
-    state.handle_tick(start + START_DEBOUNCE + Duration::from_millis(1));
     let _ = state.drain_actions();
-    state.handle_event(KeyEvent::Release(Key::ShiftLeft), start + Duration::from_millis(200));
-    state.handle_tick(start + Duration::from_millis(200) + STOP_DEBOUNCE + Duration::from_millis(1));
+    let release_at = start + CANCEL_THRESHOLD + Duration::from_millis(100);
+    state.handle_event(KeyEvent::Release(Key::ShiftLeft), release_at);
+    state.handle_tick(release_at + STOP_DEBOUNCE + Duration::from_millis(1));
     assert_eq!(state.drain_actions(), vec![Action::Stop]);
+  }
+
+  #[test]
+  fn short_press_release_cancels() {
+    let mut state = fresh_state();
+    let start = Instant::now();
+    state.handle_event(KeyEvent::Press(Key::ControlLeft), start);
+    state.handle_event(KeyEvent::Press(Key::ShiftLeft), start);
+    let _ = state.drain_actions();
+    // Released well under the threshold → discarded, never transcribed.
+    state.handle_event(KeyEvent::Release(Key::ShiftLeft), start + Duration::from_millis(100));
+    assert_eq!(state.drain_actions(), vec![Action::Cancel]);
+  }
+
+  #[test]
+  fn combo_key_during_probation_cancels() {
+    let mut state = fresh_state();
+    let start = Instant::now();
+    state.handle_event(KeyEvent::Press(Key::ControlLeft), start);
+    state.handle_event(KeyEvent::Press(Key::ShiftLeft), start);
+    let _ = state.drain_actions();
+    // Ctrl+Shift+<key> → user meant a shortcut; discard the recording.
+    state.handle_event(KeyEvent::NonModifierPress, start + Duration::from_millis(20));
+    assert_eq!(state.drain_actions(), vec![Action::Cancel]);
   }
 
   #[test]
@@ -671,7 +719,6 @@ mod tests {
     let start = Instant::now();
     state.handle_event(KeyEvent::Press(Key::ControlLeft), start);
     state.handle_event(KeyEvent::Press(Key::ShiftLeft), start);
-    state.handle_tick(start + START_DEBOUNCE + Duration::from_millis(1));
     let _ = state.drain_actions();
     state.handle_event(KeyEvent::Press(Key::Escape), start + Duration::from_millis(400));
     assert_eq!(state.drain_actions(), vec![Action::Cancel]);

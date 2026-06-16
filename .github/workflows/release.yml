@@ -1,0 +1,61 @@
+name: Release
+
+# 推送形如 v1.0.90 的 tag 时触发:构建 macOS 通用二进制 DMG,
+# 用 Developer ID 签名并公证,然后创建 GitHub Release(草稿)并上传 DMG。
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write # 允许 tauri-action 创建 Release 并上传产物
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # 通用二进制需要两个 target(Intel + Apple Silicon)
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install JS tooling (@tauri-apps/cli)
+        run: npm ci
+
+      - name: Build, sign, notarize & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # —— 代码签名(Developer ID Application) ——
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # —— 公证(notarization,Apple ID 方式) ——
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          # 构建通用二进制;版本号由提交中的 Cargo.toml / tauri.conf.json 决定
+          args: --target universal-apple-darwin
+          # 用触发的 tag 作为 Release 的 tag 与标题
+          tagName: ${{ github.ref_name }}
+          releaseName: "SayType ${{ github.ref_name }}"
+          releaseBody: "下载下方的 .dmg 安装。"
+          # 先建草稿,确认无误后在 Release 页面手动点 Publish;
+          # 想完全自动发布就把它改成 false。
+          releaseDraft: true
+          prerelease: false

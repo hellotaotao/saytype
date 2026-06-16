@@ -7,7 +7,6 @@ const { initI18n, setLanguage, applyI18n, t } = window.WhispLineI18n;
 
 let isDev = false;
 
-const SHORT_PRESS_THRESHOLD_MS = 500;
 const DEFAULT_RECORD_SHORTCUT = "Ctrl+Shift";
 const DEFAULT_TRANSLATE_SHORTCUT = "Shift+Alt";
 const DEBUG_MICROPHONE_CLEANUP = false;
@@ -64,6 +63,7 @@ class VoiceInputPrompt {
     this.hidePromptTimerId = null;
     this.actualHideTimerId = null;
     this.idleReleaseTimerId = null;
+    this.keepMicWarm = MIC_KEEP_WARM;
     this.recordShortcut = DEFAULT_RECORD_SHORTCUT;
     this.translateShortcut = DEFAULT_TRANSLATE_SHORTCUT;
 
@@ -139,6 +139,12 @@ class VoiceInputPrompt {
       // Ignore stale cleanup if a new recording is already in flight,
       // otherwise it would tear down the freshly acquired mediaStream.
       if (this.isRecording || this.starting) {
+        return;
+      }
+      // When keeping the mic warm, hiding the window must NOT tear down the
+      // stream — the idle-release timer owns that. Otherwise release now.
+      if (this.shouldKeepWarm() && this.mediaStream) {
+        this.maybeScheduleIdleRelease();
         return;
       }
       this.cleanup();
@@ -440,9 +446,11 @@ class VoiceInputPrompt {
         return;
       }
 
-      // Show prompt immediately
-      this.promptElement.classList.add("visible");
-      this.promptText.textContent = t("inputPrompt.starting");
+      // Do NOT reveal the prompt during "starting": the window appearing is the
+      // signal users act on, and if it shows before the mic is actually open
+      // they start talking while getUserMedia is still spinning up and lose the
+      // first words. We only prep state here; the prompt is revealed (straight
+      // into the Listening state) after getUserMedia resolves below.
       this.statusText.textContent = "";
       if (!this.pendingInsertionOrder.length && this.transcriptionInProgressCount === 0) {
         this.transcriptionText.textContent = "";
@@ -476,8 +484,9 @@ class VoiceInputPrompt {
 
       this.mediaStream = stream;
 
-      // Update UI for recording state after permissions resolve
-      this.promptElement.classList.add("recording");
+      // Reveal the prompt now — the mic is open, so the instant the window
+      // appears it already means "you can talk" (Listening), never "starting".
+      this.promptElement.classList.add("visible", "recording");
       if (this.translateMode) {
         this.promptText.textContent = t("inputPrompt.listeningEnglish");
       } else {
@@ -562,11 +571,10 @@ class VoiceInputPrompt {
 
     this.isRecording = false;
     this.stopRecordingTimer();
-    const elapsedMs = this.recordingStartedAt
-      ? Date.now() - this.recordingStartedAt
-      : 0;
-    const isShortPress = elapsedMs <= SHORT_PRESS_THRESHOLD_MS;
-    const shouldCancel = this.cancelledShortPress || this.cancelInProgress || isShortPress;
+    // Mis-trigger discarding now lives in the Rust hotkey layer, which measures
+    // the real key-hold time (independent of mic cold-start). The frontend only
+    // cancels when explicitly told to (Esc, or Rust's Cancel → cancelRecording).
+    const shouldCancel = this.cancelledShortPress || this.cancelInProgress;
     this.cancelledShortPress = shouldCancel;
     if (this.activeRecordingSession) {
       this.activeRecordingSession.cancelledShortPress = shouldCancel;
@@ -590,7 +598,7 @@ class VoiceInputPrompt {
     // instantly; a cancelled/short press releases it right away. The idle
     // release countdown is (re)armed once transcription settles — see
     // processRecording's finally block and maybeScheduleIdleRelease().
-    const keepWarm = MIC_KEEP_WARM && !shouldCancel;
+    const keepWarm = this.shouldKeepWarm() && !shouldCancel;
     this.cleanup({ preserveAudioChunks: true, preserveStream: keepWarm });
     this.stopWaveAnimation();
     this.flushPendingInsertions();
@@ -694,6 +702,10 @@ class VoiceInputPrompt {
     logMicrophoneCleanup("Microphone cleanup completed");
   }
 
+  shouldKeepWarm() {
+    return this.keepMicWarm;
+  }
+
   clearIdleReleaseTimer() {
     if (this.idleReleaseTimerId) {
       clearTimeout(this.idleReleaseTimerId);
@@ -705,7 +717,7 @@ class VoiceInputPrompt {
   // (cancelling its pending release). Returns null when there's nothing warm
   // or the tracks have since ended, so the caller acquires a fresh stream.
   takeWarmStream() {
-    if (!MIC_KEEP_WARM || !this.mediaStream) {
+    if (!this.shouldKeepWarm() || !this.mediaStream) {
       return null;
     }
     const audioTracks = this.mediaStream.getAudioTracks();
@@ -725,7 +737,7 @@ class VoiceInputPrompt {
   // the timer is anchored to "transcription finished", not "recording stopped".
   maybeScheduleIdleRelease() {
     this.clearIdleReleaseTimer();
-    if (!MIC_KEEP_WARM || !this.mediaStream) {
+    if (!this.shouldKeepWarm() || !this.mediaStream) {
       return;
     }
     if (this.isRecording || this.starting || this.transcriptionInProgressCount > 0) {
@@ -893,6 +905,9 @@ class VoiceInputPrompt {
       errorMessageKey = "inputPrompt.microphoneUnsupported";
     }
 
+    // The prompt is no longer shown during "starting", so a getUserMedia
+    // failure must reveal it here to surface the error.
+    this.promptElement.classList.add("visible");
     this.promptText.textContent = t(errorMessageKey);
     this.statusText.textContent = t("inputPrompt.checkMicrophone");
 
@@ -1078,8 +1093,11 @@ class VoiceInputPrompt {
   }
 
   hidePrompt() {
-    // Force cleanup of any remaining resources
-    this.cleanup();
+    // Keep the mic warm across the window hiding when enabled — only release the
+    // stream here if we're NOT keeping it warm. When kept warm, the idle-release
+    // timer (armed below) is the single owner of releasing the mic. (On cancel/
+    // error paths the stream is already gone, so this preserves nothing.)
+    this.cleanup({ preserveStream: this.shouldKeepWarm() });
     this.stopRecordingTimer();
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
@@ -1100,6 +1118,9 @@ class VoiceInputPrompt {
     this.recordingStartedAt = null;
     this.cancelledShortPress = false;
     this.cancelInProgress = false;
+
+    // If a warm stream survived the cleanup above, start its release countdown.
+    this.maybeScheduleIdleRelease();
 
     this.actualHideTimerId = setTimeout(() => {
       this.actualHideTimerId = null;
