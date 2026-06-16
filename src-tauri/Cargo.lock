@@ -3451,6 +3451,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "saytype"
+version = "1.0.97"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "chrono",
+ "core-foundation 0.10.1",
+ "dirs",
+ "log",
+ "objc",
+ "rdev",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-log",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "schemars"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5143,30 +5167,6 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
-
-[[package]]
-name = "whispline"
-version = "1.0.97"
-dependencies = [
- "anyhow",
- "arboard",
- "chrono",
- "core-foundation 0.10.1",
- "dirs",
- "log",
- "objc",
- "rdev",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-log",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
-]
 
 [[package]]
 name = "winapi"

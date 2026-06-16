@@ -37,7 +37,7 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
 
 ### Rust backend (`src-tauri/src/`)
 
-- `main.rs` — thin entry, calls `whispline_lib::run()`.
+- `main.rs` — thin entry, calls `saytype_lib::run()`.
 - `lib.rs` — builds the Tauri app: manages `AppState`; on `setup` runs migration, creates the
   tray, reads config, checks Accessibility, and starts the hotkey listener; on window close
   hides `main`/`settings` instead of quitting; on page load **injects the per-window entry
@@ -61,7 +61,7 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
 
 - HTML/CSS/JS for three windows: `main`, `settings`, `input-prompt` (declared in
   `src-tauri/tauri.conf.json`, served from `frontendDist: ../src/views`, no bundler).
-- `ipc-bridge.js` — the IPC abstraction. Exposes `window.__WHISPLINE_IPC__` with
+- `ipc-bridge.js` — the IPC abstraction. Exposes `window.__SAYTYPE_IPC__` with
   `invoke(channel, ...args)` and `on(channel, handler)`, mapping renderer channel names
   (e.g. `transcribe-audio`) to Tauri commands (`transcribe_audio`) and Tauri event listeners.
 - `i18n.js` — UI strings (add new copy here).

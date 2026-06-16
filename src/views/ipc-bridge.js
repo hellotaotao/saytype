@@ -1,5 +1,5 @@
 (function () {
-  const BRIDGE_GLOBAL = "__WHISPLINE_IPC__";
+  const BRIDGE_GLOBAL = "__SAYTYPE_IPC__";
 
   if (typeof document !== "undefined" && document.documentElement) {
     document.documentElement.setAttribute("data-ipc-bridge-ran", "1");

@@ -10,7 +10,7 @@ SayType is a **Tauri 2** app. This branch is **Tauri-only** (the legacy Electron
 - `cd src-tauri && cargo test` runs the Rust unit tests; `cargo check` verifies compilation.
 
 ## Coding Style & Naming Conventions
-There is no enforced lint/format config. In Rust, match the existing 2-space-indent style and run `cargo fmt` if available. In the frontend, match existing patterns: 2-space indentation, semicolons, descriptive action-oriented names. Keep UI strings in `src/views/i18n.js`. Renderer↔backend communication goes through `src/views/ipc-bridge.js` (`window.__WHISPLINE_IPC__`) — do not call Tauri APIs directly from window scripts.
+There is no enforced lint/format config. In Rust, match the existing 2-space-indent style and run `cargo fmt` if available. In the frontend, match existing patterns: 2-space indentation, semicolons, descriptive action-oriented names. Keep UI strings in `src/views/i18n.js`. Renderer↔backend communication goes through `src/views/ipc-bridge.js` (`window.__SAYTYPE_IPC__`) — do not call Tauri APIs directly from window scripts.
 
 ## Testing Guidelines
 Rust logic should have `cargo test` coverage (see `migration.rs`, `settings.rs`). For UI/behavior changes do a manual pass: `npm run dev`, then verify tray/menu actions, the recording flow, permission prompts, and text insertion. Note platform-specific behavior in the PR (insertion and the global hotkey are macOS-only today).

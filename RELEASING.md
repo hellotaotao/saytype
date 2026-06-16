@@ -3,7 +3,7 @@
 **English** · [中文说明 ↓](#发布中文)
 
 SayType ships as a macOS `.dmg` published to the project's
-[GitHub Releases](https://github.com/hellotaotao/WhispLine/releases) page. The
+[GitHub Releases](https://github.com/hellotaotao/saytype/releases) page. The
 installer is built automatically by the
 [`Release`](.github/workflows/release.yml) GitHub Actions workflow — you never
 build or upload it by hand.
@@ -94,7 +94,7 @@ unaffected.
 [↑ English](#releasing)
 
 SayType 以 macOS `.dmg` 的形式发布到项目的
-[GitHub Releases](https://github.com/hellotaotao/WhispLine/releases) 页面。安装包由
+[GitHub Releases](https://github.com/hellotaotao/saytype/releases) 页面。安装包由
 [`Release`](.github/workflows/release.yml) GitHub Actions workflow 自动构建——你不需要
 手动构建或上传。
 

@@ -1,7 +1,7 @@
 document.documentElement.setAttribute("data-main-js-ran", "1");
 
-const ipc = window.__WHISPLINE_IPC__;
-const { initI18n, setLanguage, applyI18n, t, getLocale } = window.WhispLineI18n;
+const ipc = window.__SAYTYPE_IPC__;
+const { initI18n, setLanguage, applyI18n, t, getLocale } = window.SayTypeI18n;
 let lastRecordShortcut = "Ctrl+Shift";
 let lastTranslateShortcut = "Shift+Alt";
 const themeOptions = new Set(["midnight", "elegant"]);

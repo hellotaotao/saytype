@@ -52,8 +52,8 @@ function applyTheme(value) {
 }
 
 function getDependencies() {
-  const bridge = window.__WHISPLINE_IPC__;
-  const i18nApi = window.WhispLineI18n;
+  const bridge = window.__SAYTYPE_IPC__;
+  const i18nApi = window.SayTypeI18n;
 
   if (
     bridge &&
@@ -554,7 +554,7 @@ async function bootstrapSettingsPage() {
       );
     }
     applyTheme("elegant");
-    const fallbackI18n = window.WhispLineI18n;
+    const fallbackI18n = window.SayTypeI18n;
     if (fallbackI18n && typeof fallbackI18n.initI18n === "function") {
       fallbackI18n.initI18n("auto");
     }

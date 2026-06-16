@@ -2,8 +2,8 @@ if (typeof document !== "undefined" && document.documentElement) {
   document.documentElement.setAttribute("data-input-prompt-js-ran", "1");
 }
 
-const ipc = window.__WHISPLINE_IPC__;
-const { initI18n, setLanguage, applyI18n, t } = window.WhispLineI18n;
+const ipc = window.__SAYTYPE_IPC__;
+const { initI18n, setLanguage, applyI18n, t } = window.SayTypeI18n;
 
 let isDev = false;
 

@@ -493,7 +493,7 @@
     return currentLanguage === "zh" ? "zh-CN" : "en-US";
   }
 
-  window.WhispLineI18n = {
+  window.SayTypeI18n = {
     initI18n,
     setLanguage,
     getLanguage,
