@@ -11,6 +11,12 @@ const SHORT_PRESS_THRESHOLD_MS = 500;
 const DEFAULT_RECORD_SHORTCUT = "Ctrl+Shift";
 const DEFAULT_TRANSLATE_SHORTCUT = "Shift+Alt";
 const DEBUG_MICROPHONE_CLEANUP = false;
+// B: keep the microphone "warm" after a recording so the next one starts
+// instantly instead of paying the getUserMedia cold-start cost (which is what
+// drops the first words). The stream is only released once we've been fully
+// idle — no recording AND no in-flight transcription — for MIC_IDLE_RELEASE_MS.
+const MIC_KEEP_WARM = true;
+const MIC_IDLE_RELEASE_MS = 6000;
 const themeOptions = new Set(["midnight", "elegant"]);
 
 function resolveTheme(value) {
@@ -57,6 +63,7 @@ class VoiceInputPrompt {
     this.recordingTimerId = null;
     this.hidePromptTimerId = null;
     this.actualHideTimerId = null;
+    this.idleReleaseTimerId = null;
     this.recordShortcut = DEFAULT_RECORD_SHORTCUT;
     this.translateShortcut = DEFAULT_TRANSLATE_SHORTCUT;
 
@@ -422,6 +429,8 @@ class VoiceInputPrompt {
 
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
+    // A warm stream may be queued for release — claim it before that fires.
+    this.clearIdleReleaseTimer();
     this.starting = true;
     try {
       // Pre-flight: without an API key the request can only fail, so tell the
@@ -440,17 +449,23 @@ class VoiceInputPrompt {
         this.transcriptionText.classList.remove("visible");
       }
 
-      // Create media stream directly using getUserMedia
+      // Reuse a still-warm stream from a recent recording when we have one —
+      // this is what eliminates the getUserMedia cold-start delay (and the
+      // dropped first words) on back-to-back recordings. Otherwise acquire a
+      // fresh one.
       // On macOS, microphone/Accessibility permissions are handled by the OS and the Rust backend
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 44100,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+      let stream = this.takeWarmStream();
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            sampleRate: 44100,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+      }
 
       if (this.stopRequested) {
         this.mediaStream = stream;
@@ -571,7 +586,12 @@ class VoiceInputPrompt {
       this.mediaRecorder.stop();
     }
 
-    this.cleanup({ preserveAudioChunks: true });
+    // Keep the mic warm after a real recording so the next one starts
+    // instantly; a cancelled/short press releases it right away. The idle
+    // release countdown is (re)armed once transcription settles — see
+    // processRecording's finally block and maybeScheduleIdleRelease().
+    const keepWarm = MIC_KEEP_WARM && !shouldCancel;
+    this.cleanup({ preserveAudioChunks: true, preserveStream: keepWarm });
     this.stopWaveAnimation();
     this.flushPendingInsertions();
   }
@@ -611,11 +631,14 @@ class VoiceInputPrompt {
   }
 
   cleanup(options = {}) {
-    const { preserveAudioChunks = false } = options;
+    const { preserveAudioChunks = false, preserveStream = false } = options;
     logMicrophoneCleanup("Starting microphone cleanup...");
-    
-    // Stop all media tracks
-    if (this.mediaStream) {
+
+    // Stop all media tracks — unless we're intentionally keeping the stream
+    // warm for the next recording. When we DO release, also cancel any pending
+    // idle-release timer since the mic is gone.
+    if (this.mediaStream && !preserveStream) {
+      this.clearIdleReleaseTimer();
       logMicrophoneCleanup("Stopping media stream tracks...");
       this.mediaStream.getTracks().forEach((track) => {
         logMicrophoneCleanup(
@@ -669,6 +692,66 @@ class VoiceInputPrompt {
     }
     
     logMicrophoneCleanup("Microphone cleanup completed");
+  }
+
+  clearIdleReleaseTimer() {
+    if (this.idleReleaseTimerId) {
+      clearTimeout(this.idleReleaseTimerId);
+      this.idleReleaseTimerId = null;
+    }
+  }
+
+  // Return the warm mic stream if one is still live and reusable, claiming it
+  // (cancelling its pending release). Returns null when there's nothing warm
+  // or the tracks have since ended, so the caller acquires a fresh stream.
+  takeWarmStream() {
+    if (!MIC_KEEP_WARM || !this.mediaStream) {
+      return null;
+    }
+    const audioTracks = this.mediaStream.getAudioTracks();
+    const live =
+      audioTracks.length > 0 &&
+      audioTracks.every((track) => track.readyState === "live");
+    if (!live) {
+      this.releaseWarmStream();
+      return null;
+    }
+    this.clearIdleReleaseTimer();
+    return this.mediaStream;
+  }
+
+  // Arm the idle-release countdown, but only when we're genuinely idle: not
+  // recording, not starting, and no transcription still in flight. This is why
+  // the timer is anchored to "transcription finished", not "recording stopped".
+  maybeScheduleIdleRelease() {
+    this.clearIdleReleaseTimer();
+    if (!MIC_KEEP_WARM || !this.mediaStream) {
+      return;
+    }
+    if (this.isRecording || this.starting || this.transcriptionInProgressCount > 0) {
+      return;
+    }
+    this.idleReleaseTimerId = setTimeout(() => {
+      this.idleReleaseTimerId = null;
+      // Re-check: a recording/transcription may have begun during the wait.
+      if (this.isRecording || this.starting || this.transcriptionInProgressCount > 0) {
+        return;
+      }
+      this.releaseWarmStream();
+    }, MIC_IDLE_RELEASE_MS);
+  }
+
+  // Hard-release the warm stream and its audio graph. Driven by the idle timer.
+  releaseWarmStream() {
+    this.clearIdleReleaseTimer();
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach((track) => track.stop());
+      this.mediaStream = null;
+    }
+    if (this.audioContext && this.audioContext.state !== "closed") {
+      this.audioContext.close().catch(() => {});
+    }
+    this.audioContext = null;
   }
 
   async processRecording(recordingSession) {
@@ -781,6 +864,10 @@ class VoiceInputPrompt {
         this.updateStatusText();
       }
       await this.flushPendingInsertions();
+      // Once the last transcription settles we may be fully idle — start the
+      // countdown to release the warm mic. Anchored here (not at recording
+      // stop) so the 6s window covers "saw the result, decide to add a line".
+      this.maybeScheduleIdleRelease();
     }
   }
 
