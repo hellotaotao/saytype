@@ -45,6 +45,14 @@ async function initializeMainPage() {
     console.error("Failed to load app version", error);
   }
 
+  // Cmd+, (macOS standard "Preferences" shortcut) opens the settings window.
+  document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+      event.preventDefault();
+      openSettings();
+    }
+  });
+
   ipc.on("activity-updated", async () => {
     await loadActivities();
   });
