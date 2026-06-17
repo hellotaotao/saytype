@@ -1,6 +1,6 @@
 mod commands;
+mod history;
 mod hotkey;
-mod migration;
 mod settings;
 mod state;
 mod tray;
@@ -83,7 +83,6 @@ pub fn run() {
         )?;
       }
 
-      migration::run_if_needed()?;
       tray::create(&app.handle())?;
 
       let config = settings::read_config().unwrap_or_default();

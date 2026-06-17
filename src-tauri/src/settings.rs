@@ -301,4 +301,29 @@ mod tests {
     assert_eq!(normalize_record_shortcut("Shift+Alt"), DEFAULT_RECORD_SHORTCUT);
     assert_eq!(normalize_record_shortcut("control + option"), "Ctrl+Alt");
   }
+
+  #[test]
+  fn parses_config_from_path() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("config.json");
+    fs::write(
+      &path,
+      r#"{
+        "apiKey":"legacy",
+        "apiKeyGroq":"gsk",
+        "apiKeyOpenAI":"osk",
+        "provider":"groq",
+        "language":"en",
+        "uiTheme":"midnight"
+      }"#,
+    )
+    .unwrap();
+
+    let config = read_config_from_path(&path).unwrap();
+    assert_eq!(config.api_key, "legacy");
+    assert_eq!(config.api_key_groq, "gsk");
+    assert_eq!(config.api_key_openai, "osk");
+    assert_eq!(config.provider, "groq");
+    assert_eq!(config.language, "en");
+  }
 }

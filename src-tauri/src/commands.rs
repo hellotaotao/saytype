@@ -1,5 +1,5 @@
 use crate::hotkey;
-use crate::migration;
+use crate::history;
 use crate::settings::{self, AppConfig, SettingsPayload, TRANSLATE_SHORTCUT};
 use crate::state::AppState;
 use anyhow::{Context, Result};
@@ -359,7 +359,7 @@ fn sync_accessibility_status(app: AppHandle, state: State<'_, AppState>, status:
 
 #[tauri::command]
 pub fn get_recent_activities() -> Result<Vec<Value>, String> {
-  migration::read_history_entries().map_err(stringify_error)
+  history::read_history_entries().map_err(stringify_error)
 }
 
 #[tauri::command]
@@ -417,7 +417,7 @@ fn broadcast_settings_updates(app: &AppHandle, config: &AppConfig) -> Result<()>
 }
 
 fn append_activity(text: &str, success: bool, error: Option<String>) -> Result<()> {
-  let mut entries = migration::read_history_entries()?;
+  let mut entries = history::read_history_entries()?;
   entries.insert(
     0,
     json!({
@@ -431,7 +431,7 @@ fn append_activity(text: &str, success: bool, error: Option<String>) -> Result<(
   if entries.len() > 100 {
     entries.truncate(100);
   }
-  migration::write_history_entries(&entries)?;
+  history::write_history_entries(&entries)?;
   Ok(())
 }
 
