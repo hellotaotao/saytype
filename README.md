@@ -4,8 +4,6 @@
 
 A voice input method built with **Tauri** that lets you dictate text in any application using a global hotkey and AI transcription.
 
-> This branch is the Tauri build. The legacy Electron build lives on the `main` branch.
-
 ## Features
 
 - **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe
@@ -81,8 +79,6 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 [↑ English](#saytype)
 
 一款基于 **Tauri** 构建的语音输入法,让你通过全局快捷键和 AI 转写,在任意应用中用口述输入文字。
-
-> 此分支为 Tauri 版本。旧的 Electron 版本在 `main` 分支。
 
 ## 功能特性
 

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Branch note:** This branch is the **Tauri** implementation and is **Tauri-only** — there is no Electron code here. The legacy Electron version lives on the `main` branch and is kept as the shipping/production app until Tauri is proven stable. Do not reintroduce Electron dependencies on this branch.
+> **Note:** SayType is a **Tauri 2 + Rust** desktop app (migrated from Electron, which has been fully removed). Don't reintroduce Electron dependencies.
 
 ## Development Commands
 
@@ -38,7 +38,7 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
 ### Rust backend (`src-tauri/src/`)
 
 - `main.rs` — thin entry, calls `saytype_lib::run()`.
-- `lib.rs` — builds the Tauri app: manages `AppState`; on `setup` runs migration, creates the
+- `lib.rs` — builds the Tauri app: manages `AppState`; on `setup` creates the
   tray, reads config, checks Accessibility, and starts the hotkey listener; on window close
   hides `main`/`settings` instead of quitting; on page load **injects the per-window entry
   script** (`main.js` / `settings.js` / `input-prompt.js`) into the webview; registers all
@@ -53,8 +53,8 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   (default `Ctrl+Shift`) and emits start/stop/cancel recording events.
 - `settings.rs` — JSON config read/write in the app data dir, shortcut normalization,
   auto-launch, API-key selection.
-- `migration.rs` — one-time import of legacy WhispLine (Electron) `electron-store` config and
-  history JSON into the new location; also the history read/write helpers used by commands.
+- `history.rs` — transcription-history store: read/append/write the recent-activities list
+  (JSON `{ "activities": [...] }`) used by the history commands.
 - `tray.rs`, `state.rs` — system tray and shared app state (Accessibility status, hotkey handle).
 
 ### Frontend (`src/views/`)
@@ -94,4 +94,4 @@ Rust → Renderer: `app.emit("shortcut-updated", …)` / `"ui-theme-updated"` /
   translate mode. Text insertion falls back to clipboard + auto-paste when direct insert fails.
 - There is no JS runtime dependency: the frontend is plain static HTML/CSS/JS. All business
   logic (transcription, settings, history, hotkey, insertion) lives in Rust.
-- Rust unit tests exist (e.g. `migration.rs`, `settings.rs`); run with `cargo test` in `src-tauri/`.
+- Rust unit tests exist (e.g. `history.rs`, `settings.rs`); run with `cargo test` in `src-tauri/`.
