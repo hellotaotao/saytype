@@ -1,6 +1,6 @@
 [package]
 name = "saytype"
-version = "1.0.97"
+version = "1.0.101"
 description = "Voice input method software"
 authors = ["Tao"]
 license = "PolyForm-Noncommercial-1.0.0"
@@ -27,7 +27,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 rdev = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tauri = { version = "2.10.3", features = ["macos-private-api", "tray-icon"] }
+tauri = { version = "2.10.3", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 thiserror = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

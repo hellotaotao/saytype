@@ -9,8 +9,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
   let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
   let menu = Menu::with_items(app, &[&show, &settings, &separator, &quit])?;
 
+  // 菜单栏托盘用单色模板图标（随明暗自动反色），而非彩色 app 图标。
+  let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+
   TrayIconBuilder::with_id("main-tray")
-    .icon(app.default_window_icon().unwrap().clone())
+    .icon(tray_icon)
+    .icon_as_template(true)
     .menu(&menu)
     .tooltip("SayType")
     .show_menu_on_left_click(false)
