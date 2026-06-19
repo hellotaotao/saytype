@@ -409,10 +409,6 @@ fn broadcast_settings_updates(app: &AppHandle, config: &AppConfig) -> Result<()>
     json!({ "language": config.ui_language }),
   )?;
   app.emit("ui-theme-updated", json!({ "theme": config.ui_theme }))?;
-  app.emit(
-    "keep-mic-warm-updated",
-    json!({ "keepMicWarm": config.keep_mic_warm }),
-  )?;
   Ok(())
 }
 

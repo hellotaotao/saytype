@@ -119,12 +119,6 @@
             "When starting with system, hide the main window and run in the background.",
           aria: "Start minimized",
         },
-        keepMicWarm: {
-          title: "Keep microphone warm",
-          description:
-            "After a recording, keep the mic ready for a few seconds so the next one starts instantly. The mic indicator stays on briefly.",
-          aria: "Keep microphone warm",
-        },
         apiProvider: {
           title: "API Provider",
           description: "Choose transcription API service.",
@@ -308,11 +302,6 @@
           title: "启动时最小化",
           description: "开机自启时隐藏主窗口并在后台运行。",
           aria: "启动时最小化",
-        },
-        keepMicWarm: {
-          title: "保持麦克风热启动",
-          description: "录音结束后让麦克风再保持几秒,下次按下立即开始、避免开头丢字。其间麦克风指示灯会短暂亮着。",
-          aria: "保持麦克风热启动",
         },
         apiProvider: {
           title: "API 服务商",

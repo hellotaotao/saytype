@@ -42,10 +42,6 @@ fn default_translate_shortcut() -> String {
   TRANSLATE_SHORTCUT.into()
 }
 
-fn default_keep_mic_warm() -> bool {
-  true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -77,8 +73,6 @@ pub struct AppConfig {
   pub provider: String,
   #[serde(default)]
   pub dictionary: String,
-  #[serde(default = "default_keep_mic_warm")]
-  pub keep_mic_warm: bool,
 }
 
 impl Default for AppConfig {
@@ -98,7 +92,6 @@ impl Default for AppConfig {
       start_minimized: false,
       provider: default_provider(),
       dictionary: String::new(),
-      keep_mic_warm: default_keep_mic_warm(),
     }
   }
 }
@@ -120,7 +113,6 @@ pub struct SettingsPayload {
   pub auto_launch: bool,
   pub start_minimized: bool,
   pub provider: String,
-  pub keep_mic_warm: bool,
   #[serde(rename = "isDev")]
   pub is_dev: bool,
 }
@@ -141,7 +133,6 @@ impl SettingsPayload {
       auto_launch: config.auto_launch,
       start_minimized: config.start_minimized,
       provider: config.provider.clone(),
-      keep_mic_warm: config.keep_mic_warm,
       is_dev: cfg!(debug_assertions),
     }
   }
