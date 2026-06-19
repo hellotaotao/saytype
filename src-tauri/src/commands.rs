@@ -182,6 +182,7 @@ pub async fn transcribe_audio(
   let result = tokio::select! {
     _ = cancellation.cancelled() => Err(anyhow::anyhow!("TRANSCRIPTION_CANCELLED")),
     result = perform_transcription_request(
+      &state.http_client,
       &config,
       &api_key,
       audio_buffer,
@@ -432,6 +433,7 @@ fn append_activity(text: &str, success: bool, error: Option<String>) -> Result<(
 }
 
 async fn perform_transcription_request(
+  client: &reqwest::Client,
   config: &AppConfig,
   api_key: &str,
   audio_buffer: Vec<u8>,
@@ -489,7 +491,6 @@ async fn perform_transcription_request(
     }
   }
 
-  let client = reqwest::Client::new();
   let response = client
     .post(endpoint)
     .bearer_auth(api_key)
