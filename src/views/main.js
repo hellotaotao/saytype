@@ -2,9 +2,25 @@ document.documentElement.setAttribute("data-main-js-ran", "1");
 
 const ipc = window.__SAYTYPE_IPC__;
 const { initI18n, setLanguage, applyI18n, t, getLocale } = window.SayTypeI18n;
-let lastRecordShortcut = "Ctrl+Shift";
-let lastTranslateShortcut = "Shift+Alt";
+
 const themeOptions = new Set(["midnight", "elegant"]);
+const RECENT_LIMIT = 6;
+const KEY_SYMBOLS = {
+  ctrl: "⌃",
+  control: "⌃",
+  shift: "⇧",
+  alt: "⌥",
+  option: "⌥",
+  cmd: "⌘",
+  command: "⌘",
+  meta: "⌘",
+};
+
+let cachedSettings = null;
+let cachedActivities = [];
+let historyQuery = "";
+let clearConfirming = false;
+let clearConfirmTimer = null;
 
 function resolveTheme(value) {
   return themeOptions.has(value) ? value : "elegant";
@@ -12,6 +28,25 @@ function resolveTheme(value) {
 
 function applyTheme(value) {
   document.documentElement.setAttribute("data-theme", resolveTheme(value));
+}
+
+function shortcutKeycaps(shortcut) {
+  return String(shortcut || "")
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => KEY_SYMBOLS[part.toLowerCase()] || part);
+}
+
+function hasApiKey(settings) {
+  if (!settings) {
+    return false;
+  }
+  const key =
+    settings.provider === "openai"
+      ? settings.apiKeyOpenAI || settings.apiKey
+      : settings.apiKeyGroq || settings.apiKey;
+  return typeof key === "string" && key.trim().length > 0;
 }
 
 async function initializeMainPage() {
@@ -22,29 +57,33 @@ async function initializeMainPage() {
   }
   window.__sayTypeMainStarted = true;
 
-  let settings = null;
   try {
-    settings = await ipc.invoke("get-settings");
+    cachedSettings = await ipc.invoke("get-settings");
   } catch (error) {
     console.error("Failed to load settings for i18n:", error);
   }
 
-  initI18n(settings?.uiLanguage);
-  applyTheme(settings?.uiTheme);
+  initI18n(cachedSettings?.uiLanguage);
+  applyTheme(cachedSettings?.uiTheme);
+
   await loadActivities();
   await loadDictionary();
-  await loadShortcutHints();
+  await refreshReadiness();
 
   try {
     const version = await ipc.invoke("get-app-version");
     const element = document.getElementById("appVersion");
     if (element) {
-      element.textContent = `v${version} · Tauri`;
+      element.textContent = `v${version}`;
     }
   } catch (error) {
     console.error("Failed to load app version", error);
   }
 
+  bindEvents();
+}
+
+function bindEvents() {
   // Cmd+, (macOS standard "Preferences" shortcut) opens the settings window.
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
@@ -53,19 +92,30 @@ async function initializeMainPage() {
     }
   });
 
+  document.getElementById("helpButton")?.addEventListener("click", showHelp);
+  document.getElementById("clearHistoryBtn")?.addEventListener("click", handleClearHistory);
+  document.getElementById("historySearch")?.addEventListener("input", (event) => {
+    historyQuery = event.target.value.trim().toLowerCase();
+    renderHistory();
+  });
+
+  // Re-check readiness when the window regains focus — the user may have just
+  // granted a permission in System Settings or added a key in Settings.
+  window.addEventListener("focus", () => {
+    void refreshReadiness();
+  });
+
   ipc.on("activity-updated", async () => {
     await loadActivities();
   });
 
   ipc.on("accessibility-permission-changed", (_event, data) => {
     showNotification(data.message, data.granted ? "success" : "warning");
+    void refreshReadiness();
   });
 
-  ipc.on("shortcut-updated", (_event, payload) => {
-    if (!payload) {
-      return;
-    }
-    updateShortcutHints(payload.recordShortcut, payload.translateShortcut);
+  ipc.on("shortcut-updated", () => {
+    void refreshReadiness();
   });
 
   ipc.on("ui-language-updated", async (_event, payload) => {
@@ -74,8 +124,12 @@ async function initializeMainPage() {
     }
     setLanguage(payload.language);
     applyI18n(document);
-    updateShortcutHints(lastRecordShortcut, lastTranslateShortcut);
-    await loadActivities();
+    // applyI18n resets the clear button's text via its data-i18n attribute, so
+    // drop any in-progress two-step confirm to keep its state consistent.
+    resetClearButton();
+    await refreshReadiness();
+    renderRecent();
+    renderHistory();
   });
 
   ipc.on("ui-theme-updated", (_event, payload) => {
@@ -94,55 +148,354 @@ if (document.readyState === "loading") {
   void initializeMainPage();
 }
 
-async function loadShortcutHints() {
+/* ---------- Readiness card ---------- */
+
+async function refreshReadiness() {
   try {
-    const settings = await ipc.invoke("get-settings");
-    updateShortcutHints(settings.shortcut, settings.translateShortcut);
+    cachedSettings = await ipc.invoke("get-settings");
   } catch (error) {
-    console.error("Failed to load shortcuts:", error);
-    updateShortcutHints("Ctrl+Shift", "Shift+Alt");
+    console.error("Failed to load settings:", error);
   }
-}
 
-function formatShortcutLabel(shortcut) {
-  if (!shortcut) {
-    return "";
-  }
-  const isMac = window.navigator?.platform?.includes("Mac");
-  const label = shortcut.replace(/\+/g, " + ");
-  return isMac ? label.replace(/Alt/g, "Option") : label;
-}
-
-function updateShortcutHints(recordShortcut, translateShortcut) {
-  const recordHint = document.getElementById("recordShortcutHint");
-  const translateHint = document.getElementById("translateShortcutHint");
-  const recordLabel = formatShortcutLabel(recordShortcut || "Ctrl+Shift");
-  const translateLabel = formatShortcutLabel(translateShortcut || "Shift+Alt");
-  lastRecordShortcut = recordShortcut || lastRecordShortcut;
-  lastTranslateShortcut = translateShortcut || lastTranslateShortcut;
-
-  if (recordHint) {
-    recordHint.textContent = t("home.recordHint", { shortcut: recordLabel });
-  }
-  if (translateHint) {
-    translateHint.textContent = t("home.translateHint", { shortcut: translateLabel });
-  }
-}
-
-function showPage(pageId) {
-  document.querySelectorAll(".page").forEach((page) => {
-    page.classList.remove("active");
+  const [micOk, axOk] = await Promise.all([checkMicOk(), checkAxOk()]);
+  renderReadiness({
+    hasKey: hasApiKey(cachedSettings),
+    micOk,
+    axOk,
+    recordShortcut: cachedSettings?.shortcut || "Ctrl+Shift",
+    translateShortcut: cachedSettings?.translateShortcut || "Shift+Alt",
   });
-
-  document.getElementById(`${pageId}-page`).classList.add("active");
-
-  document.querySelectorAll(".nav-item").forEach((item) => {
-    item.classList.remove("active");
-  });
-
-  const clickEvent = window.event;
-  clickEvent?.target?.closest(".nav-item")?.classList.add("active");
 }
+
+async function checkMicOk() {
+  try {
+    const result = await ipc.invoke("check-microphone-permission");
+    return result.status === "granted" || result.status === "not-determined";
+  } catch (error) {
+    console.error("Failed to check microphone permission:", error);
+    return false;
+  }
+}
+
+async function checkAxOk() {
+  try {
+    const result = await ipc.invoke("check-accessibility-permission");
+    return !!result.granted || result.status === "not_required";
+  } catch (error) {
+    console.error("Failed to check accessibility permission:", error);
+    return false;
+  }
+}
+
+function makeIcon(name) {
+  const icon = document.createElement("span");
+  icon.className = "material-icons";
+  icon.textContent = name;
+  return icon;
+}
+
+function keycapRow(shortcut) {
+  const group = document.createDocumentFragment();
+  shortcutKeycaps(shortcut).forEach((symbol) => {
+    const cap = document.createElement("span");
+    cap.className = "kbd";
+    cap.textContent = symbol;
+    group.appendChild(cap);
+  });
+  return group;
+}
+
+function buildPill({ label, ok, onFix }) {
+  const pill = document.createElement(ok ? "span" : "button");
+  pill.className = `pill ${ok ? "ok" : "warn"}`;
+  if (!ok) {
+    pill.type = "button";
+    if (onFix) {
+      pill.addEventListener("click", onFix);
+    }
+  }
+  pill.appendChild(makeIcon(ok ? "check" : "priority_high"));
+  const text = document.createElement("span");
+  text.textContent = label;
+  pill.appendChild(text);
+  return pill;
+}
+
+function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcut }) {
+  const card = document.getElementById("readiness-card");
+  if (!card) {
+    return;
+  }
+  const allReady = hasKey && micOk && axOk;
+  card.replaceChildren();
+
+  const head = document.createElement("div");
+  head.className = "readiness-head";
+
+  const iconWrap = document.createElement("div");
+  iconWrap.className = "readiness-icon";
+  iconWrap.appendChild(makeIcon("mic"));
+
+  const titles = document.createElement("div");
+  titles.className = "readiness-titles";
+  const title = document.createElement("div");
+  title.className = "readiness-title";
+  title.textContent = allReady ? t("home.ready") : t("home.setupNeeded");
+  const sub = document.createElement("div");
+  sub.className = "readiness-sub";
+  sub.textContent = allReady ? t("home.readyHint") : t("home.setupHint");
+  titles.appendChild(title);
+  titles.appendChild(sub);
+
+  const badge = document.createElement("div");
+  badge.className = `readiness-badge ${allReady ? "ok" : "warn"}`;
+  badge.appendChild(makeIcon(allReady ? "check" : "priority_high"));
+  const badgeText = document.createElement("span");
+  badgeText.textContent = allReady ? t("home.readyBadge") : t("home.setupBadge");
+  badge.appendChild(badgeText);
+
+  head.appendChild(iconWrap);
+  head.appendChild(titles);
+  head.appendChild(badge);
+  card.appendChild(head);
+
+  const shortcuts = document.createElement("div");
+  shortcuts.className = "readiness-shortcuts";
+  [
+    { label: t("home.dictate"), shortcut: recordShortcut },
+    { label: t("home.english"), shortcut: translateShortcut },
+  ].forEach(({ label, shortcut }) => {
+    const group = document.createElement("span");
+    group.className = "shortcut-group";
+    const text = document.createElement("span");
+    text.textContent = label;
+    group.appendChild(text);
+    group.appendChild(keycapRow(shortcut));
+    shortcuts.appendChild(group);
+  });
+  card.appendChild(shortcuts);
+
+  const divider = document.createElement("div");
+  divider.className = "readiness-divider";
+  card.appendChild(divider);
+
+  const pills = document.createElement("div");
+  pills.className = "readiness-pills";
+  pills.appendChild(
+    buildPill({ label: hasKey ? t("readiness.apiKey") : t("readiness.addApiKey"), ok: hasKey, onFix: openSettings })
+  );
+  pills.appendChild(buildPill({ label: t("readiness.microphone"), ok: micOk, onFix: openSettings }));
+  pills.appendChild(buildPill({ label: t("readiness.accessibility"), ok: axOk, onFix: openSettings }));
+  card.appendChild(pills);
+}
+
+/* ---------- Activities (recent + history) ---------- */
+
+async function loadActivities() {
+  try {
+    const activities = await ipc.invoke("get-recent-activities");
+    cachedActivities = Array.isArray(activities) ? activities : [];
+  } catch (error) {
+    console.error("Error loading activities:", error);
+    cachedActivities = [];
+  }
+  renderRecent();
+  renderHistory();
+}
+
+function formatTime(timestamp) {
+  const locale = getLocale();
+  return new Date(timestamp).toLocaleTimeString(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: locale === "en-US",
+  });
+}
+
+function dateGroupLabel(timestamp) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const startOfDay = (value) =>
+    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(date)) / 86400000);
+  if (diffDays <= 0) {
+    return t("history.today");
+  }
+  if (diffDays === 1) {
+    return t("history.yesterday");
+  }
+  return date.toLocaleDateString(getLocale(), {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === now.getFullYear() ? undefined : "numeric",
+  });
+}
+
+function buildActivityRow(activity) {
+  const rawText = (activity.text ?? "").toString();
+
+  const item = document.createElement("div");
+  item.className = "activity-item";
+
+  const time = document.createElement("div");
+  time.className = "activity-time";
+  time.textContent = formatTime(activity.timestamp);
+
+  const text = document.createElement("div");
+  text.className = "activity-text";
+  if (activity.success === false) {
+    text.classList.add("failed");
+  }
+  text.textContent = rawText;
+  text.title = rawText;
+
+  const actions = document.createElement("div");
+  actions.className = "activity-actions";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "icon-btn";
+  copyBtn.type = "button";
+  copyBtn.title = t("activity.copyTitle");
+  copyBtn.setAttribute("aria-label", t("activity.copyTitle"));
+  copyBtn.appendChild(makeIcon("content_copy"));
+  copyBtn.addEventListener("click", () => copyToClipboard(rawText, copyBtn));
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "icon-btn danger";
+  deleteBtn.type = "button";
+  deleteBtn.title = t("activity.deleteTitle");
+  deleteBtn.setAttribute("aria-label", t("activity.deleteTitle"));
+  deleteBtn.appendChild(makeIcon("delete"));
+  deleteBtn.addEventListener("click", () => deleteActivity(activity.id));
+
+  actions.appendChild(copyBtn);
+  actions.appendChild(deleteBtn);
+
+  item.appendChild(time);
+  item.appendChild(text);
+  item.appendChild(actions);
+  return item;
+}
+
+function renderGroupedList(container, activities) {
+  container.replaceChildren();
+  let lastGroup = null;
+  activities.forEach((activity) => {
+    const group = dateGroupLabel(activity.timestamp);
+    if (group !== lastGroup) {
+      lastGroup = group;
+      const label = document.createElement("div");
+      label.className = "activity-group-label";
+      label.textContent = group;
+      container.appendChild(label);
+    }
+    container.appendChild(buildActivityRow(activity));
+  });
+}
+
+function renderRecent() {
+  const container = document.getElementById("activity-container");
+  if (!container) {
+    return;
+  }
+  const viewAll = document.getElementById("viewAllBtn");
+  if (viewAll) {
+    viewAll.style.display = cachedActivities.length > RECENT_LIMIT ? "" : "none";
+  }
+  if (!cachedActivities.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = t("home.noActivity");
+    container.replaceChildren(empty);
+    return;
+  }
+  renderGroupedList(container, cachedActivities.slice(0, RECENT_LIMIT));
+}
+
+function renderHistory() {
+  const container = document.getElementById("history-container");
+  if (!container) {
+    return;
+  }
+
+  if (!cachedActivities.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = t("history.empty");
+    container.replaceChildren(empty);
+    return;
+  }
+
+  const filtered = historyQuery
+    ? cachedActivities.filter((activity) =>
+        (activity.text ?? "").toString().toLowerCase().includes(historyQuery)
+      )
+    : cachedActivities;
+
+  if (!filtered.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = t("history.noResults");
+    container.replaceChildren(empty);
+    return;
+  }
+
+  renderGroupedList(container, filtered);
+}
+
+async function deleteActivity(id) {
+  if (!id) {
+    return;
+  }
+  try {
+    await ipc.invoke("delete-history-item", id);
+  } catch (error) {
+    console.error("Failed to delete history item:", error);
+    return;
+  }
+  await loadActivities();
+}
+
+function handleClearHistory() {
+  const button = document.getElementById("clearHistoryBtn");
+  if (!button) {
+    return;
+  }
+
+  if (!clearConfirming) {
+    clearConfirming = true;
+    button.textContent = t("history.confirmClear");
+    clearConfirmTimer = window.setTimeout(resetClearButton, 3000);
+    return;
+  }
+
+  resetClearButton();
+  void clearHistory();
+}
+
+function resetClearButton() {
+  const button = document.getElementById("clearHistoryBtn");
+  clearConfirming = false;
+  if (clearConfirmTimer) {
+    window.clearTimeout(clearConfirmTimer);
+    clearConfirmTimer = null;
+  }
+  if (button) {
+    button.textContent = t("history.clearAll");
+  }
+}
+
+async function clearHistory() {
+  try {
+    await ipc.invoke("clear-history");
+  } catch (error) {
+    console.error("Failed to clear history:", error);
+    return;
+  }
+  await loadActivities();
+}
+
+/* ---------- Dictionary ---------- */
 
 async function loadDictionary() {
   try {
@@ -169,116 +522,53 @@ async function saveDictionary() {
   }
 }
 
-async function loadActivities() {
-  try {
-    const activities = await ipc.invoke("get-recent-activities");
-    displayActivities(activities);
-  } catch (error) {
-    console.error("Error loading activities:", error);
-  }
-}
+/* ---------- Navigation & misc ---------- */
 
-function displayActivities(activities) {
-  const container = document.getElementById("activity-container");
-  if (!container) {
-    return;
-  }
-
-  if (!Array.isArray(activities) || activities.length === 0) {
-    const empty = document.createElement("p");
-    empty.textContent = t("home.noActivity");
-    container.replaceChildren(empty);
-    return;
-  }
-
-  container.replaceChildren();
-
-  const header = document.createElement("div");
-  header.className = "section-header";
-  const headerTitle = document.createElement("h4");
-  headerTitle.textContent = t("home.recentHeader");
-  header.appendChild(headerTitle);
-  container.appendChild(header);
-
-  activities.forEach((activity) => {
-    const locale = getLocale();
-    const time = new Date(activity.timestamp).toLocaleTimeString(locale, {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: locale === "en-US",
-    });
-
-    const rawText = (activity.text ?? "").toString();
-
-    const item = document.createElement("div");
-    item.className = "activity-item";
-
-    const content = document.createElement("div");
-    content.className = "activity-content";
-
-    const timeElement = document.createElement("div");
-    timeElement.className = "activity-time";
-    timeElement.textContent = time;
-
-    const textElement = document.createElement("div");
-    textElement.className = "activity-text";
-    textElement.textContent = rawText;
-
-    const button = document.createElement("button");
-    button.className = "copy-btn";
-    button.type = "button";
-    button.title = t("activity.copyTitle");
-    button.addEventListener("click", () => {
-      copyToClipboard(rawText, button);
-    });
-
-    const icon = document.createElement("span");
-    icon.className = "material-icons";
-    icon.textContent = "content_copy";
-
-    content.appendChild(timeElement);
-    content.appendChild(textElement);
-    button.appendChild(icon);
-    item.appendChild(content);
-    item.appendChild(button);
-    container.appendChild(item);
+function showPage(pageId) {
+  document.querySelectorAll(".page").forEach((page) => {
+    page.classList.remove("active");
   });
-}
-
-function exploreUseCases() {
-  console.log("Explore use cases clicked");
+  const page = document.getElementById(`${pageId}-page`);
+  if (page) {
+    page.classList.add("active");
+  }
+  document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
+    item.classList.toggle("active", item.getAttribute("data-page") === pageId);
+  });
+  if (pageId === "history") {
+    renderHistory();
+  }
 }
 
 function openSettings() {
   ipc.invoke("open-settings");
 }
 
+function showHelp() {
+  const record = shortcutKeycaps(cachedSettings?.shortcut || "Ctrl+Shift").join(" ");
+  const translate = shortcutKeycaps(cachedSettings?.translateShortcut || "Shift+Alt").join(" ");
+  showNotification(
+    `${t("home.dictate")}: ${record}   ·   ${t("home.english")}: ${translate}`,
+    "info"
+  );
+}
+
 async function copyToClipboard(text, button) {
+  const icon = button.querySelector(".material-icons");
+  const originalText = icon.textContent;
   try {
     await navigator.clipboard.writeText(text);
-
-    const icon = button.querySelector(".material-icons");
-    const originalText = icon.textContent;
     icon.textContent = "check";
     button.style.color = "var(--status-success)";
-
-    setTimeout(() => {
-      icon.textContent = originalText;
-      button.style.color = "";
-    }, 2000);
   } catch (error) {
     console.error("Failed to copy text:", error);
-
-    const icon = button.querySelector(".material-icons");
-    const originalText = icon.textContent;
     icon.textContent = "error";
     button.style.color = "var(--status-danger)";
-
-    setTimeout(() => {
-      icon.textContent = originalText;
-      button.style.color = "";
-    }, 2000);
   }
+  setTimeout(() => {
+    icon.textContent = originalText;
+    button.style.color = "";
+  }, 2000);
 }
 
 function showNotification(message, type = "info") {
@@ -290,8 +580,8 @@ function showNotification(message, type = "info") {
     right: 20px;
     background: ${type === "success" ? "var(--status-success)" : type === "warning" ? "var(--status-warning)" : "var(--status-info)"};
     color: white;
-    padding: 16px 20px;
-    border-radius: 8px;
+    padding: 14px 18px;
+    border-radius: 10px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     z-index: 10000;
     max-width: 400px;
@@ -322,5 +612,4 @@ function showNotification(message, type = "info") {
 
 window.showPage = showPage;
 window.saveDictionary = saveDictionary;
-window.exploreUseCases = exploreUseCases;
 window.openSettings = openSettings;

@@ -118,6 +118,8 @@ pub fn run() {
       commands::request_accessibility_permission,
       commands::recheck_accessibility_permission,
       commands::get_recent_activities,
+      commands::delete_history_item,
+      commands::clear_history,
       commands::get_dictionary,
       commands::save_dictionary,
     ])

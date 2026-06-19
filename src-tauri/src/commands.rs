@@ -374,6 +374,22 @@ pub fn get_recent_activities() -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
+pub fn delete_history_item(app: AppHandle, id: String) -> Result<bool, String> {
+  log::info!("command:delete_history_item id={id}");
+  history::delete_history_entry(&id).map_err(stringify_error)?;
+  let _ = app.emit("activity-updated", ());
+  Ok(true)
+}
+
+#[tauri::command]
+pub fn clear_history(app: AppHandle) -> Result<bool, String> {
+  log::info!("command:clear_history");
+  history::clear_history_entries().map_err(stringify_error)?;
+  let _ = app.emit("activity-updated", ());
+  Ok(true)
+}
+
+#[tauri::command]
 pub fn get_dictionary() -> Result<String, String> {
   settings::read_config()
     .map(|config| config.dictionary)

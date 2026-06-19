@@ -5,33 +5,42 @@
 
   const translations = {
     en: {
-      app: {
-        plan: {
-          basic: "Basic",
-        },
-      },
       sidebar: {
         home: "Home",
         dictionary: "Dictionary",
-        notes: "Notes",
+        history: "History",
         settings: "Settings",
-        addTeam: "Add your team",
-        referFriend: "Refer a friend",
         help: "Help",
       },
-      upgrade: {
-        title: "Upgrade to pro",
-        description: "Upgrade for unlimited dictation and other pro features",
-        learnMore: "Learn more",
-      },
       home: {
-        featureTitle: "Voice dictation in any app",
-        recordHint: "Hold down {shortcut} and speak into any textbox.",
-        translateHint: "Hold down {shortcut} to translate spoken text to English.",
-        explore: "Explore use cases",
-        recentActivity: "Recent activity",
-        recentHeader: "RECENT",
+        ready: "Ready to dictate",
+        setupNeeded: "Finish setup to start",
+        readyHint: "Hold the shortcut in any app and start speaking",
+        setupHint: "Add what's missing below, then you're ready",
+        dictate: "Dictate",
+        english: "English",
+        readyBadge: "Ready",
+        setupBadge: "Setup",
+        recentTitle: "Recent",
+        viewAll: "View all",
         noActivity: "No recent activity",
+      },
+      readiness: {
+        apiKey: "API key",
+        microphone: "Microphone",
+        accessibility: "Accessibility",
+        addApiKey: "Add API key",
+      },
+      history: {
+        title: "History",
+        subtitle: "Your recent transcriptions",
+        search: "Search",
+        clearAll: "Clear all",
+        confirmClear: "Click again to confirm",
+        empty: "No history yet",
+        noResults: "No matches",
+        today: "Today",
+        yesterday: "Yesterday",
       },
       dictionary: {
         title: "Dictionary",
@@ -51,6 +60,7 @@
       },
       activity: {
         copyTitle: "Copy text",
+        deleteTitle: "Delete",
       },
       settings: {
         title: "Settings - SayType",
@@ -62,7 +72,7 @@
         recordingShortcut: {
           title: "Recording shortcut",
           description:
-            "Choose your preferred hold-to-record shortcut. Translation stays Shift + Alt.",
+            "Choose your preferred hold-to-record shortcut. Translation uses Shift + Option.",
           selectTitle: "Select recording shortcut",
         },
         accessibility: {
@@ -126,9 +136,11 @@
         },
         apiKey: {
           title: "API Key",
-          description: "Enter your API key for selected provider.",
+          description: "Stored locally on this device. Shown hidden by default.",
           groqPlaceholder: "Groq API key",
           openaiPlaceholder: "OpenAI API key",
+          reveal: "Show key",
+          hide: "Hide key",
         },
         model: {
           title: "Model Selection",
@@ -150,6 +162,7 @@
         },
         cancel: "Cancel",
         save: "Save",
+        unsaved: "Unsaved changes",
         saveError: "Failed to save settings. Please try again.",
       },
       inputPrompt: {
@@ -185,33 +198,42 @@
       },
     },
     zh: {
-      app: {
-        plan: {
-          basic: "基础版",
-        },
-      },
       sidebar: {
         home: "首页",
         dictionary: "词典",
-        notes: "笔记",
+        history: "历史",
         settings: "设置",
-        addTeam: "添加团队",
-        referFriend: "推荐好友",
         help: "帮助",
       },
-      upgrade: {
-        title: "升级到专业版",
-        description: "升级后可享不限量听写等专业功能",
-        learnMore: "了解更多",
-      },
       home: {
-        featureTitle: "在任何应用中语音听写",
-        recordHint: "按住 {shortcut} 并对任意文本框讲话。",
-        translateHint: "按住 {shortcut} 将语音翻译成英文。",
-        explore: "探索使用场景",
-        recentActivity: "最近活动",
-        recentHeader: "最近",
+        ready: "随时可以听写",
+        setupNeeded: "完成设置后即可开始",
+        readyHint: "在任意应用中按住快捷键即可开始讲话",
+        setupHint: "补齐下方缺失项后即可使用",
+        dictate: "听写",
+        english: "英文",
+        readyBadge: "就绪",
+        setupBadge: "待设置",
+        recentTitle: "最近",
+        viewAll: "查看全部",
         noActivity: "暂无最近活动",
+      },
+      readiness: {
+        apiKey: "API 密钥",
+        microphone: "麦克风",
+        accessibility: "辅助功能",
+        addApiKey: "添加 API 密钥",
+      },
+      history: {
+        title: "历史",
+        subtitle: "你最近的转写记录",
+        search: "搜索",
+        clearAll: "清空",
+        confirmClear: "再次点击以确认",
+        empty: "暂无历史记录",
+        noResults: "无匹配结果",
+        today: "今天",
+        yesterday: "昨天",
       },
       dictionary: {
         title: "词典",
@@ -230,6 +252,7 @@
       },
       activity: {
         copyTitle: "复制文本",
+        deleteTitle: "删除",
       },
       settings: {
         title: "设置 - SayType",
@@ -241,7 +264,7 @@
         recordingShortcut: {
           title: "录音快捷键",
           description:
-            "选择你偏好的按住录音快捷键。翻译快捷键保持为 Shift + Alt。",
+            "选择你偏好的按住录音快捷键。翻译使用 Shift + Option。",
           selectTitle: "选择录音快捷键",
         },
         accessibility: {
@@ -304,9 +327,11 @@
         },
         apiKey: {
           title: "API 密钥",
-          description: "请输入所选服务商的 API 密钥。",
+          description: "仅保存在本机，默认隐藏显示。",
           groqPlaceholder: "Groq API 密钥",
           openaiPlaceholder: "OpenAI API 密钥",
+          reveal: "显示密钥",
+          hide: "隐藏密钥",
         },
         model: {
           title: "模型选择",
@@ -328,6 +353,7 @@
         },
         cancel: "取消",
         save: "保存",
+        unsaved: "有未保存的更改",
         saveError: "保存设置失败，请重试。",
       },
       inputPrompt: {

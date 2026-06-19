@@ -11,56 +11,31 @@
 <body>
   <div class="sidebar">
     <div class="sidebar-header">
-      <div class="header">
-        <div class="logo">SayType</div>
-        <div class="subline">
-          <div class="badge" data-i18n="app.plan.basic">Basic</div>
-          <div class="badge runtime-badge">Tauri</div>
-          <div id="appVersion" class="app-version">v-</div>
-        </div>
-      </div>
+      <div class="logo">SayType</div>
+      <div id="appVersion" class="app-version"></div>
     </div>
 
     <div class="sidebar-nav">
-      <button class="nav-item active" onclick="showPage('home')">
+      <button class="nav-item active" data-page="home" onclick="showPage('home')">
         <span class="nav-item-icon material-icons">home</span>
         <span data-i18n="sidebar.home">Home</span>
       </button>
-      <button class="nav-item" onclick="showPage('dictionary')">
+      <button class="nav-item" data-page="dictionary" onclick="showPage('dictionary')">
         <span class="nav-item-icon material-icons">book</span>
         <span data-i18n="sidebar.dictionary">Dictionary</span>
       </button>
-      <button class="nav-item">
-        <span class="nav-item-icon material-icons">note</span>
-        <span data-i18n="sidebar.notes">Notes</span>
+      <button class="nav-item" data-page="history" onclick="showPage('history')">
+        <span class="nav-item-icon material-icons">history</span>
+        <span data-i18n="sidebar.history">History</span>
       </button>
     </div>
 
     <div class="sidebar-footer">
-      <div class="upgrade-section">
-        <div class="upgrade-title">
-          <span class="material-icons upgrade-icon">workspace_premium</span>
-          <span data-i18n="upgrade.title">Upgrade to pro</span>
-        </div>
-        <div class="upgrade-description" data-i18n="upgrade.description">
-          Upgrade for unlimited dictation and other pro features
-        </div>
-        <button class="learn-more-btn" data-i18n="upgrade.learnMore">Learn more</button>
-      </div>
-
       <button class="nav-item" onclick="openSettings()">
         <span class="nav-item-icon material-icons">settings</span>
         <span data-i18n="sidebar.settings">Settings</span>
       </button>
-      <button class="nav-item">
-        <span class="nav-item-icon material-icons">group_add</span>
-        <span data-i18n="sidebar.addTeam">Add your team</span>
-      </button>
-      <button class="nav-item">
-        <span class="nav-item-icon material-icons">person_add</span>
-        <span data-i18n="sidebar.referFriend">Refer a friend</span>
-      </button>
-      <button class="nav-item">
+      <button class="nav-item" id="helpButton">
         <span class="nav-item-icon material-icons">help</span>
         <span data-i18n="sidebar.help">Help</span>
       </button>
@@ -70,25 +45,33 @@
   <div class="main-content">
     <!-- Home Page -->
     <div id="home-page" class="page active">
-      <div class="feature-section">
-        <div class="feature-title" data-i18n="home.featureTitle">Voice dictation in any app</div>
-        <div class="feature-description" id="recordShortcutHint">
-          Hold down Ctrl + Shift and speak into any textbox.
-        </div>
-        <div class="feature-description" id="translateShortcutHint">
-          Hold down Shift + Alt to translate spoken text to English.
-        </div>
-        <button class="btn" onclick="exploreUseCases()" data-i18n="home.explore">
-          Explore use cases
-        </button>
-      </div>
+      <div id="readiness-card" class="readiness-card"></div>
 
       <div class="recent-activity">
-        <h3 data-i18n="home.recentActivity">Recent activity</h3>
-        <div id="activity-container">
-          <!-- Activities will be loaded here -->
+        <div class="section-row">
+          <h3 data-i18n="home.recentTitle">Recent</h3>
+          <button class="link-btn" id="viewAllBtn" onclick="showPage('history')" data-i18n="home.viewAll">View all</button>
         </div>
+        <div id="activity-container"></div>
       </div>
+    </div>
+
+    <!-- History Page -->
+    <div id="history-page" class="page">
+      <div class="welcome">
+        <h1 data-i18n="history.title">History</h1>
+        <p data-i18n="history.subtitle">Your recent transcriptions</p>
+      </div>
+
+      <div class="history-toolbar">
+        <div class="search-box">
+          <span class="material-icons">search</span>
+          <input type="text" id="historySearch" placeholder="Search" aria-label="Search history" data-i18n="history.search" data-i18n-attr="placeholder,aria-label" />
+        </div>
+        <button class="btn-secondary" id="clearHistoryBtn" data-i18n="history.clearAll">Clear all</button>
+      </div>
+
+      <div id="history-container"></div>
     </div>
 
     <!-- Dictionary Page -->
@@ -101,8 +84,8 @@
       <div class="dictionary-section">
         <div class="dictionary-form">
           <label for="dictionary-text" data-i18n="dictionary.label">Custom Dictionary Prompt:</label>
-          <textarea 
-            id="dictionary-text" 
+          <textarea
+            id="dictionary-text"
             placeholder="Enter custom words, phrases, or context to help improve transcription accuracy. For example: 'Technical terms: API, JSON, OAuth, WebSocket'"
             data-i18n="dictionary.placeholder"
             data-i18n-attr="placeholder"

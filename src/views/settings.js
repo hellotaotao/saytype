@@ -115,19 +115,40 @@ function updateModelOptions(provider) {
 }
 
 function toggleApiKeyVisibility(provider) {
-  const keyGroq = document.getElementById("apiKeyGroq");
-  const keyOpenAI = document.getElementById("apiKeyOpenAI");
-  if (!keyGroq || !keyOpenAI) {
+  const fieldGroq = document.getElementById("apiKeyFieldGroq");
+  const fieldOpenAI = document.getElementById("apiKeyFieldOpenAI");
+  if (!fieldGroq || !fieldOpenAI) {
     return;
   }
 
   if (provider === "openai") {
-    keyGroq.classList.add("hidden");
-    keyOpenAI.classList.remove("hidden");
+    fieldGroq.classList.add("hidden");
+    fieldOpenAI.classList.remove("hidden");
   } else {
-    keyOpenAI.classList.add("hidden");
-    keyGroq.classList.remove("hidden");
+    fieldOpenAI.classList.add("hidden");
+    fieldGroq.classList.remove("hidden");
   }
+}
+
+function toggleKeyReveal(button) {
+  const input = document.getElementById(button.getAttribute("data-target"));
+  if (!input) {
+    return;
+  }
+  const reveal = input.type === "password";
+  input.type = reveal ? "text" : "password";
+  button.textContent = reveal ? "visibility_off" : "visibility";
+  const label = translate(reveal ? "settings.apiKey.hide" : "settings.apiKey.reveal");
+  button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
+}
+
+function markDirty() {
+  document.getElementById("unsavedHint")?.classList.remove("hidden");
+}
+
+function clearDirty() {
+  document.getElementById("unsavedHint")?.classList.add("hidden");
 }
 
 function setSelectValue(element, value, fallback) {
@@ -195,7 +216,7 @@ function bindEventHandlers() {
     void handleAccessibilityPermission();
   });
   closeSettingsButton?.addEventListener("click", () => {
-    void closeSettings();
+    void cancelSettings();
   });
   saveSettingsButton?.addEventListener("click", () => {
     void saveSettings();
@@ -203,10 +224,20 @@ function bindEventHandlers() {
   uiLanguageSelect?.addEventListener("change", handleUiLanguageChange);
   themeSelect?.addEventListener("change", handleThemeChange);
 
+  document.querySelectorAll(".reveal-btn").forEach((button) => {
+    button.addEventListener("click", () => toggleKeyReveal(button));
+  });
+
+  // Any edit to a control marks the page dirty so the unsaved hint shows.
+  // Programmatic value changes during loadSettings() don't fire these events.
+  const mainContent = document.querySelector(".main-content");
+  mainContent?.addEventListener("input", markDirty);
+  mainContent?.addEventListener("change", markDirty);
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      void closeSettings();
+      void cancelSettings();
     }
   });
 
@@ -234,22 +265,25 @@ function renderAccessibilityStatus(result) {
     return;
   }
 
+  let ok = false;
   if (!result) {
     statusElement.textContent = translate("settings.permission.error");
     statusElement.className = "permission-status denied";
-    return;
-  }
-
-  if (result.granted) {
+  } else if (result.granted) {
     statusElement.textContent = translate("settings.accessibility.granted");
     statusElement.className = "permission-status granted";
+    ok = true;
   } else if (result.status === "not_required") {
     statusElement.textContent = translate("settings.accessibility.notRequired");
     statusElement.className = "permission-status granted";
+    ok = true;
   } else {
     statusElement.textContent = translate("settings.accessibility.denied");
     statusElement.className = "permission-status denied";
   }
+
+  // Once granted there's nothing to act on, so hide the check button.
+  document.getElementById("checkAccessibility")?.classList.toggle("hidden", ok);
 }
 
 function scheduleAccessibilityRecheck() {
@@ -349,16 +383,19 @@ async function checkMicrophonePermissionStatus() {
     return;
   }
 
+  const micButton = document.getElementById("checkPermission");
   try {
     statusElement.textContent = translate("settings.permission.checking");
     statusElement.className = "permission-status";
 
     const result = await ipc.invoke("check-microphone-permission");
     const status = result.status;
+    let ok = false;
 
     if (status === "granted" || status === "not-determined") {
       statusElement.textContent = translate("settings.permission.granted");
       statusElement.className = "permission-status granted";
+      ok = true;
     } else if (status === "restricted") {
       statusElement.textContent = translate("settings.permission.restricted");
       statusElement.className = "permission-status denied";
@@ -366,10 +403,12 @@ async function checkMicrophonePermissionStatus() {
       statusElement.textContent = translate("settings.permission.denied");
       statusElement.className = "permission-status denied";
     }
+    micButton?.classList.toggle("hidden", ok);
   } catch (error) {
     console.error("Failed to check microphone permission:", error);
     statusElement.textContent = translate("settings.permission.error");
     statusElement.className = "permission-status denied";
+    micButton?.classList.remove("hidden");
   }
 }
 
@@ -469,6 +508,8 @@ async function loadSettings() {
       checkMicrophonePermissionStatus(),
       checkAccessibilityStatus(),
     ]);
+
+    clearDirty();
   } catch (error) {
     console.error("Failed to load settings:", error);
     initI18n("auto");
@@ -497,11 +538,25 @@ async function saveSettings() {
     };
 
     await ipc.invoke("save-settings", settings);
+    currentSettings = settings;
+    clearDirty();
     await closeSettings();
   } catch (error) {
     console.error("Failed to save settings:", error);
     alert(translate("settings.saveError"));
   }
+}
+
+async function cancelSettings() {
+  // Revert any unsaved edits — control values plus the live theme/language
+  // preview — back to the last saved settings, then hide the window.
+  try {
+    await loadSettings();
+  } catch (error) {
+    console.error("Failed to revert settings on cancel:", error);
+  }
+  clearDirty();
+  await closeSettings();
 }
 
 async function closeSettings() {
@@ -514,6 +569,7 @@ async function closeSettings() {
 }
 
 window.closeSettings = closeSettings;
+window.cancelSettings = cancelSettings;
 window.saveSettings = saveSettings;
 if (typeof document !== "undefined" && document.documentElement) {
   document.documentElement.setAttribute("data-settings-handlers-exposed", "1");

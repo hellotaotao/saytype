@@ -25,6 +25,7 @@
   --settings-titlebar-bg: #ffffff;
   --settings-titlebar-border: #e0e0e0;
   --settings-close-hover: #ff6b6b;
+  --settings-accent-contrast: #ffffff;
 }
 
 :root[data-theme="elegant"] {
@@ -54,6 +55,37 @@
   --settings-titlebar-bg: #fbfaf7;
   --settings-titlebar-border: #e6dfd6;
   --settings-close-hover: #c97a6a;
+  --settings-accent-contrast: #ffffff;
+}
+
+:root[data-theme="midnight"] {
+  --settings-bg: #1b1e2b;
+  --settings-surface: #242838;
+  --settings-border: rgba(255, 255, 255, 0.1);
+  --settings-text: #f2f3f8;
+  --settings-muted: rgba(255, 255, 255, 0.66);
+  --settings-subtle: rgba(255, 255, 255, 0.45);
+  --settings-sidebar-hover: rgba(255, 255, 255, 0.06);
+  --settings-sidebar-active-bg: rgba(124, 126, 240, 0.2);
+  --settings-accent: #8b8df3;
+  --settings-accent-strong: #a6a7fb;
+  --settings-accent-contrast: #1b1e2b;
+  --settings-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  --settings-button-secondary-bg: rgba(255, 255, 255, 0.08);
+  --settings-button-secondary-hover: rgba(255, 255, 255, 0.14);
+  --settings-input-border: rgba(255, 255, 255, 0.16);
+  --settings-input-focus: #8b8df3;
+  --settings-input-focus-shadow: rgba(124, 126, 240, 0.32);
+  --settings-permission-bg: rgba(255, 255, 255, 0.06);
+  --settings-permission-granted-bg: rgba(76, 175, 80, 0.2);
+  --settings-permission-granted-text: #9be0a8;
+  --settings-permission-denied-bg: rgba(244, 67, 54, 0.2);
+  --settings-permission-denied-text: #f3a7a1;
+  --settings-permission-unknown-bg: rgba(255, 193, 7, 0.18);
+  --settings-permission-unknown-text: #e8c879;
+  --settings-titlebar-bg: #242838;
+  --settings-titlebar-border: rgba(255, 255, 255, 0.1);
+  --settings-close-hover: #d9776a;
 }
 
 body {
@@ -206,7 +238,7 @@ body {
   border: none;
   padding: 8px 16px;
   border-radius: 6px;
-  color: white;
+  color: var(--settings-accent-contrast);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -258,16 +290,47 @@ body {
   width: 200px;
 }
 
+.api-key-field {
+  position: relative;
+  display: inline-block;
+}
+
 .api-key-input {
-  font-family: monospace;
-  letter-spacing: 1px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  width: 240px;
+  padding-right: 38px;
+}
+
+.reveal-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--settings-muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.reveal-btn:hover {
+  color: var(--settings-text);
 }
 
 .save-section {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 12px;
   margin-top: 30px;
+}
+
+.unsaved-hint {
+  margin-right: auto;
+  font-size: 13px;
+  color: var(--settings-muted);
 }
 
 .permission-status {

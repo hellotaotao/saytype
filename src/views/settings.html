@@ -218,7 +218,7 @@
           </div>
         </div>
 
-        <div class="setting-item" id="startMinimizedItem">
+        <div class="setting-item">
           <div class="setting-info">
             <div class="setting-title" data-i18n="settings.startMinimized.title">Start minimized</div>
             <div class="setting-description" data-i18n="settings.startMinimized.description">
@@ -252,20 +252,26 @@
             </div>
           </div>
 
-          <div class="setting-item" id="apiKeyGroup">
+          <div class="setting-item">
             <div class="setting-info">
               <div class="setting-title" data-i18n="settings.apiKey.title">API Key</div>
-              <div class="setting-description" id="apiKeyHelp" data-i18n="settings.apiKey.description">
+              <div class="setting-description" data-i18n="settings.apiKey.description">
                 Enter your API key for selected provider.
               </div>
             </div>
             <div class="setting-control">
-              <input type="text" class="input api-key-input hidden" id="apiKeyGroq" placeholder="Groq API key" data-i18n="settings.apiKey.groqPlaceholder" data-i18n-attr="placeholder" />
-              <input type="text" class="input api-key-input hidden" id="apiKeyOpenAI" placeholder="OpenAI API key" data-i18n="settings.apiKey.openaiPlaceholder" data-i18n-attr="placeholder" />
+              <div class="api-key-field hidden" id="apiKeyFieldGroq">
+                <input type="password" class="input api-key-input" id="apiKeyGroq" placeholder="Groq API key" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n="settings.apiKey.groqPlaceholder" data-i18n-attr="placeholder" />
+                <button type="button" class="reveal-btn material-icons" data-target="apiKeyGroq" aria-label="Show key" title="Show key" data-i18n="settings.apiKey.reveal" data-i18n-attr="aria-label,title">visibility</button>
+              </div>
+              <div class="api-key-field hidden" id="apiKeyFieldOpenAI">
+                <input type="password" class="input api-key-input" id="apiKeyOpenAI" placeholder="OpenAI API key" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n="settings.apiKey.openaiPlaceholder" data-i18n-attr="placeholder" />
+                <button type="button" class="reveal-btn material-icons" data-target="apiKeyOpenAI" aria-label="Show key" title="Show key" data-i18n="settings.apiKey.reveal" data-i18n-attr="aria-label,title">visibility</button>
+              </div>
             </div>
           </div>
 
-          <div class="setting-item" id="modelSelectGroup">
+          <div class="setting-item">
             <div class="setting-info">
               <div class="setting-title" data-i18n="settings.model.title">Model Selection</div>
               <div class="setting-description" data-i18n="settings.model.description">
@@ -287,6 +293,7 @@
       </div>
 
       <div class="save-section">
+        <span id="unsavedHint" class="unsaved-hint hidden" data-i18n="settings.unsaved">Unsaved changes</span>
         <button class="btn btn-secondary" id="closeSettingsButton" type="button">
           <span data-i18n="settings.cancel">Cancel</span>
         </button>
