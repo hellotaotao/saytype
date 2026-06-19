@@ -391,7 +391,7 @@ class VoiceInputPrompt {
       }
       this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
       if (insertedAny) {
-        // Clipboard fallback succeeded — brief acknowledgement.
+        // A batch mixed inserted + failed items — brief acknowledgement.
         this.statusText.textContent = t("inputPrompt.textInserted");
         this.statusText.style.color = "var(--status-success)";
         this.scheduleHidePrompt(1200);
@@ -843,48 +843,6 @@ class VoiceInputPrompt {
     this.scheduleHidePrompt(3000);
   }
 
-  async handleTextProcessingFailure(text, messageOverride, options = {}) {
-    const { suppressUi = false } = options;
-    if (!hasMeaningfulText(text)) {
-      if (!suppressUi) {
-        this.statusText.textContent = t("inputPrompt.noSpeech");
-        this.statusText.style.color = "var(--status-warning)";
-        this.scheduleHidePrompt(1500);
-      }
-      return;
-    }
-
-    const fallbackMessage =
-      typeof messageOverride === "string" && messageOverride.trim()
-        ? messageOverride
-        : t("inputPrompt.textProcessingFailed");
-
-    if (!suppressUi) {
-      this.statusText.textContent = fallbackMessage;
-      this.statusText.style.color = "var(--status-warning-strong)";
-    }
-
-    // Final fallback: copy to clipboard
-    try {
-      const pasteShortcut = this.getPasteShortcutLabel();
-      await navigator.clipboard.writeText(text);
-      if (!suppressUi) {
-        this.statusText.textContent = t("inputPrompt.textCopiedFallback", {
-          shortcut: pasteShortcut,
-        });
-        this.statusText.style.color = "var(--status-warning)";
-        this.scheduleHidePrompt(3000);
-      }
-    } catch (clipboardError) {
-      console.error("Failed to copy to clipboard:", clipboardError);
-      if (!suppressUi) {
-        this.statusText.textContent = t("inputPrompt.errorCouldNotProcess");
-        this.statusText.style.color = "var(--status-danger)";
-        this.scheduleHidePrompt(3000);
-      }
-    }
-  }
-
   async typeText(text, options = {}) {
     const { suppressUi = false } = options;
     if (!hasMeaningfulText(text)) {
@@ -896,81 +854,47 @@ class VoiceInputPrompt {
       return { ok: false, noText: true };
     }
 
-    // Send the transcribed text to the active application
+    // Send the transcribed text to the active application.
     try {
       const result = await ipc.invoke("type-text", text);
 
-      if (!result || !result.success) {
-        if (result?.skippedNoText) {
-          if (!suppressUi) {
-            this.statusText.textContent = t("inputPrompt.noSpeech");
-            this.statusText.style.color = "var(--status-warning)";
-            this.scheduleHidePrompt(1500);
-          }
-          return { ok: false, noText: true };
-        }
-        console.warn("Text processing failed in main process:", result);
-        await this.handleTextProcessingFailure(text, result?.message, { suppressUi });
-        return { ok: false, message: result?.message };
-      }
-
-      const directMethods = new Set(["cgevent_unicode"]);
-      const isDirect = directMethods.has(result.method);
-      const pasteShortcut = this.getPasteShortcutLabel();
-
-      if (result.method === "cgevent_unicode") {
-        // macOS CGEvent Unicode method
+      if (result?.success && result.method === "cgevent_unicode") {
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textInserted");
           this.statusText.style.color = "var(--status-success)";
-          // Hide prompt immediately after successful insertion
           this.hidePrompt();
         }
-      } else if (result.method === "clipboard_textinsert") {
-        const isPartial =
-          typeof result.message === "string" &&
-          result.message.includes("partially restored");
-        if (!suppressUi) {
-          this.statusText.textContent = isPartial
-            ? t("inputPrompt.textInsertedPartial")
-            : t("inputPrompt.textInsertedAuto");
-
-          // Different colors based on message complexity
-          if (isPartial) {
-            this.statusText.style.color = "var(--status-warning)"; // Orange for partial restoration
-          } else {
-            this.statusText.style.color = "var(--status-success)"; // Green for full restoration
-          }
-
-          // Close immediately after successful insertion
-          this.hidePrompt();
-        }
-      } else if (result.method === "clipboard") {
-        if (!suppressUi) {
-          this.statusText.textContent = t("inputPrompt.textCopied", {
-            shortcut: pasteShortcut,
-          });
-          this.statusText.style.color = "var(--status-warning)";
-          this.scheduleHidePrompt(3000);
-        }
-      } else {
-        if (!suppressUi) {
-          this.statusText.textContent = result.message || t("inputPrompt.textInserted");
-          this.statusText.style.color = "var(--status-success)";
-          this.hidePrompt();
-        }
+        return { ok: true, method: result.method, direct: true };
       }
-      return { ok: true, method: result.method, direct: isDirect };
+
+      if (result?.skippedNoText) {
+        if (!suppressUi) {
+          this.statusText.textContent = t("inputPrompt.noSpeech");
+          this.statusText.style.color = "var(--status-warning)";
+          this.scheduleHidePrompt(1500);
+        }
+        return { ok: false, noText: true };
+      }
+
+      // Insertion failed. By design there is NO clipboard fallback: the
+      // transcription is already saved to history (and still shown on this
+      // prompt), so we point the user there instead of touching their clipboard.
+      console.warn("Text insertion failed in backend:", result);
+      if (!suppressUi) {
+        this.statusText.textContent = t("inputPrompt.insertFailed");
+        this.statusText.style.color = "var(--status-warning-strong)";
+        this.scheduleHidePrompt(2500);
+      }
+      return { ok: false, message: result?.message };
     } catch (error) {
       console.error("Failed to process text:", error);
-      await this.handleTextProcessingFailure(text, null, options);
+      if (!suppressUi) {
+        this.statusText.textContent = t("inputPrompt.insertFailed");
+        this.statusText.style.color = "var(--status-warning-strong)";
+        this.scheduleHidePrompt(2500);
+      }
       return { ok: false, message: error?.message };
     }
-  }
-
-  getPasteShortcutLabel() {
-    const isMac = window.navigator?.platform?.includes("Mac");
-    return isMac ? "Cmd+V" : "Ctrl+V";
   }
 
   startWaveAnimation() {

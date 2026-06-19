@@ -3,7 +3,6 @@ use crate::history;
 use crate::settings::{self, AppConfig, SettingsPayload, TRANSLATE_SHORTCUT};
 use crate::state::AppState;
 use anyhow::{Context, Result};
-use arboard::Clipboard;
 use chrono::Utc;
 #[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
@@ -26,7 +25,6 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 const MAX_AUDIO_SIZE_BYTES: usize = 25 * 1024 * 1024;
@@ -233,9 +231,7 @@ pub async fn type_text(
 
   #[cfg(target_os = "macos")]
   {
-    let accessibility_granted = current_accessibility_granted();
-
-    if accessibility_granted {
+    if current_accessibility_granted() {
       match insert_text_via_cgevent(&text) {
         Ok(()) => {
           return Ok(TypeTextResponse {
@@ -246,17 +242,31 @@ pub async fn type_text(
           });
         }
         Err(error) => {
-          log::warn!("direct text insertion failed, falling back to clipboard: {error:#}");
+          log::warn!("direct text insertion failed: {error:#}");
         }
       }
     }
 
-    return clipboard_insert_text(&text, accessibility_granted).await.map_err(stringify_error);
+    // No clipboard fallback by design: every transcription is already saved to
+    // history (see transcribe_audio), so a failed insert just points the user
+    // there instead of overwriting their clipboard.
+    Ok(TypeTextResponse {
+      success: false,
+      method: None,
+      message: Some("Text insertion failed; copy it from History.".into()),
+      skipped_no_text: false,
+    })
   }
 
   #[cfg(not(target_os = "macos"))]
   {
-    clipboard_insert_text(&text, false).await.map_err(stringify_error)
+    let _ = &text;
+    Ok(TypeTextResponse {
+      success: false,
+      method: None,
+      message: Some("Text insertion is not yet supported on this platform.".into()),
+      skipped_no_text: false,
+    })
   }
 }
 
@@ -516,61 +526,6 @@ fn is_cancellation_error(error: &anyhow::Error) -> bool {
   error
     .to_string()
     .contains("TRANSCRIPTION_CANCELLED")
-}
-
-async fn clipboard_insert_text(text: &str, can_auto_paste: bool) -> Result<TypeTextResponse> {
-  let mut clipboard = Clipboard::new().context("failed to access clipboard")?;
-  let original_text = clipboard.get_text().ok();
-  clipboard
-    .set_text(text.to_string())
-    .context("failed to write text to clipboard")?;
-
-  if can_auto_paste {
-    paste_via_os_shortcut()?;
-    sleep(Duration::from_millis(500)).await;
-    let message = if let Some(original) = original_text {
-      let _ = clipboard.set_text(original);
-      "Text inserted automatically (clipboard restored).".to_string()
-    } else {
-      "Text inserted automatically (clipboard may be partially restored).".to_string()
-    };
-    Ok(TypeTextResponse {
-      success: true,
-      method: Some("clipboard_textinsert".into()),
-      message: Some(message),
-      skipped_no_text: false,
-    })
-  } else {
-    Ok(TypeTextResponse {
-      success: true,
-      method: Some("clipboard".into()),
-      message: Some("Text copied to clipboard. Press Cmd+V to paste.".into()),
-      skipped_no_text: false,
-    })
-  }
-}
-
-fn paste_via_os_shortcut() -> Result<()> {
-  #[cfg(target_os = "macos")]
-  {
-    let status = Command::new("osascript")
-      .args([
-        "-e",
-        "tell application \"System Events\" to keystroke \"v\" using command down",
-      ])
-      .status()
-      .context("failed to run osascript")?;
-    if !status.success() {
-      return Err(anyhow::anyhow!("osascript exited with status {status}"));
-    }
-  }
-
-  #[cfg(not(target_os = "macos"))]
-  {
-    return Err(anyhow::anyhow!("automatic paste is only implemented on macOS"));
-  }
-
-  Ok(())
 }
 
 #[cfg(target_os = "macos")]

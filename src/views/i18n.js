@@ -181,13 +181,7 @@
         microphoneUnsupported: "Microphone settings not supported",
         checkMicrophone: "Please check your microphone settings",
         textInserted: "Text inserted",
-        textInsertedAuto: "Text inserted automatically",
-        textInsertedPartial:
-          "Text inserted automatically (clipboard may be partially restored)",
-        textCopied: "Text copied - Press {shortcut} to paste",
-        textProcessingFailed: "Text processing failed - trying clipboard fallback",
-        textCopiedFallback: "Text copied to clipboard - Press {shortcut} to paste",
-        errorCouldNotProcess: "Error: Could not process text",
+        insertFailed: "Insertion failed — copy it from History",
       },
     },
     zh: {
@@ -365,12 +359,7 @@
         microphoneUnsupported: "麦克风设置不受支持",
         checkMicrophone: "请检查麦克风设置",
         textInserted: "文本已插入",
-        textInsertedAuto: "文本已自动插入",
-        textInsertedPartial: "文本已自动插入（剪贴板可能仅部分恢复）",
-        textCopied: "文本已复制 - 按 {shortcut} 粘贴",
-        textProcessingFailed: "文本处理失败，正在尝试剪贴板回退",
-        textCopiedFallback: "文本已复制到剪贴板 - 按 {shortcut} 粘贴",
-        errorCouldNotProcess: "错误：无法处理文本",
+        insertFailed: "插入失败，可在历史记录中复制",
       },
     },
   };
