@@ -13,7 +13,10 @@ const DEBUG_MICROPHONE_CLEANUP = false;
 // Audio capture constraints, shared by the launch prime and every recording.
 const AUDIO_CONSTRAINTS = {
   audio: {
-    sampleRate: 44100,
+    // Whisper resamples everything to 16 kHz mono anyway, so capturing at
+    // 16 kHz (instead of 44.1 kHz) shrinks the upload with no quality loss.
+    // Treated as a hint — browsers that ignore it still work.
+    sampleRate: 16000,
     channelCount: 1,
     echoCancellation: true,
     noiseSuppression: true,
