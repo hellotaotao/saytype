@@ -29,6 +29,13 @@ the built `.dmg` into `dist/`** — `dist/` is the kept archive of every version
 this step must not be skipped. `build:mac:install` additionally mounts that dmg and copies
 `SayType.app` into `/Applications` over the old version, then relaunches it.
 
+For **local code signing**, the mac build scripts source an untracked `scripts/sign.env`
+(copy from `scripts/sign.env.example`) if present, exporting `APPLE_SIGNING_IDENTITY`. Signing
+with a stable identity makes macOS keep the Accessibility/Microphone grants across rebuilds —
+ad-hoc signing (the default when the file is absent) changes the cdhash each build and re-prompts.
+Notarized release builds additionally set `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` and require a
+*Developer ID Application* cert; local builds skip notarization.
+
 ## Architecture Overview
 
 SayType is a Tauri 2 voice-input app: a **Rust backend** (`src-tauri/src/`) hosting a
@@ -87,6 +94,60 @@ Rust → Renderer: `app.emit("shortcut-updated", …)` / `"ui-theme-updated"` /
   tccutil reset Accessibility com.tao.saytype
   tccutil reset Microphone com.tao.saytype
   ```
+
+### Audio capture: echo cancellation off, and the missing NS/AGC (macOS WebKit)
+
+Mic capture runs in the webview via `getUserMedia` (`AUDIO_CONSTRAINTS` in
+`input-prompt.js`). **All processing constraints are pinned `false`**
+(`echoCancellation`/`noiseSuppression`/`autoGainControl`) — this is a deliberate fix for
+dropped first words on external/USB mics, not a style choice:
+
+- On macOS, Tauri's webview is **WKWebView (WebKit)**. WebKit maps `echoCancellation: true`
+  onto macOS's **VoiceProcessingIO** audio unit, which cold-starts in **~1–2s on a USB/
+  external mic** (a Mac mini has no built-in mic) and emits silence during that window — so
+  `MediaRecorder` captures dead air and the first second(s) of speech are lost. Laptops' built-in
+  mics hide it because that voice path is pre-warmed.
+- WebKit only **supports `echoCancellation`**: `getSupportedConstraints()` reports
+  `noiseSuppression`/`autoGainControl` as `false` and `getSettings()` reports them `undefined`
+  — they never applied even when requested. So NS/AGC were never active on macOS; only EC was,
+  and EC is useless for dictation (Whisper handles raw audio). Disabling EC drops getUserMedia +
+  first-audio from ~1100ms to ~180ms with no quality change. (Verified with a per-recording
+  constraint sweep that logged the mode + `getSettings()`.)
+
+The ~1s is **WebKit-specific** — same Mac mini + USB mic, measured per engine:
+
+| Engine | Used by | EC cost | NS / AGC |
+|---|---|---|---|
+| WebKit (macOS) | this app's WKWebView, Safari | **~1–2s** (VoiceProcessingIO) | unsupported (`undef`) |
+| Chromium | Tauri **Windows** WebView2, Chrome, Electron | **~65ms** (software AEC3) | supported, ~0ms, not additive |
+
+So the limitation is **macOS-only**:
+
+- **Windows** — Tauri uses **WebView2 (Chromium)** → EC/NS/AGC all supported and cheap, same as
+  Chrome/Electron; no 1s penalty.
+- **Linux** — Tauri uses **WebKitGTK** (WebKit family). The 1s is a macOS VoiceProcessingIO
+  artifact and does not apply, but WebKitGTK's getUserMedia processing support is limited/variable
+  — verify if ever targeted.
+- (Text insertion + hotkey are macOS-only today, so Windows/Linux aren't live targets yet.)
+
+### Future (optional): adding NS/AGC on macOS
+
+NS/AGC are marginal for cloud Whisper (robust + self-normalizing), so confirm a real quality
+problem before adding complexity. If needed, in rough order of effort:
+
+1. **AGC** — DIY RMS normalization (a few lines), or let Whisper handle it.
+2. **Noise suppression** — RNNoise: Rust crate `nnnoiseless` (pure Rust, no C++ build) or its
+   WASM build in a frontend AudioWorklet. Small, good quality — best effort/value.
+3. **Chrome's exact stack** — Chrome's processing is the open-source **WebRTC Audio Processing
+   Module** (AEC3 + NS + AGC); the `webrtc-audio-processing` Rust crate wraps the same library.
+   Feed raw PCM in 10ms frames. Most complete, moderate effort (C++ build).
+4. **macOS-native (have-your-cake)** — VoiceProcessingIO itself bundles EC+NS+AGC (WebKit only
+   exposes EC). Capture natively in Rust (AVAudioEngine, voice processing on) and **keep the unit
+   warm** → Apple's full processing with no per-recording cold start. Biggest change (moves capture
+   out of the webview).
+
+Processing location: options 1–2 can run in a frontend AudioWorklet (capture with system processing
+off → denoise → record); options 3–4 in the Rust backend.
 
 ## Development Notes
 

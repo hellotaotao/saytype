@@ -7,8 +7,8 @@
     "dev": "tauri dev",
     "version:tauri:patch": "node scripts/bump-tauri-version.js",
     "build": "npm run version:tauri:patch && CI=true tauri build && node scripts/collect-artifacts.js",
-    "build:mac": "npm run version:tauri:patch && CI=true tauri build --target aarch64-apple-darwin && node scripts/collect-artifacts.js aarch64-apple-darwin",
-    "build:mac:install": "npm run version:tauri:patch && CI=true tauri build --target aarch64-apple-darwin && node scripts/collect-artifacts.js aarch64-apple-darwin --install",
+    "build:mac": "npm run version:tauri:patch && CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin",
+    "build:mac:install": "npm run version:tauri:patch && CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin --install",
     "build:win": "npm run version:tauri:patch && tauri build --target x86_64-pc-windows-msvc",
     "build:linux": "npm run version:tauri:patch && tauri build --target x86_64-unknown-linux-gnu",
     "tauri": "tauri"
