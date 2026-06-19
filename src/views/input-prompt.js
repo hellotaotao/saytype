@@ -18,9 +18,14 @@ const AUDIO_CONSTRAINTS = {
     // Treated as a hint — browsers that ignore it still work.
     sampleRate: 16000,
     channelCount: 1,
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
+    // echoCancellation routes capture through macOS's VoiceProcessingIO audio
+    // unit, which cold-starts in ~1–2s on an external/USB mic and swallows the
+    // first second(s) of speech. Dictation needs no echo cancellation, so keep
+    // it off. (noiseSuppression/autoGainControl don't exist in this WebKit build
+    // — getSettings() reports them undefined — but are pinned off for clarity.)
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
   },
 };
 const themeOptions = new Set(["midnight", "elegant"]);
