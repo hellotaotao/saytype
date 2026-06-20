@@ -105,11 +105,12 @@
         },
         theme: {
           title: "Theme",
-          description: "Choose the visual style of the app.",
+          description: "Light, dark, or follow your system.",
           selectTitle: "Select interface theme",
           option: {
-            midnight: "Midnight",
-            elegant: "Elegant",
+            auto: "Auto (match system)",
+            midnight: "Dark",
+            elegant: "Light",
           },
         },
         transcriptionLanguage: {
@@ -297,11 +298,12 @@
         },
         theme: {
           title: "主题风格",
-          description: "选择应用界面的视觉风格。",
+          description: "浅色、深色，或跟随系统外观。",
           selectTitle: "选择界面主题",
           option: {
-            midnight: "午夜",
-            elegant: "雅致",
+            auto: "自动（跟随系统外观）",
+            midnight: "深色",
+            elegant: "浅色",
           },
         },
         transcriptionLanguage: {

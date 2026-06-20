@@ -3,8 +3,9 @@ document.documentElement.setAttribute("data-main-js-ran", "1");
 const ipc = window.__SAYTYPE_IPC__;
 const { initI18n, setLanguage, applyI18n, t, getLocale } = window.SayTypeI18n;
 
-const themeOptions = new Set(["midnight", "elegant"]);
-const RECENT_LIMIT = 6;
+const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
+const RECENT_LIMIT = 12;
+let currentThemePref = "elegant";
 const KEY_SYMBOLS = {
   ctrl: "⌃",
   control: "⌃",
@@ -22,12 +23,33 @@ let historyQuery = "";
 let clearConfirming = false;
 let clearConfirmTimer = null;
 
-function resolveTheme(value) {
-  return themeOptions.has(value) ? value : "elegant";
+function normalizeThemePref(value) {
+  return THEME_PREFS.has(value) ? value : "elegant";
+}
+
+function systemPrefersDark() {
+  return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+}
+
+function concreteTheme(pref) {
+  const normalized = normalizeThemePref(pref);
+  return normalized === "auto" ? (systemPrefersDark() ? "midnight" : "elegant") : normalized;
 }
 
 function applyTheme(value) {
-  document.documentElement.setAttribute("data-theme", resolveTheme(value));
+  currentThemePref = normalizeThemePref(value);
+  document.documentElement.setAttribute("data-theme", concreteTheme(currentThemePref));
+}
+
+function watchSystemTheme() {
+  if (!window.matchMedia) {
+    return;
+  }
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (currentThemePref === "auto") {
+      document.documentElement.setAttribute("data-theme", concreteTheme(currentThemePref));
+    }
+  });
 }
 
 function shortcutKeycaps(shortcut) {
@@ -84,6 +106,8 @@ async function initializeMainPage() {
 }
 
 function bindEvents() {
+  watchSystemTheme();
+
   // Cmd+, (macOS standard "Preferences" shortcut) opens the settings window.
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {

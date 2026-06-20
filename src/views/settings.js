@@ -10,7 +10,8 @@ if (typeof document !== "undefined" && document.documentElement) {
 
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 25;
-const themeOptions = new Set(["midnight", "elegant"]);
+const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
+let currentThemePref = "elegant";
 
 const modelOptions = {
   groq: [
@@ -43,12 +44,33 @@ function translate(key, vars) {
   }
 }
 
-function resolveTheme(value) {
-  return themeOptions.has(value) ? value : "elegant";
+function normalizeThemePref(value) {
+  return THEME_PREFS.has(value) ? value : "elegant";
+}
+
+function systemPrefersDark() {
+  return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+}
+
+function concreteTheme(pref) {
+  const normalized = normalizeThemePref(pref);
+  return normalized === "auto" ? (systemPrefersDark() ? "midnight" : "elegant") : normalized;
 }
 
 function applyTheme(value) {
-  document.documentElement.setAttribute("data-theme", resolveTheme(value));
+  currentThemePref = normalizeThemePref(value);
+  document.documentElement.setAttribute("data-theme", concreteTheme(currentThemePref));
+}
+
+function watchSystemTheme() {
+  if (!window.matchMedia) {
+    return;
+  }
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (currentThemePref === "auto") {
+      document.documentElement.setAttribute("data-theme", concreteTheme(currentThemePref));
+    }
+  });
 }
 
 function getDependencies() {
@@ -199,6 +221,8 @@ function bindEventHandlers() {
   if (pageEventsBound) {
     return;
   }
+
+  watchSystemTheme();
 
   const providerSelect = document.getElementById("providerSelect");
   const checkPermissionButton = document.getElementById("checkPermission");
@@ -369,7 +393,7 @@ function setupThemeSync() {
     }
 
     applyTheme(payload.theme);
-    setSelectValue(document.getElementById("themeSelect"), resolveTheme(payload.theme), "elegant");
+    setSelectValue(document.getElementById("themeSelect"), normalizeThemePref(payload.theme), "elegant");
   });
 }
 
@@ -493,7 +517,7 @@ async function loadSettings() {
 
     setSelectValue(shortcutSelect, currentSettings.shortcut || "Ctrl+Shift", "Ctrl+Shift");
     setSelectValue(uiLanguageSelect, currentSettings.uiLanguage || "auto", "auto");
-    setSelectValue(themeSelect, resolveTheme(currentSettings.uiTheme), "elegant");
+    setSelectValue(themeSelect, normalizeThemePref(currentSettings.uiTheme), "elegant");
     setSelectValue(languageSelect, currentSettings.language || "auto", "auto");
     setSelectValue(modelSelect, currentSettings.model, modelSelect?.options[0]?.value || "");
 
@@ -529,7 +553,7 @@ async function saveSettings() {
       shortcut: document.getElementById("shortcutSelect")?.value || "Ctrl+Shift",
       language: document.getElementById("languageSelect")?.value || "auto",
       uiLanguage: document.getElementById("uiLanguageSelect")?.value || "auto",
-      uiTheme: resolveTheme(themeSelect ? themeSelect.value : "elegant"),
+      uiTheme: normalizeThemePref(themeSelect ? themeSelect.value : "elegant"),
       model: document.getElementById("modelSelect")?.value || "",
       microphone: currentSettings.microphone,
       autoLaunch: !!document.getElementById("autoLaunchCheck")?.checked,

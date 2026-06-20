@@ -523,14 +523,6 @@ body {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
-  opacity: 0;
-  transform: translateX(8px);
-  transition: all 0.15s;
-}
-
-.activity-item:hover .activity-actions {
-  opacity: 1;
-  transform: translateX(0);
 }
 
 .icon-btn {
