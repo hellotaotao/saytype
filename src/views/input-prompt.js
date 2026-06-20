@@ -107,7 +107,8 @@ class VoiceInputPrompt {
   }
 
   createWaveBars() {
-    for (let i = 0; i < 16; i++) {
+    // Enough bars to fill the 120px container (3px bar + 2px gap ≈ 5px each).
+    for (let i = 0; i < 24; i++) {
       const bar = document.createElement("div");
       bar.className = "wave-bar";
       bar.style.height = "3px";
@@ -511,7 +512,9 @@ class VoiceInputPrompt {
       this.analyser.fftSize = 256;
       source.connect(this.analyser);
 
-      this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+      // Time-domain samples (one per fftSize) — used to compute a per-frame
+      // volume (RMS) for the scrolling waveform, not a frequency spectrum.
+      this.dataArray = new Uint8Array(this.analyser.fftSize);
 
       // Setup media recorder
       // Try to use the best supported format, fallback to webm
@@ -903,37 +906,57 @@ class VoiceInputPrompt {
   }
 
   startWaveAnimation() {
-    const bars = this.waveContainer.querySelectorAll(".wave-bar");
+    // Scrolling volume history: x-axis is time. Each tick we measure the
+    // current loudness (RMS) and push it in from the right; older samples
+    // slide left and off the edge — like a real moving waveform, not a
+    // static frequency spectrum.
+    const bars = Array.from(this.waveContainer.querySelectorAll(".wave-bar"));
+    const barCount = bars.length;
+    const history = new Array(barCount).fill(0);
 
-    const animate = () => {
+    const SAMPLE_INTERVAL_MS = 65; // ~1.5s of audio spread across the bars
+    const GAIN = 6; // speech RMS is small (~0.05–0.3); amplify to fill height
+    const MAX_HEIGHT = 25; // container is 28px tall
+    const ACTIVE_THRESHOLD = 0.04; // glow bars where sound is actually present
+
+    const sampleVolume = () => {
+      if (!this.analyser || !this.dataArray) {
+        return Math.random() * 0.15; // fallback so the wave still scrolls
+      }
+      this.analyser.getByteTimeDomainData(this.dataArray);
+      let sumSquares = 0;
+      for (let i = 0; i < this.dataArray.length; i++) {
+        const v = (this.dataArray[i] - 128) / 128; // centered samples, -1..1
+        sumSquares += v * v;
+      }
+      return Math.sqrt(sumSquares / this.dataArray.length);
+    };
+
+    const render = () => {
+      for (let i = 0; i < barCount; i++) {
+        const level = history[i];
+        const amplitude = Math.min(1, level * GAIN);
+        bars[i].style.height = `${Math.max(3, amplitude * MAX_HEIGHT)}px`;
+        bars[i].classList.toggle("active", level > ACTIVE_THRESHOLD);
+      }
+    };
+
+    let lastSampleAt = 0;
+    const animate = (now) => {
       if (!this.isRecording) return;
 
-      if (this.analyser && this.dataArray) {
-        this.analyser.getByteFrequencyData(this.dataArray);
-
-        bars.forEach((bar, index) => {
-          const dataIndex = Math.floor(
-            (index / bars.length) * this.dataArray.length
-          );
-          const amplitude = this.dataArray[dataIndex] / 255;
-          const height = Math.max(3, amplitude * 25);
-
-          bar.style.height = `${height}px`;
-          bar.classList.toggle("active", amplitude > 0.1);
-        });
-      } else {
-        // Fallback random animation
-        bars.forEach((bar) => {
-          const height = Math.random() * 20 + 3;
-          bar.style.height = `${height}px`;
-          bar.classList.toggle("active", Math.random() > 0.5);
-        });
+      const t = now || performance.now();
+      if (t - lastSampleAt >= SAMPLE_INTERVAL_MS) {
+        lastSampleAt = t;
+        history.shift(); // drop the oldest (leftmost) sample
+        history.push(sampleVolume()); // newest enters on the right
+        render(); // CSS height transition smooths the leftward scroll
       }
 
       this.animationId = requestAnimationFrame(animate);
     };
 
-    animate();
+    this.animationId = requestAnimationFrame(animate);
   }
 
   stopWaveAnimation() {
