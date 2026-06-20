@@ -3362,7 +3362,7 @@ dependencies = [
 
 [[package]]
 name = "saytype"
-version = "1.0.104"
+version = "1.0.107"
 dependencies = [
  "anyhow",
  "chrono",
