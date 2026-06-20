@@ -14,6 +14,13 @@ const INPUT_PROMPT_ENTRY_SCRIPT: &str = include_str!("../../src/views/input-prom
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    // single-instance MUST be the first plugin. A second launch hands off to
+    // the already-running instance (which surfaces its window) and then exits,
+    // instead of running a duplicate that would register a second global hotkey
+    // and transcribe/insert every utterance twice.
+    .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+      tray::show_main_window(app);
+    }))
     .manage(state::AppState::default())
     .on_page_load(|webview, payload| {
       let label = webview.label().to_string();

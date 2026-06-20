@@ -229,6 +229,16 @@ pub fn normalize_record_shortcut(value: &str) -> String {
   }
 }
 
+/// Whether the macOS login-item registration must be re-applied.
+///
+/// Re-registering runs `launchctl load` on a `RunAtLoad` LaunchAgent, which
+/// immediately spawns a fresh process. Doing that on every settings save would
+/// launch a duplicate app instance, so callers must only re-apply when the
+/// value actually changed.
+pub fn auto_launch_needs_update(previous: bool, next: bool) -> bool {
+  previous != next
+}
+
 pub fn update_auto_launch(enabled: bool) -> Result<()> {
   #[cfg(target_os = "macos")]
   {
@@ -316,5 +326,16 @@ mod tests {
     assert_eq!(config.api_key_openai, "osk");
     assert_eq!(config.provider, "groq");
     assert_eq!(config.language, "en");
+  }
+
+  #[test]
+  fn auto_launch_reapplies_only_when_value_changes() {
+    // Unchanged → must NOT re-register: re-registering runs `launchctl load`
+    // on a RunAtLoad agent, spawning a duplicate instance on every save.
+    assert!(!auto_launch_needs_update(true, true));
+    assert!(!auto_launch_needs_update(false, false));
+    // Changed → must re-register (enable installs+loads, disable removes).
+    assert!(auto_launch_needs_update(false, true));
+    assert!(auto_launch_needs_update(true, false));
   }
 }

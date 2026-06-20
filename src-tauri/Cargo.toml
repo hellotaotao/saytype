@@ -1,6 +1,6 @@
 [package]
 name = "saytype"
-version = "1.0.107"
+version = "1.0.108"
 description = "Voice input method software"
 authors = ["Tao"]
 license = "PolyForm-Noncommercial-1.0.0"
@@ -31,6 +31,7 @@ tauri-plugin-log = "2"
 thiserror = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tauri-plugin-single-instance = "2.4.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

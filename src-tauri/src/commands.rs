@@ -78,7 +78,12 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
   config.api_key = settings::selected_api_key(&config);
 
   settings::write_config(&config).map_err(stringify_error)?;
-  settings::update_auto_launch(config.auto_launch).map_err(stringify_error)?;
+  // Only re-apply the login item when auto-launch actually changed. Re-running
+  // `launchctl load` on every save would spawn a duplicate instance (the agent
+  // is RunAtLoad), which is the root cause of the double-transcribe bug.
+  if settings::auto_launch_needs_update(existing.auto_launch, config.auto_launch) {
+    settings::update_auto_launch(config.auto_launch).map_err(stringify_error)?;
+  }
 
   if let Some(handle) = state.hotkey.lock().unwrap().as_ref() {
     handle.update_shortcut(config.shortcut.clone());
