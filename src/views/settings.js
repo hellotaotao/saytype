@@ -278,8 +278,6 @@ function bindEventHandlers() {
     item.addEventListener("click", handleSidebarClick);
   });
 
-  window.closeSettings = closeSettings;
-  window.saveSettings = saveSettings;
   pageEventsBound = true;
 }
 

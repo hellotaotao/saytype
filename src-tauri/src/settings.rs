@@ -181,7 +181,19 @@ pub fn write_config_to_path(path: &Path, config: &AppConfig) -> Result<()> {
       .with_context(|| format!("failed to create {}", parent.display()))?;
   }
   let text = serde_json::to_string_pretty(config)?;
-  fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
+  // Atomic write: serialize to a sibling temp file, then rename over the target.
+  // rename is atomic on the same filesystem, so a crash/power loss mid-write
+  // leaves either the old complete config or the new one — never a truncated,
+  // unparseable file (which would silently reset settings, including API keys).
+  let file_name = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .unwrap_or(CONFIG_FILE_NAME);
+  let tmp_path = path.with_file_name(format!("{file_name}.tmp"));
+  fs::write(&tmp_path, text)
+    .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+  fs::rename(&tmp_path, path)
+    .with_context(|| format!("failed to replace {}", path.display()))?;
   Ok(())
 }
 
@@ -221,12 +233,15 @@ pub fn normalize_record_shortcut(value: &str) -> String {
     return DEFAULT_RECORD_SHORTCUT.into();
   }
 
-  let shortcut = ordered.join("+");
-  if shortcut == TRANSLATE_SHORTCUT {
-    DEFAULT_RECORD_SHORTCUT.into()
-  } else {
-    shortcut
+  // The translate combo is Shift+Alt. Any record shortcut containing BOTH Shift
+  // and Alt collides with it: you can't physically form a superset like
+  // Ctrl+Shift+Alt without passing through Shift+Alt first, which fires the
+  // translate trigger mid-press. So reject the whole family (exact match OR
+  // superset), not just the exact match, and fall back to the safe default.
+  if modifiers.contains("Shift") && modifiers.contains("Alt") {
+    return DEFAULT_RECORD_SHORTCUT.into();
   }
+  ordered.join("+")
 }
 
 /// Whether the macOS login-item registration must be re-applied.
@@ -300,6 +315,9 @@ mod tests {
   fn normalize_invalid_shortcuts_falls_back() {
     assert_eq!(normalize_record_shortcut("Ctrl"), DEFAULT_RECORD_SHORTCUT);
     assert_eq!(normalize_record_shortcut("Shift+Alt"), DEFAULT_RECORD_SHORTCUT);
+    // Superset of the translate combo (Shift+Alt) must also fall back — it would
+    // otherwise mis-fire into translate mode mid-keypress.
+    assert_eq!(normalize_record_shortcut("Ctrl+Shift+Alt"), DEFAULT_RECORD_SHORTCUT);
     assert_eq!(normalize_record_shortcut("control + option"), "Ctrl+Alt");
   }
 
