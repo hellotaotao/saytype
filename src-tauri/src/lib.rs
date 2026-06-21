@@ -82,13 +82,31 @@ pub fn run() {
       }
     })
     .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
+      // Logging: dev → Info to stdout; release → Warn+ to a size-capped rotating
+      // file at ~/Library/Logs/com.tao.saytype/SayType.log, so a shipped build
+      // still leaves diagnostics when a user reports "nothing happened" (these
+      // log calls were previously no-ops in release). API keys and transcribed
+      // text are never logged, so the file holds no sensitive content.
+      let log_plugin = if cfg!(debug_assertions) {
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Info)
+          .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Stdout,
+          ))
+          .build()
+      } else {
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Warn)
+          .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::LogDir {
+              file_name: Some("SayType".into()),
+            },
+          ))
+          .max_file_size(1_000_000) // ~1 MB cap
+          .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+          .build()
+      };
+      app.handle().plugin(log_plugin)?;
 
       tray::create(&app.handle())?;
 
