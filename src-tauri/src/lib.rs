@@ -143,6 +143,7 @@ pub fn run() {
       commands::request_accessibility_permission,
       commands::recheck_accessibility_permission,
       commands::get_recent_activities,
+      commands::read_debug_audio,
       commands::delete_history_item,
       commands::clear_history,
       commands::get_dictionary,

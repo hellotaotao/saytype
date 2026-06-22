@@ -182,6 +182,12 @@ pub async fn transcribe_audio(
     .unwrap()
     .insert(request_id, cancellation.clone());
 
+  // Dev-only: keep a copy of the exact bytes we send, so history can play the
+  // recording back (for diagnosing first-word drop / quality). Never in release.
+  let mime = mime_type.unwrap_or_else(|| "audio/webm".into());
+  let audio_for_debug =
+    cfg!(debug_assertions).then(|| (audio_buffer.clone(), mime.clone()));
+
   let result = tokio::select! {
     _ = cancellation.cancelled() => Err(anyhow::anyhow!("TRANSCRIPTION_CANCELLED")),
     result = perform_transcription_request(
@@ -190,7 +196,7 @@ pub async fn transcribe_audio(
       &api_key,
       audio_buffer,
       translate_mode.unwrap_or(false),
-      mime_type.unwrap_or_else(|| "audio/webm".into()),
+      mime,
     ) => result,
   };
 
@@ -198,7 +204,7 @@ pub async fn transcribe_audio(
 
   match result {
     Ok(text) => {
-      append_activity(&text, true, None).map_err(stringify_error)?;
+      append_activity(&text, true, None, audio_for_debug).map_err(stringify_error)?;
       let _ = app.emit("activity-updated", ());
       Ok(text)
     }
@@ -213,7 +219,7 @@ pub async fn transcribe_audio(
         "Transcription"
       };
       let message = format!("{mode} failed: {}", error);
-      append_activity(&message, false, Some(error.to_string())).map_err(stringify_error)?;
+      append_activity(&message, false, Some(error.to_string()), audio_for_debug).map_err(stringify_error)?;
       let _ = app.emit("activity-updated", ());
       Err(error.to_string())
     }
@@ -378,10 +384,25 @@ pub fn get_recent_activities() -> Result<Vec<Value>, String> {
   history::read_history_entries().map_err(stringify_error)
 }
 
+#[derive(Serialize)]
+pub struct DebugAudio {
+  pub bytes: Vec<u8>,
+  pub mime: String,
+}
+
+// Dev-only: return the original recorded audio for a history entry so the UI can
+// play it back. Errors if the file is absent (e.g. an entry without audio).
+#[tauri::command]
+pub fn read_debug_audio(id: String) -> Result<DebugAudio, String> {
+  let (bytes, mime) = history::read_debug_audio(&id).map_err(stringify_error)?;
+  Ok(DebugAudio { bytes, mime })
+}
+
 #[tauri::command]
 pub fn delete_history_item(app: AppHandle, id: String) -> Result<bool, String> {
   log::info!("command:delete_history_item id={id}");
   history::delete_history_entry(&id).map_err(stringify_error)?;
+  let _ = history::delete_debug_audio(&id);
   let _ = app.emit("activity-updated", ());
   Ok(true)
 }
@@ -390,6 +411,7 @@ pub fn delete_history_item(app: AppHandle, id: String) -> Result<bool, String> {
 pub fn clear_history(app: AppHandle) -> Result<bool, String> {
   log::info!("command:clear_history");
   history::clear_history_entries().map_err(stringify_error)?;
+  let _ = history::clear_debug_audio();
   let _ = app.emit("activity-updated", ());
   Ok(true)
 }
@@ -444,19 +466,39 @@ fn broadcast_settings_updates(app: &AppHandle, config: &AppConfig) -> Result<()>
   Ok(())
 }
 
-fn append_activity(text: &str, success: bool, error: Option<String>) -> Result<()> {
+fn append_activity(
+  text: &str,
+  success: bool,
+  error: Option<String>,
+  audio: Option<(Vec<u8>, String)>,
+) -> Result<()> {
   let mut entries = history::read_history_entries()?;
-  entries.insert(
-    0,
-    json!({
-      "id": Utc::now().timestamp_millis().to_string(),
-      "text": text,
-      "timestamp": Utc::now().to_rfc3339(),
-      "success": success,
-      "error": error,
-    }),
-  );
+  let id = Utc::now().timestamp_millis().to_string();
+  let mut entry = json!({
+    "id": id,
+    "text": text,
+    "timestamp": Utc::now().to_rfc3339(),
+    "success": success,
+    "error": error,
+  });
+  // Dev-only: persist the original audio and link it to this entry.
+  if let Some((bytes, mime)) = audio {
+    match history::write_debug_audio(&id, &bytes, &mime) {
+      Ok(()) => {
+        entry["audioId"] = json!(id);
+        entry["audioMime"] = json!(mime);
+      }
+      Err(e) => log::warn!("failed to save debug audio: {e:#}"),
+    }
+  }
+  entries.insert(0, entry);
   if entries.len() > 100 {
+    // Drop the audio files of entries falling off the 100-entry cap.
+    for dropped in &entries[100..] {
+      if let Some(aid) = dropped.get("audioId").and_then(Value::as_str) {
+        let _ = history::delete_debug_audio(aid);
+      }
+    }
     entries.truncate(100);
   }
   history::write_history_entries(&entries)?;
@@ -521,6 +563,16 @@ async fn perform_transcription_request(
       form = form.text("prompt", config.dictionary.clone());
     }
   }
+
+  // Diagnostic: record which model ACTUALLY hits the API. Translate mode is
+  // hardcoded to whisper-1 above (OpenAI's /audio/translations endpoint only
+  // supports whisper-1), so the selected model is ignored there — this line is
+  // the only reliable way to see the real model behind any given request. No API
+  // key or transcribed text is logged (see the log setup note in lib.rs).
+  log::info!(
+    "transcribe: model={model} translate_mode={translate_mode} provider={provider} language={}",
+    config.language
+  );
 
   let response = client
     .post(endpoint)

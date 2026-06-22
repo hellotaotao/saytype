@@ -29,6 +29,7 @@
     "request-accessibility-permission": "request_accessibility_permission",
     "recheck-accessibility-permission": "recheck_accessibility_permission",
     "get-recent-activities": "get_recent_activities",
+    "read-debug-audio": "read_debug_audio",
     "delete-history-item": "delete_history_item",
     "clear-history": "clear_history",
     "get-dictionary": "get_dictionary",
@@ -38,6 +39,7 @@
   const tauriArgs = {
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
+    "read-debug-audio": [["id"]],
     "transcribe-audio": [
       ["audioBuffer", "audio_buffer"],
       ["translateMode", "translate_mode"],

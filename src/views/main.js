@@ -376,6 +376,18 @@ function buildActivityRow(activity) {
   const actions = document.createElement("div");
   actions.className = "activity-actions";
 
+  // Dev-only: play back the original recording captured for this entry.
+  if (cachedSettings?.isDev && activity.audioId) {
+    const playBtn = document.createElement("button");
+    playBtn.className = "icon-btn";
+    playBtn.type = "button";
+    playBtn.title = t("activity.playTitle");
+    playBtn.setAttribute("aria-label", t("activity.playTitle"));
+    playBtn.appendChild(makeIcon("play_arrow"));
+    playBtn.addEventListener("click", () => playDebugAudio(activity.audioId, playBtn));
+    actions.appendChild(playBtn);
+  }
+
   const copyBtn = document.createElement("button");
   copyBtn.className = "icon-btn";
   copyBtn.type = "button";
@@ -399,6 +411,52 @@ function buildActivityRow(activity) {
   item.appendChild(text);
   item.appendChild(actions);
   return item;
+}
+
+// Dev-only: single in-page debug player. Only one recording plays at a time —
+// clicking another row stops the previous one; clicking the playing row stops it
+// (the ▶ button toggles to ⏹ while playing).
+let debugAudio = null; // { audio, url, btn } | null
+let debugAudioGen = 0;
+
+function stopDebugAudio() {
+  if (!debugAudio) return;
+  debugAudio.audio.pause();
+  URL.revokeObjectURL(debugAudio.url);
+  if (debugAudio.btn) debugAudio.btn.replaceChildren(makeIcon("play_arrow"));
+  debugAudio = null;
+}
+
+async function playDebugAudio(audioId, btn) {
+  // Toggle: clicking the currently-playing row's button just stops it.
+  const wasPlayingThis = debugAudio && debugAudio.btn === btn;
+  stopDebugAudio();
+  if (wasPlayingThis) return;
+
+  const gen = ++debugAudioGen;
+  try {
+    const res = await ipc.invoke("read-debug-audio", audioId);
+    if (gen !== debugAudioGen) return; // a newer click superseded this one
+    const bytes =
+      res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
+    const blob = new Blob([bytes], { type: res.mime || "audio/mp4" });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    debugAudio = { audio, url, btn };
+    if (btn) btn.replaceChildren(makeIcon("stop"));
+    const stopIfCurrent = () => {
+      if (debugAudio && debugAudio.audio === audio) stopDebugAudio();
+    };
+    audio.addEventListener("ended", stopIfCurrent);
+    audio.addEventListener("error", () => {
+      console.error("[debug-audio] element error code:", audio.error && audio.error.code);
+      stopIfCurrent();
+    });
+    await audio.play();
+  } catch (error) {
+    console.error("[debug-audio] playback failed:", error);
+    stopDebugAudio();
+  }
 }
 
 function renderGroupedList(container, activities) {

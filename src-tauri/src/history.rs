@@ -56,10 +56,101 @@ pub fn clear_history_entries() -> Result<()> {
   write_history_entries(&[])
 }
 
+// ---- Debug-only: original-audio capture so history can play back the exact
+// bytes sent to the transcription API. Gated by cfg!(debug_assertions) at the
+// call sites; these helpers themselves are storage-only. ----
+
+pub fn ext_for_mime(mime: &str) -> &'static str {
+  if mime.contains("mp4") {
+    "m4a"
+  } else {
+    "webm"
+  }
+}
+
+fn mime_for_ext(ext: &str) -> String {
+  if ext == "m4a" {
+    "audio/mp4".into()
+  } else {
+    "audio/webm".into()
+  }
+}
+
+pub fn write_debug_audio_in(dir: &Path, id: &str, bytes: &[u8], mime: &str) -> Result<()> {
+  fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+  let path = dir.join(format!("{id}.{}", ext_for_mime(mime)));
+  fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+  Ok(())
+}
+
+pub fn read_debug_audio_in(dir: &Path, id: &str) -> Result<(Vec<u8>, String)> {
+  for ext in ["m4a", "webm"] {
+    let path = dir.join(format!("{id}.{ext}"));
+    if path.exists() {
+      let bytes =
+        fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+      return Ok((bytes, mime_for_ext(ext)));
+    }
+  }
+  anyhow::bail!("no debug audio for id {id}")
+}
+
+pub fn delete_debug_audio_in(dir: &Path, id: &str) -> Result<()> {
+  for ext in ["m4a", "webm"] {
+    let path = dir.join(format!("{id}.{ext}"));
+    if path.exists() {
+      let _ = fs::remove_file(&path);
+    }
+  }
+  Ok(())
+}
+
+pub fn clear_debug_audio_in(dir: &Path) -> Result<()> {
+  if dir.exists() {
+    let _ = fs::remove_dir_all(dir);
+  }
+  Ok(())
+}
+
+pub fn write_debug_audio(id: &str, bytes: &[u8], mime: &str) -> Result<()> {
+  write_debug_audio_in(&settings::debug_audio_dir()?, id, bytes, mime)
+}
+
+pub fn read_debug_audio(id: &str) -> Result<(Vec<u8>, String)> {
+  read_debug_audio_in(&settings::debug_audio_dir()?, id)
+}
+
+pub fn delete_debug_audio(id: &str) -> Result<()> {
+  delete_debug_audio_in(&settings::debug_audio_dir()?, id)
+}
+
+pub fn clear_debug_audio() -> Result<()> {
+  clear_debug_audio_in(&settings::debug_audio_dir()?)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use tempfile::TempDir;
+
+  #[test]
+  fn debug_audio_roundtrip_and_cleanup() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path();
+    write_debug_audio_in(dir, "100", &[1, 2, 3], "audio/mp4").unwrap();
+    let (bytes, mime) = read_debug_audio_in(dir, "100").unwrap();
+    assert_eq!(bytes, vec![1, 2, 3]);
+    assert_eq!(mime, "audio/mp4"); // m4a -> audio/mp4
+    assert!(dir.join("100.m4a").exists());
+
+    delete_debug_audio_in(dir, "100").unwrap();
+    assert!(read_debug_audio_in(dir, "100").is_err());
+    delete_debug_audio_in(dir, "missing").unwrap(); // best-effort, no error
+
+    write_debug_audio_in(dir, "1", &[9], "audio/webm").unwrap();
+    clear_debug_audio_in(dir).unwrap();
+    assert!(read_debug_audio_in(dir, "1").is_err());
+  }
 
   #[test]
   fn parses_history_entries() {

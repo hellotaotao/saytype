@@ -61,6 +61,7 @@
       activity: {
         copyTitle: "Copy text",
         deleteTitle: "Delete",
+        playTitle: "Play recording (debug)",
       },
       settings: {
         title: "Settings - SayType",
@@ -254,6 +255,7 @@
       activity: {
         copyTitle: "复制文本",
         deleteTitle: "删除",
+        playTitle: "播放录音（调试）",
       },
       settings: {
         title: "设置 - SayType",

@@ -155,6 +155,10 @@ pub fn history_path() -> Result<PathBuf> {
   Ok(app_data_dir()?.join(HISTORY_FILE_NAME))
 }
 
+pub fn debug_audio_dir() -> Result<PathBuf> {
+  Ok(app_data_dir()?.join("debug-audio"))
+}
+
 pub fn read_config() -> Result<AppConfig> {
   read_config_from_path(&config_path()?)
 }
