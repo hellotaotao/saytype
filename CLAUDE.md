@@ -36,6 +36,71 @@ ad-hoc signing (the default when the file is absent) changes the cdhash each bui
 Notarized release builds additionally set `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` and require a
 *Developer ID Application* cert; local builds skip notarization.
 
+## Release signing & notarization (macOS)
+
+Releases are built, signed, **and notarized** entirely in CI — see
+[`.github/workflows/release.yml`](.github/workflows/release.yml). Pushing a `v*`
+tag (e.g. `v1.0.108`) runs `tauri-apps/tauri-action`, which builds a universal
+DMG, signs it with Developer ID, submits it to Apple's notary service, staples
+the ticket, and opens a **draft** GitHub Release with the DMG attached.
+Notarization is intentionally CI-only: it uploads the build to Apple and waits
+minutes, whereas local signing is instant (local builds skip it).
+
+Notarization = Apple scans the signed app and returns a ticket that gets
+**stapled into the bundle**, so Gatekeeper lets *other* Macs run it without the
+"unidentified developer" warning. Prereqs: Hardened Runtime (already on) **and a
+Developer ID Application signature** — the local `Apple Development` cert is
+rejected by the notary service.
+
+### One-time setup (then every `v*` tag is automatic)
+
+1. **Developer ID Application certificate** — a *different cert type* than the
+   `Apple Development` one used locally, generated from the same paid account:
+   Xcode → Settings → Accounts → (team) → Manage Certificates → `+` →
+   *Developer ID Application* (or developer.apple.com → Certificates). Then
+   Keychain Access → export it as a password-protected `.p12`.
+2. **App-specific password** (for the notary login) — appleid.apple.com →
+   Sign-In and Security → App-Specific Passwords. NOT your Apple ID password.
+3. **Base64 the cert** for the secret: `base64 -i DeveloperID.p12 | pbcopy`.
+
+### GitHub repo secrets (Settings → Secrets and variables → Actions)
+
+These six names are exactly what `release.yml` consumes:
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of the `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Tao Wang (CU3VTR9MRH)` |
+| `APPLE_ID` | your Apple ID (`hellotaotao@gmail.com`) |
+| `APPLE_PASSWORD` | the app-specific password from step 2 |
+| `APPLE_TEAM_ID` | `CU3VTR9MRH` |
+
+`tauri-action` imports the cert into a temporary keychain and signs; because the
+`APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` trio is also present it then
+notarizes and staples — no extra YAML steps. (Alternative to the Apple-ID trio:
+an App Store Connect API key via `APPLE_API_ISSUER`/`APPLE_API_KEY`/
+`APPLE_API_KEY_PATH`.)
+
+### Cutting a release
+
+The workflow builds whatever version is in the **tagged commit's**
+`tauri.conf.json`/`Cargo.toml`, so bump + commit first, then tag:
+
+```bash
+npm run version:tauri:patch        # bump package.json/tauri.conf.json/Cargo.toml
+git commit -am "chore(release): bump version to X.Y.Z"
+git tag vX.Y.Z && git push origin main --tags
+```
+
+Then review the draft Release on GitHub and click Publish (or set
+`releaseDraft: false` to auto-publish).
+
+### Verify a notarized build
+
+- `spctl -a -t exec -vv SayType.app` → `accepted … source=Notarized Developer ID`
+- `xcrun stapler validate SayType.app` → `The validate action worked!`
+
 ## Architecture Overview
 
 SayType is a Tauri 2 voice-input app: a **Rust backend** (`src-tauri/src/`) hosting a
