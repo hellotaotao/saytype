@@ -773,6 +773,27 @@ class VoiceInputPrompt {
       const audioBlob = new Blob(chunks, {
         type: mimeType || "audio/webm", // Use actual recording format
       });
+
+      // Neural VAD gate: if the clip contains no speech, skip transcription
+      // entirely (no API call, no history) and reuse the no-speech UI. Fail
+      // OPEN — any VAD error falls through to normal transcription so a VAD
+      // bug can never drop a real recording.
+      try {
+        if (window.SayTypeVadGate) {
+          const verdict = await window.SayTypeVadGate.hasSpeech(audioBlob);
+          if (!verdict.speech) {
+            this.removePendingInsertion(sessionId);
+            if (allowUi) {
+              this.statusText.textContent = t("inputPrompt.noSpeech");
+              this.scheduleHidePrompt(2000);
+            }
+            return;
+          }
+        }
+      } catch (vadError) {
+        console.warn("VAD gate failed; proceeding to transcription:", vadError);
+      }
+
       const arrayBuffer = await audioBlob.arrayBuffer();
       const audioBuffer = Array.from(new Uint8Array(arrayBuffer));
 
