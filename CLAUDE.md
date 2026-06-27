@@ -19,10 +19,11 @@ npm run build:linux    # Build for Linux (x86_64-unknown-linux-gnu)
 ```
 
 Building requires a **Rust toolchain** (`rustup`) in addition to Node + `@tauri-apps/cli`.
-`npm run version:tauri:patch` bumps the patch version in `package.json`,
-`src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` via `scripts/bump-tauri-version.js`.
-Run it **manually** when cutting a release — builds no longer auto-bump (that made the
-version climb on every local build).
+`npm run version:tauri:patch` bumps the **patch** version (no arg), or pass an explicit
+version for a minor/major — `node scripts/bump-tauri-version.js 1.2.0` — across all four:
+`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`
+(via `scripts/bump-tauri-version.js`). Run it **manually** when cutting a release — builds no
+longer auto-bump (that made the version climb on every local build).
 
 The mac build scripts set `CI=true` (so tauri skips the Finder-prettifying AppleScript that
 fails in non-interactive shells) and run `scripts/collect-artifacts.js`, which **always copies
