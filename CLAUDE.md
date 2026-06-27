@@ -195,24 +195,40 @@ So the limitation is **macOS-only**:
   — verify if ever targeted.
 - (Text insertion + hotkey are macOS-only today, so Windows/Linux aren't live targets yet.)
 
-### Future (optional): adding NS/AGC on macOS
+### Decision: do NOT add NS/AGC, and do NOT pre-denoise (researched 2026-06-22)
 
-NS/AGC are marginal for cloud Whisper (robust + self-normalizing), so confirm a real quality
-problem before adding complexity. If needed, in rough order of effort:
+This was previously framed as "NS/AGC are marginal, add if needed." **Research overturns that:
+pre-processing audio with noise suppression or AGC before a cloud transcription model is
+neutral-to-harmful — so don't.**
 
-1. **AGC** — DIY RMS normalization (a few lines), or let Whisper handle it.
-2. **Noise suppression** — RNNoise: Rust crate `nnnoiseless` (pure Rust, no C++ build) or its
-   WASM build in a frontend AudioWorklet. Small, good quality — best effort/value.
-3. **Chrome's exact stack** — Chrome's processing is the open-source **WebRTC Audio Processing
-   Module** (AEC3 + NS + AGC); the `webrtc-audio-processing` Rust crate wraps the same library.
-   Feed raw PCM in 10ms frames. Most complete, moderate effort (C++ build).
-4. **macOS-native (have-your-cake)** — VoiceProcessingIO itself bundles EC+NS+AGC (WebKit only
-   exposes EC). Capture natively in Rust (AVAudioEngine, voice processing on) and **keep the unit
-   warm** → Apple's full processing with no per-recording cold start. Biggest change (moves capture
-   out of the webview).
+- Modern end-to-end ASR have *learned* noise/level robustness (not a bolt-on denoiser): Whisper was
+  trained on 680k hr of noisy audio; gpt-4o-mini-transcribe is OpenAI-positioned as "optimized for
+  noisy backgrounds." Whisper also normalizes its input level, so external **AGC is largely redundant**.
+- Pre-denoising tends to **hurt**: the systematic study *When De-noising Hurts*
+  ([arXiv 2512.17562](https://arxiv.org/abs/2512.17562)) found speech enhancement degraded ASR in
+  **all 40 configs** (4 models × 10 noise conditions), +1.1–46.6% absolute semWER, with a penalty even
+  on clean audio; Whisper was the most sensitive (*When Denoising Hinders*,
+  [arXiv 2603.04710](https://arxiv.org/html/2603.04710v1)). Cause: denoiser artifacts + mismatch with
+  the noisy distribution the model trained on + removal of cues the ASR actually uses.
+- **Corollary:** WebKit's inability to do NS/AGC in `getUserMedia` is **not a real deficiency** for
+  this app, and is **not** a reason to reconsider Electron or native Rust capture. EC is separately
+  useless for dictation (no echo source). Only extreme far-field / very-low-level capture could matter
+  — and post-hoc AGC can't rescue a near-noise-floor recording anyway.
 
-Processing location: options 1–2 can run in a frontend AudioWorklet (capture with system processing
-off → denoise → record); options 3–4 in the Rust backend.
+If a real, *measured* quality problem ever shows up in noisy/far conditions (test first: feed the
+**same** clip raw vs processed through the actual model and compare), the lowest-cost lever would be
+RNNoise NS in a frontend AudioWorklet (`@jitsi/rnnoise-wasm`, or Rust `nnnoiseless`); the full Chrome
+stack (`webrtc-audio-processing`, C++ build) and native-Rust VoiceProcessingIO capture are heavier and
+only worth it if that fails. Default, evidence-backed stance: **don't**.
+
+### Recording format & bitrate (measured 2026-06-22)
+
+WKWebView records **AAC-LC, 48 kHz, stereo, ~155 kbps** (a ~10 s clip ≈ 200 KB). **WebKit's
+MediaRecorder ignores `audioBitsPerSecond`** — requesting 32 kbps still produced ~155 kbps, so upload
+size can't be cheaply lowered from the recorder. Real reduction would need re-encoding (WebCodecs, or
+a backend encoder) — extra CPU/complexity, not worth it for short dictation clips. Sample rate is moot
+too: Whisper resamples to 16 kHz server-side regardless. (Windows WebView2 = Chromium *does* honor
+`audioBitsPerSecond`, so this is WebKit-specific, like the NS/AGC gap above.)
 
 ## Development Notes
 

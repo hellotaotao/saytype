@@ -2,6 +2,7 @@ node_modules/
 .vscode/
 dist/
 TODO.md
+example/
 .claude/settings.local.json
 src-tauri/target/
 src-tauri/gen/
@@ -9,3 +10,4 @@ src-tauri/gen/
 
 # Local-only signing identity for mac builds (copy scripts/sign.env.example)
 scripts/sign.env
+.playwright-mcp/
