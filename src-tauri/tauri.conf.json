@@ -38,7 +38,7 @@
         "decorations": true,
         "titleBarStyle": "Visible",
         "shadow": true,
-        "focus": true,
+        "focus": false,
         "parent": "main"
       },
       {

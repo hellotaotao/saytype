@@ -124,6 +124,15 @@ pub fn run() {
         }
       }
 
+      // Tauri creates the settings window visible on launch despite its
+      // visible:false config — it's the only window with parent:"main", and
+      // such child windows don't reliably honor visible:false. Nothing calls
+      // open_settings, so force-hide it here; it then only appears when the
+      // user actually opens Settings (button / Cmd+, / tray).
+      if let Some(settings_window) = app.get_webview_window("settings") {
+        let _ = settings_window.hide();
+      }
+
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
