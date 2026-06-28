@@ -89,6 +89,9 @@ pub fn run() {
       // text are never logged, so the file holds no sensitive content.
       let log_plugin = if cfg!(debug_assertions) {
         tauri_plugin_log::Builder::default()
+          // Builder::default() pre-adds [Stdout, LogDir]; without clearing,
+          // our .target() below is appended and every line is logged twice.
+          .clear_targets()
           .level(log::LevelFilter::Info)
           .target(tauri_plugin_log::Target::new(
             tauri_plugin_log::TargetKind::Stdout,
@@ -96,6 +99,9 @@ pub fn run() {
           .build()
       } else {
         tauri_plugin_log::Builder::default()
+          // clear the default [Stdout, LogDir] so we only write our SayType.log
+          // (otherwise lines duplicate and a stray default-named log is created).
+          .clear_targets()
           .level(log::LevelFilter::Warn)
           .target(tauri_plugin_log::Target::new(
             tauri_plugin_log::TargetKind::LogDir {
