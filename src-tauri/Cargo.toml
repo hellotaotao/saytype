@@ -1,6 +1,6 @@
 [package]
 name = "saytype"
-version = "1.1.0"
+version = "1.2.2"
 description = "Voice input method software"
 authors = ["Tao"]
 license = "PolyForm-Noncommercial-1.0.0"
