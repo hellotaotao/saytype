@@ -456,13 +456,9 @@ class VoiceInputPrompt {
       if (!settings) {
         return true;
       }
-      // Mirror the backend's selected_api_key(): OpenAI uses the OpenAI key
-      // (falling back to the legacy shared key), any other provider uses Groq.
-      const key =
-        settings.provider === "openai"
-          ? settings.apiKeyOpenAI || settings.apiKey
-          : settings.apiKeyGroq || settings.apiKey;
-      return hasMeaningfulText(key);
+      // The backend now reports key presence (get_settings no longer ships the
+      // raw keys to this window). Fail open if the flag is somehow absent.
+      return settings.hasApiKey !== false;
     } catch (error) {
       console.error("Failed to check API key before recording:", error);
       // Don't block recording on a settings-read failure — the backend will

@@ -487,6 +487,13 @@ async function loadSettings() {
 
   try {
     currentSettings = await ipc.invoke("get-settings");
+    // Raw API keys come from a dedicated command — get_settings no longer ships
+    // them (only a hasApiKey flag), so they're never sent to the main /
+    // input-prompt windows. Only this settings window fetches them, to edit.
+    // Shares fate with the get-settings call above: if the config is readable
+    // for one it is for the other, so this won't leave the key fields blank
+    // (which a subsequent Save would persist as cleared keys).
+    const apiKeys = await ipc.invoke("get-api-keys");
     initI18n(currentSettings.uiLanguage);
     applyTheme(currentSettings.uiTheme);
 
@@ -507,10 +514,10 @@ async function loadSettings() {
     toggleApiKeyVisibility(provider);
 
     if (apiKeyGroq) {
-      apiKeyGroq.value = currentSettings.apiKeyGroq || currentSettings.apiKey || "";
+      apiKeyGroq.value = apiKeys.apiKeyGroq || apiKeys.apiKey || "";
     }
     if (apiKeyOpenAI) {
-      apiKeyOpenAI.value = currentSettings.apiKeyOpenAI || "";
+      apiKeyOpenAI.value = apiKeys.apiKeyOpenAI || "";
     }
 
     setSelectValue(shortcutSelect, currentSettings.shortcut || "Ctrl+Shift", "Ctrl+Shift");

@@ -143,6 +143,7 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       commands::get_settings,
+      commands::get_api_keys,
       commands::save_settings,
       commands::get_app_version,
       commands::open_settings,

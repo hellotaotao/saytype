@@ -99,10 +99,10 @@ impl Default for AppConfig {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPayload {
-  pub api_key: String,
-  pub api_key_groq: String,
-  #[serde(rename = "apiKeyOpenAI")]
-  pub api_key_openai: String,
+  /// Whether the selected provider has a usable key. The raw keys are NOT in
+  /// this payload — get_settings is read by every window (main, input-prompt),
+  /// and only the settings window needs the actual keys (via get_api_keys).
+  pub has_api_key: bool,
   pub shortcut: String,
   pub translate_shortcut: String,
   pub language: String,
@@ -120,9 +120,7 @@ pub struct SettingsPayload {
 impl SettingsPayload {
   pub fn from_config(config: &AppConfig) -> Self {
     Self {
-      api_key: config.api_key.clone(),
-      api_key_groq: config.api_key_groq.clone(),
-      api_key_openai: config.api_key_openai.clone(),
+      has_api_key: !selected_api_key(config).trim().is_empty(),
       shortcut: config.shortcut.clone(),
       translate_shortcut: config.translate_shortcut.clone(),
       language: config.language.clone(),
@@ -392,5 +390,22 @@ mod tests {
     let read = read_config_from_path(&path).unwrap();
     assert_eq!(read.provider, "openai");
     assert_eq!(read.api_key_openai, "sk-test");
+  }
+
+  #[test]
+  fn settings_payload_reports_key_presence_without_raw_keys() {
+    let mut config = AppConfig::default();
+    config.provider = "openai".into();
+    // No key for the selected provider yet.
+    assert!(!SettingsPayload::from_config(&config).has_api_key);
+    // OpenAI key present → selected provider has a usable key.
+    config.api_key_openai = "sk-x".into();
+    assert!(SettingsPayload::from_config(&config).has_api_key);
+    // Switch to groq with no groq key and no legacy key → none usable.
+    config.provider = "groq".into();
+    assert!(!SettingsPayload::from_config(&config).has_api_key);
+    // Legacy shared key acts as the fallback for the selected provider.
+    config.api_key = "legacy".into();
+    assert!(SettingsPayload::from_config(&config).has_api_key);
   }
 }

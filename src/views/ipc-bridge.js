@@ -14,6 +14,7 @@
 
   const tauriCommands = {
     "get-settings": "get_settings",
+    "get-api-keys": "get_api_keys",
     "save-settings": "save_settings",
     "get-app-version": "get_app_version",
     "open-settings": "open_settings",

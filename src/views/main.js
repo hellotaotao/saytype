@@ -61,14 +61,8 @@ function shortcutKeycaps(shortcut) {
 }
 
 function hasApiKey(settings) {
-  if (!settings) {
-    return false;
-  }
-  const key =
-    settings.provider === "openai"
-      ? settings.apiKeyOpenAI || settings.apiKey
-      : settings.apiKeyGroq || settings.apiKey;
-  return typeof key === "string" && key.trim().length > 0;
+  // The backend computes this (get_settings no longer ships the raw keys here).
+  return !!settings?.hasApiKey;
 }
 
 async function initializeMainPage() {

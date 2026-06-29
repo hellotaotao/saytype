@@ -62,6 +62,28 @@ pub fn get_settings() -> Result<SettingsPayload, String> {
     .map_err(stringify_error)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeys {
+  pub api_key: String,
+  pub api_key_groq: String,
+  #[serde(rename = "apiKeyOpenAI")]
+  pub api_key_openai: String,
+}
+
+// The raw API keys, kept out of get_settings so the secrets are only ever sent
+// to the window that edits them (settings) — not to every window that reads
+// general settings (main, input-prompt).
+#[tauri::command]
+pub fn get_api_keys() -> Result<ApiKeys, String> {
+  let config = settings::read_config().map_err(stringify_error)?;
+  Ok(ApiKeys {
+    api_key: config.api_key,
+    api_key_groq: config.api_key_groq,
+    api_key_openai: config.api_key_openai,
+  })
+}
+
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_, AppState>) -> Result<bool, String> {
   log::info!(
