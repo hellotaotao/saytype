@@ -109,6 +109,14 @@ class VoiceInputPrompt {
     this.setupEventListeners();
     this.syncShortcutFromSettings();
     this.primeMicrophone();
+    this.primeVad();
+  }
+
+  // Prewarm the neural VAD (onnxruntime wasm + Silero model) at launch, same
+  // idea as primeMicrophone: move the ~0.5-1s first-load off the user's first
+  // dictation. window.SayTypeVadGate is defined by vad-gate.js (loaded first).
+  primeVad() {
+    window.SayTypeVadGate?.warmup?.();
   }
 
   // Prime the WebKit audio stack once at launch. The first getUserMedia in a

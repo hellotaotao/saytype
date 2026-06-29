@@ -58,5 +58,18 @@
     return window.SayTypeVad.decideSpeech(segments, MIN_SPEECH_MS);
   }
 
-  window.SayTypeVadGate = { hasSpeech };
+  // Prewarm: load the wasm runtime + Silero model (and run one short silent
+  // buffer to warm the inference path) so the first real recording doesn't pay
+  // the ~0.5-1s init. Best-effort — any failure just falls back to lazy-loading.
+  async function warmup() {
+    try {
+      const vad = await getVad();
+      const silence = new Float32Array(8000); // 0.5 s @ 16 kHz
+      for await (const seg of vad.run(silence, 16000)) { void seg; }
+    } catch (e) {
+      console.warn("VAD warmup failed; will lazy-load on first use:", e);
+    }
+  }
+
+  window.SayTypeVadGate = { hasSpeech, warmup };
 })();
