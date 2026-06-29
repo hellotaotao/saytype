@@ -29,14 +29,11 @@ pub fn write_history_entries(entries: &[Value]) -> Result<()> {
 }
 
 pub fn write_history_entries_to(path: &Path, entries: &[Value]) -> Result<()> {
-  if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent)
-      .with_context(|| format!("failed to create {}", parent.display()))?;
-  }
-
   let text = serde_json::to_string_pretty(&json!({ "activities": entries }))?;
-  fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
-  Ok(())
+  // Atomic write (temp + rename) so a crash mid-write can't leave a truncated,
+  // unparseable history.json — which would otherwise fail every later read and,
+  // via append_activity, surface as a transcription failure.
+  settings::atomic_write(path, &text)
 }
 
 pub fn delete_history_entry(id: &str) -> Result<()> {
@@ -150,6 +147,29 @@ mod tests {
     write_debug_audio_in(dir, "1", &[9], "audio/webm").unwrap();
     clear_debug_audio_in(dir).unwrap();
     assert!(read_debug_audio_in(dir, "1").is_err());
+  }
+
+  #[test]
+  fn history_write_is_atomic_and_roundtrips() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("transcription-history.json");
+    let entries = vec![
+      json!({"id": "1", "text": "hello"}),
+      json!({"id": "2", "text": "world"}),
+    ];
+    write_history_entries_to(&path, &entries).unwrap();
+
+    // The temp file must have been renamed away — no ".tmp" left beside the target.
+    let stray = fs::read_dir(temp.path())
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .any(|e| e.file_name().to_string_lossy().contains(".tmp"));
+    assert!(!stray, "atomic_write must not leave a temp file behind");
+
+    let read = read_history_entries_from(&path).unwrap();
+    assert_eq!(read.len(), 2);
+    assert_eq!(read[0]["text"], "hello");
+    assert_eq!(read[1]["id"], "2");
   }
 
   #[test]

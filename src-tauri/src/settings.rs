@@ -180,21 +180,33 @@ pub fn write_config(config: &AppConfig) -> Result<()> {
 }
 
 pub fn write_config_to_path(path: &Path, config: &AppConfig) -> Result<()> {
+  let text = serde_json::to_string_pretty(config)?;
+  atomic_write(path, &text)
+}
+
+/// Write `contents` to `path` atomically: write to a sibling temp file, then
+/// rename it over the target. rename is atomic on the same filesystem, so a
+/// crash/power loss mid-write leaves either the old complete file or the new one
+/// — never a truncated, unparseable file (which for config would silently reset
+/// settings, including API keys; for history would fail every later read).
+///
+/// The temp name carries the pid + a counter so concurrent writers — e.g. two
+/// overlapping transcriptions both appending history — never collide on it.
+pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
+  use std::sync::atomic::{AtomicU64, Ordering};
+  static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
   if let Some(parent) = path.parent() {
     fs::create_dir_all(parent)
       .with_context(|| format!("failed to create {}", parent.display()))?;
   }
-  let text = serde_json::to_string_pretty(config)?;
-  // Atomic write: serialize to a sibling temp file, then rename over the target.
-  // rename is atomic on the same filesystem, so a crash/power loss mid-write
-  // leaves either the old complete config or the new one — never a truncated,
-  // unparseable file (which would silently reset settings, including API keys).
   let file_name = path
     .file_name()
     .and_then(|name| name.to_str())
-    .unwrap_or(CONFIG_FILE_NAME);
-  let tmp_path = path.with_file_name(format!("{file_name}.tmp"));
-  fs::write(&tmp_path, text)
+    .unwrap_or("config");
+  let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+  let tmp_path = path.with_file_name(format!("{file_name}.{}.{seq}.tmp", std::process::id()));
+  fs::write(&tmp_path, contents)
     .with_context(|| format!("failed to write {}", tmp_path.display()))?;
   fs::rename(&tmp_path, path)
     .with_context(|| format!("failed to replace {}", path.display()))?;
@@ -359,5 +371,26 @@ mod tests {
     // Changed → must re-register (enable installs+loads, disable removes).
     assert!(auto_launch_needs_update(false, true));
     assert!(auto_launch_needs_update(true, false));
+  }
+
+  #[test]
+  fn config_write_is_atomic_and_roundtrips() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("config.json");
+    let mut config = AppConfig::default();
+    config.provider = "openai".into();
+    config.api_key_openai = "sk-test".into();
+    write_config_to_path(&path, &config).unwrap();
+
+    // No leftover temp file beside the target.
+    let stray = fs::read_dir(temp.path())
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .any(|e| e.file_name().to_string_lossy().contains(".tmp"));
+    assert!(!stray, "atomic_write must not leave a temp file behind");
+
+    let read = read_config_from_path(&path).unwrap();
+    assert_eq!(read.provider, "openai");
+    assert_eq!(read.api_key_openai, "sk-test");
   }
 }

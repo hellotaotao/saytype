@@ -204,7 +204,13 @@ pub async fn transcribe_audio(
 
   match result {
     Ok(text) => {
-      append_activity(&text, true, None, audio_for_debug).map_err(stringify_error)?;
+      // Saving to history is best-effort: the transcription already succeeded,
+      // so a history read/write failure must NOT bubble up as an Err — that
+      // would show the user "transcription failed" AND drop the text without
+      // ever inserting it, losing a result the API actually returned.
+      if let Err(err) = append_activity(&text, true, None, audio_for_debug) {
+        log::warn!("failed to record transcription in history: {err:#}");
+      }
       let _ = app.emit("activity-updated", ());
       Ok(text)
     }
@@ -219,7 +225,11 @@ pub async fn transcribe_audio(
         "Transcription"
       };
       let message = format!("{mode} failed: {}", error);
-      append_activity(&message, false, Some(error.to_string()), audio_for_debug).map_err(stringify_error)?;
+      // Best-effort here too: surface the original API error to the user, not a
+      // secondary history-write error.
+      if let Err(err) = append_activity(&message, false, Some(error.to_string()), audio_for_debug) {
+        log::warn!("failed to record failed transcription in history: {err:#}");
+      }
       let _ = app.emit("activity-updated", ());
       Err(error.to_string())
     }
@@ -472,7 +482,13 @@ fn append_activity(
   error: Option<String>,
   audio: Option<(Vec<u8>, String)>,
 ) -> Result<()> {
-  let mut entries = history::read_history_entries()?;
+  // Tolerate an unreadable/corrupt history: start a fresh log rather than
+  // failing, so the (atomic) write below repairs the file instead of every
+  // future append inheriting the same read error.
+  let mut entries = history::read_history_entries().unwrap_or_else(|err| {
+    log::warn!("history unreadable, starting a fresh log: {err:#}");
+    Vec::new()
+  });
   let id = Utc::now().timestamp_millis().to_string();
   let mut entry = json!({
     "id": id,
