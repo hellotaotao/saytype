@@ -175,10 +175,33 @@ pub fn cancel_transcription(state: State<'_, AppState>) -> Result<bool, String> 
 pub async fn transcribe_audio(
   app: AppHandle,
   state: State<'_, AppState>,
-  audio_buffer: Vec<u8>,
-  translate_mode: Option<bool>,
-  mime_type: Option<String>,
+  request: tauri::ipc::Request<'_>,
 ) -> Result<String, String> {
+  // The audio arrives as the raw IPC body (Tauri's octet-stream fast path), not
+  // a JSON number array — see ipc-bridge.js (tauriRawBody). translate_mode /
+  // mime_type ride along as headers. NOTE: this requires input-prompt.html's CSP
+  // to allow `connect-src ipc:`; without it Tauri falls back to the postMessage
+  // transport, which JSON-encodes the bytes → body() is Json, not Raw → the error
+  // below. (Page origin is tauri://localhost; the IPC fetch is ipc://localhost.)
+  let audio_buffer: Vec<u8> = match request.body() {
+    tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+    tauri::ipc::InvokeBody::Json(_) => {
+      return Err("transcribe_audio expects a raw audio body".into());
+    }
+  };
+  let headers = request.headers();
+  let translate_mode = headers
+    .get("translate-mode")
+    .and_then(|value| value.to_str().ok())
+    .map(|value| value == "true")
+    .unwrap_or(false);
+  let mime = headers
+    .get("mime-type")
+    .and_then(|value| value.to_str().ok())
+    .filter(|value| !value.is_empty())
+    .unwrap_or("audio/webm")
+    .to_string();
+
   if audio_buffer.is_empty() {
     return Err("Audio buffer is empty".into());
   }
@@ -206,7 +229,6 @@ pub async fn transcribe_audio(
 
   // Dev-only: keep a copy of the exact bytes we send, so history can play the
   // recording back (for diagnosing first-word drop / quality). Never in release.
-  let mime = mime_type.unwrap_or_else(|| "audio/webm".into());
   let audio_for_debug =
     cfg!(debug_assertions).then(|| (audio_buffer.clone(), mime.clone()));
 
@@ -217,7 +239,7 @@ pub async fn transcribe_audio(
       &config,
       &api_key,
       audio_buffer,
-      translate_mode.unwrap_or(false),
+      translate_mode,
       mime,
     ) => result,
   };
@@ -241,7 +263,7 @@ pub async fn transcribe_audio(
         return Err("TRANSCRIPTION_CANCELLED".into());
       }
 
-      let mode = if translate_mode.unwrap_or(false) {
+      let mode = if translate_mode {
         "Translation"
       } else {
         "Transcription"

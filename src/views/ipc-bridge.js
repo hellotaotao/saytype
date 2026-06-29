@@ -41,13 +41,22 @@
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
     "read-debug-audio": [["id"]],
-    "transcribe-audio": [
-      ["audioBuffer", "audio_buffer"],
-      ["translateMode", "translate_mode"],
-      ["mimeType", "mime_type"],
-    ],
     "type-text": [["text"]],
     "save-dictionary": [["text"]],
+  };
+
+  // Channels whose first arg is binary and is sent as the RAW IPC body (Tauri's
+  // application/octet-stream fast path) instead of a JSON number array; the
+  // remaining positional args become request headers the Rust command reads via
+  // Request::headers(). Without this a Vec<u8> arg is JSON-encoded as
+  // "[12,34,...]" — and the camel+snake aliasing above would send it twice.
+  // (Needs input-prompt.html's CSP to allow connect-src ipc:, else Tauri falls
+  // back to the postMessage transport and JSON-encodes it anyway.)
+  const tauriRawBody = {
+    "transcribe-audio": {
+      body: 0, // args[0] = audio bytes (Uint8Array / ArrayBuffer)
+      headers: { "translate-mode": 1, "mime-type": 2 }, // args[1], args[2]
+    },
   };
 
   function hasWindow() {
@@ -154,6 +163,25 @@
       const command = tauriCommands[channel];
       if (!command) {
         throw new Error(`ipc-bridge: unknown Tauri command for channel \"${channel}\"`);
+      }
+
+      const rawSpec = tauriRawBody[channel];
+      if (rawSpec) {
+        const body = args[rawSpec.body];
+        const headers = {};
+        for (const name in rawSpec.headers) {
+          const value = args[rawSpec.headers[name]];
+          if (value !== undefined && value !== null) {
+            headers[name] = String(value);
+          }
+        }
+        const options = { headers };
+        if (resolvedRuntime.api && resolvedRuntime.api.core) {
+          return resolvedRuntime.api.core.invoke(command, body, options);
+        }
+        if (resolvedRuntime.internals) {
+          return resolvedRuntime.internals.invoke(command, body, options);
+        }
       }
 
       const payload = buildTauriPayload(channel, args);

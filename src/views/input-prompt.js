@@ -798,8 +798,10 @@ class VoiceInputPrompt {
         console.warn("VAD gate failed; proceeding to transcription:", vadError);
       }
 
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioBuffer = Array.from(new Uint8Array(arrayBuffer));
+      // Send the raw bytes as a Uint8Array so the IPC bridge ships them as the
+      // octet-stream body (not a JSON number array). translateMode/mimeType go
+      // along as headers — see ipc-bridge.js (tauriRawBody).
+      const audioBuffer = new Uint8Array(await audioBlob.arrayBuffer());
 
       const transcription = await ipc.invoke(
         "transcribe-audio",
