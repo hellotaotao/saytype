@@ -64,9 +64,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "dmg"
-    ],
+    "targets": "all",
     "category": "public.app-category.productivity",
     "icon": [
       "icons/32x32.png",

@@ -332,7 +332,7 @@ pub fn restart_os_listener(handle: HotkeyHandle) {
 
 #[cfg(target_os = "macos")]
 fn spawn_os_listener(handle: HotkeyHandle) {
-  if !macos_hotkey_permission_granted() {
+  if !crate::platform::accessibility_granted(false) {
     log::info!("skipping macOS hotkey listener startup until Accessibility permission is granted");
     return;
   }
@@ -481,11 +481,6 @@ fn modifier_state_from_flags(flags: u64) -> ModifierState {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_hotkey_permission_granted() -> bool {
-  unsafe { AXIsProcessTrusted() }
-}
-
-#[cfg(target_os = "macos")]
 type CGEventTapProxy = *mut c_void;
 #[cfg(target_os = "macos")]
 type CGEventType = u32;
@@ -549,7 +544,6 @@ extern "C" {
   fn CFRunLoopRun();
   fn CGEventGetFlags(event: CGEventRef) -> u64;
   fn CGEventGetIntegerValueField(event: CGEventRef, field: i32) -> i64;
-  fn AXIsProcessTrusted() -> bool;
 }
 
 fn run_state_thread(app: AppHandle, rx: Receiver<HotkeyMsg>, initial_shortcut: String) {

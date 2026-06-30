@@ -119,9 +119,16 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   `#[tauri::command]` handlers.
 - `commands.rs` — all Tauri commands: settings get/save, window control, microphone cleanup,
   `transcribe_audio` (reqwest multipart → Groq/OpenAI, model/translate handling),
-  `cancel_transcription`, `type_text` (macOS CGEvent Unicode insert → clipboard + osascript
-  Cmd+V fallback), permission checks (microphone via AVFoundation, Accessibility via
-  `AXIsProcessTrustedWithOptions`), history, and dictionary.
+  `cancel_transcription`, `type_text` (delegates to `platform::insert_text`; **no clipboard
+  fallback by design** — a failed insert points the user to History, since every transcription
+  is already saved there; an explicit `copy_to_clipboard` command backs the manual "Copy"
+  button), permission checks, history, and dictionary. The actual per-OS implementations
+  (insertion, permission checks, clipboard, autostart) live behind `platform/` (see below).
+- `platform/` — the platform abstraction layer (`mod.rs` contract + `macos.rs` / `fallback.rs`).
+  All `#[cfg(target_os)]` capabilities — synthetic text insertion, Accessibility/Microphone
+  checks, clipboard write, login-item autostart — live here. macOS is implemented; non-macOS
+  (`fallback.rs`) is currently stubs ("not yet supported"), filled in per-platform later. See
+  `docs/superpowers/specs/2026-07-01-cross-platform-support-design.md`.
 - `hotkey.rs` — global hold-to-record. On macOS uses a CGEventTap (only when Accessibility is
   trusted); elsewhere falls back to `rdev::listen`. Parses the modifier-only shortcut
   (default `Ctrl+Shift`) and emits start/stop/cancel recording events.
@@ -235,7 +242,8 @@ too: Whisper resamples to 16 kHz server-side regardless. (Windows WebView2 = Chr
 ## Development Notes
 
 - Global shortcut is hold `Ctrl+Shift` to record (hardcoded default); Shift+Alt triggers
-  translate mode. Text insertion falls back to clipboard + auto-paste when direct insert fails.
+  translate mode. On insert failure there is **no automatic clipboard fallback** — the text
+  stays in History and the prompt offers a manual "Copy" button (`copy_to_clipboard`).
 - There is no JS runtime dependency: the frontend is plain static HTML/CSS/JS. All business
   logic (transcription, settings, history, hotkey, insertion) lives in Rust.
 - Rust unit tests exist (e.g. `history.rs`, `settings.rs`); run with `cargo test` in `src-tauri/`.

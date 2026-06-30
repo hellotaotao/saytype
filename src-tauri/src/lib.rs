@@ -1,6 +1,7 @@
 mod commands;
 mod history;
 mod hotkey;
+mod platform;
 mod settings;
 mod state;
 mod tray;
