@@ -45,6 +45,7 @@
   --status-warning: #ffaa00;
   --status-warning-strong: #ff6600;
   --status-danger: #ff0000;
+  --insert-failed-glow: rgba(255, 170, 0, 0.30);
 }
 
 :root[data-theme="elegant"] {
@@ -94,6 +95,7 @@
   --status-warning: #b9844c;
   --status-warning-strong: #a86b3f;
   --status-danger: #b45a4d;
+  --insert-failed-glow: rgba(185, 132, 76, 0.32);
 }
 
 body {
@@ -217,6 +219,51 @@ body {
   text-overflow: ellipsis;
 }
 
+.model-badge {
+  color: var(--prompt-text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.model-badge:empty {
+  display: none;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid var(--prompt-accent);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--prompt-accent);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.copy-btn .material-icons {
+  font-size: 16px;
+}
+
+.copy-btn:hover {
+  background: var(--prompt-accent);
+  color: #fff;
+}
+
+.copy-btn[hidden] {
+  display: none;
+}
+
 .microphone-icon {
   font-size: 24px;
   opacity: 0.9;
@@ -331,10 +378,38 @@ body {
 }
 
 @keyframes breathe {
-  0%, 100% { 
+  0%, 100% {
     box-shadow: var(--prompt-breathe-shadow-start);
   }
-  50% { 
+  50% {
     box-shadow: var(--prompt-breathe-shadow-end);
+  }
+}
+
+/* Insertion-failure cue: a brief gentle nudge to catch the eye, then a calm
+   slow amber glow so the window is findable across multiple monitors — NOT an
+   alarming red/error treatment. Declared after .breathe so it wins on the
+   equal-specificity `animation` property while in the (non-recording) state. */
+.input-prompt.insert-failed {
+  animation:
+    insertFailedNudge 0.5s ease-in-out 2,
+    insertFailedGlow 2.6s ease-in-out 1s infinite;
+}
+
+@keyframes insertFailedNudge {
+  0%, 100% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(-5px) scale(1.015); }
+  55% { transform: translateY(0) scale(1); }
+  78% { transform: translateY(-2px) scale(1.004); }
+}
+
+@keyframes insertFailedGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 1px var(--status-warning), 0 6px 16px rgba(0, 0, 0, 0.28);
+  }
+  50% {
+    box-shadow: 0 0 0 1px var(--status-warning),
+      0 0 22px var(--insert-failed-glow),
+      0 6px 16px rgba(0, 0, 0, 0.28);
   }
 }

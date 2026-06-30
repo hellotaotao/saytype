@@ -25,6 +25,7 @@
     "transcribe-audio": "transcribe_audio",
     "type-text": "type_text",
     "show-permission-dialog": "show_permission_dialog",
+    "copy-to-clipboard": "copy_to_clipboard",
     "check-microphone-permission": "check_microphone_permission",
     "check-accessibility-permission": "check_accessibility_permission",
     "request-accessibility-permission": "request_accessibility_permission",
@@ -43,6 +44,7 @@
     "read-debug-audio": [["id"]],
     "type-text": [["text"]],
     "save-dictionary": [["text"]],
+    "copy-to-clipboard": [["text"]],
   };
 
   // Channels whose first arg is binary and is sent as the RAW IPC body (Tauri's

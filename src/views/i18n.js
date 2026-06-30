@@ -197,6 +197,10 @@
         checkMicrophone: "Please check your microphone settings",
         textInserted: "Text inserted",
         insertFailed: "Insertion failed — copy it from History",
+        insertFailedTitle: "Insertion failed",
+        insertFailedHint: "Click Copy, then paste it yourself",
+        copyButton: "Copy",
+        copied: "Copied",
       },
     },
     zh: {
@@ -390,6 +394,10 @@
         checkMicrophone: "请检查麦克风设置",
         textInserted: "文本已插入",
         insertFailed: "插入失败，可在历史记录中复制",
+        insertFailedTitle: "插入失败",
+        insertFailedHint: "点「复制」，自己粘贴一下",
+        copyButton: "复制",
+        copied: "已复制",
       },
     },
   };

@@ -10,6 +10,18 @@ let isDev = false;
 const DEFAULT_RECORD_SHORTCUT = "Ctrl+Shift";
 const DEFAULT_TRANSLATE_SHORTCUT = "Shift+Alt";
 const DEBUG_MICROPHONE_CLEANUP = false;
+// Mirror of commands.rs perform_transcription_request model selection, so the
+// badge shows the model that will ACTUALLY run (incl. the translate-mode
+// override and the empty-model default). Keep in sync with the Rust side.
+const RECORD_DEFAULT_MODEL = { openai: "gpt-4o-mini-transcribe", groq: "whisper-large-v3-turbo" };
+const TRANSLATE_MODEL = { openai: "whisper-1", groq: "whisper-large-v3" };
+const MODEL_LABEL = {
+  "gpt-4o-transcribe": "OpenAI GPT-4o",
+  "gpt-4o-mini-transcribe": "OpenAI GPT-4o mini",
+  "whisper-1": "OpenAI Whisper",
+  "whisper-large-v3": "Groq Whisper v3",
+  "whisper-large-v3-turbo": "Groq Whisper v3 Turbo",
+};
 // Audio capture constraints, shared by the launch prime and every recording.
 const AUDIO_CONSTRAINTS = {
   audio: {
@@ -104,6 +116,12 @@ class VoiceInputPrompt {
     this.waveContainer = document.getElementById("waveContainer");
     this.statusText = document.getElementById("statusText");
     this.transcriptionText = document.getElementById("transcriptionText");
+    this.modelBadge = document.getElementById("modelBadge");
+    this.copyBtn = document.getElementById("copyBtn");
+    this.copyBtnLabel = document.getElementById("copyBtnLabel");
+    this.currentProvider = null;
+    this.currentModel = "";
+    this._failedText = "";
 
     this.createWaveBars();
     this.setupEventListeners();
@@ -155,6 +173,9 @@ class VoiceInputPrompt {
       const translateShortcut =
         payload.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT;
       this.updateShortcutHint(recordShortcut, translateShortcut);
+      if (payload.provider !== undefined) this.currentProvider = payload.provider;
+      if (payload.model !== undefined) this.currentModel = payload.model;
+      this.updateModelBadge();
     });
 
     ipc.on("ui-language-updated", (event, payload) => {
@@ -180,6 +201,7 @@ class VoiceInputPrompt {
       }
       this.stopRequested = false;
       this.translateMode = translateMode;
+      this.updateModelBadge();
       await this.startRecording();
     });
 
@@ -223,6 +245,11 @@ class VoiceInputPrompt {
     window.addEventListener("beforeunload", () => {
       this.cleanup();
     });
+
+    // Insertion-failure "Copy" affordance — explicit click only (no auto copy).
+    if (this.copyBtn) {
+      this.copyBtn.addEventListener("click", () => this.copyFailedText());
+    }
   }
 
   async syncShortcutFromSettings() {
@@ -231,10 +258,13 @@ class VoiceInputPrompt {
       if (!settings) {
         return;
       }
+      this.currentProvider = settings.provider || "openai";
+      this.currentModel = settings.model || "";
       this.updateShortcutHint(
         settings.shortcut || DEFAULT_RECORD_SHORTCUT,
         settings.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT
       );
+      this.updateModelBadge();
     } catch (error) {
       console.error("Failed to load shortcut hint settings:", error);
       this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
@@ -266,6 +296,71 @@ class VoiceInputPrompt {
       record: recordLabel,
       translate: translateLabel,
     });
+  }
+
+  resolveActiveModel() {
+    if (this.currentProvider == null) {
+      return null; // settings not loaded yet
+    }
+    const provider = this.currentProvider === "groq" ? "groq" : "openai";
+    let model;
+    if (this.translateMode) {
+      model = TRANSLATE_MODEL[provider];
+    } else if (!String(this.currentModel || "").trim()) {
+      model = RECORD_DEFAULT_MODEL[provider];
+    } else {
+      model = this.currentModel;
+    }
+    return MODEL_LABEL[model] || model || "";
+  }
+
+  updateModelBadge() {
+    if (!this.modelBadge) {
+      return;
+    }
+    this.modelBadge.textContent = this.resolveActiveModel() || "";
+  }
+
+  // --- Insertion-failure "click to Copy" UI (never an automatic clipboard touch) ---
+  showInsertFailed(text) {
+    this.clearHidePromptTimer();
+    this._failedText = typeof text === "string" ? text : "";
+    this.promptElement.classList.remove("recording");
+    this.promptElement.classList.add("insert-failed");
+    this.promptText.textContent = t("inputPrompt.insertFailedTitle");
+    this.statusText.textContent = t("inputPrompt.insertFailedHint");
+    this.statusText.style.color = "var(--status-warning)";
+    if (this.copyBtnLabel) {
+      this.copyBtnLabel.textContent = t("inputPrompt.copyButton");
+    }
+    // Swap the (now-stopped) waveform for the Copy button.
+    if (this.waveContainer) this.waveContainer.style.display = "none";
+    if (this.copyBtn) this.copyBtn.hidden = false;
+    // Safety net: don't let an always-on-top overlay sit forever if ignored.
+    this.scheduleHidePrompt(15000);
+  }
+
+  async copyFailedText() {
+    if (!hasMeaningfulText(this._failedText)) {
+      return;
+    }
+    try {
+      await ipc.invoke("copy-to-clipboard", this._failedText);
+      this.statusText.textContent = t("inputPrompt.copied");
+      this.statusText.style.color = "var(--status-success)";
+      if (this.copyBtn) this.copyBtn.hidden = true;
+      this.scheduleHidePrompt(1200);
+    } catch (error) {
+      console.error("Clipboard copy failed:", error);
+      // Keep the window + failure UI up so the user can retry.
+    }
+  }
+
+  clearInsertFailedUi() {
+    this._failedText = "";
+    if (this.copyBtn) this.copyBtn.hidden = true;
+    if (this.waveContainer) this.waveContainer.style.display = "";
+    if (this.promptElement) this.promptElement.classList.remove("insert-failed");
   }
 
   formatDuration(ms) {
@@ -393,6 +488,7 @@ class VoiceInputPrompt {
     let insertedAny = false;
     let allDirect = true;
     let lastFailureMessage = null;
+    let lastFailedText = null;
 
     try {
       while (this.pendingInsertionOrder.length) {
@@ -412,6 +508,7 @@ class VoiceInputPrompt {
           } else if (result && !result.noText) {
             allDirect = false;
             if (result.message) lastFailureMessage = result.message;
+            lastFailedText = text;
           }
         }
       }
@@ -432,9 +529,10 @@ class VoiceInputPrompt {
         this.statusText.style.color = "var(--status-success)";
         this.scheduleHidePrompt(1200);
       } else if (lastFailureMessage) {
-        this.statusText.textContent = t("inputPrompt.insertFailed");
-        this.statusText.style.color = "var(--status-warning-strong)";
-        this.scheduleHidePrompt(2500);
+        // Keep the window open with a calm "click Copy" affordance instead of
+        // auto-hiding: the text isn't in the focused app and there's no auto
+        // clipboard fallback, so let the user copy it on an explicit click.
+        this.showInsertFailed(lastFailedText);
       } else {
         this.statusText.textContent = t("inputPrompt.noSpeech");
         this.statusText.style.color = "var(--status-warning)";
@@ -484,6 +582,7 @@ class VoiceInputPrompt {
 
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
+    this.clearInsertFailedUi();
     this.starting = true;
     try {
       // Pre-flight: without an API key the request can only fail, so tell the
@@ -648,6 +747,9 @@ class VoiceInputPrompt {
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
     this.clearPendingInsertions();
+    // Dismiss the insert-failed affordance immediately so Esc shows a clean
+    // "Cancelled", not the Copy button + amber glow lingering for ~300ms.
+    this.clearInsertFailedUi();
 
     if (this.transcriptionInProgressCount > 0) {
       ipc.invoke("cancel-transcription").catch(() => {});
@@ -1044,6 +1146,12 @@ class VoiceInputPrompt {
     this.recordingStartedAt = null;
     this.cancelledShortPress = false;
     this.cancelInProgress = false;
+    // translateMode is set per-session on start-recording and is reset NOWHERE
+    // else; without this the model badge would stick on the translate model
+    // after any Shift+Alt session.
+    this.translateMode = false;
+    this.clearInsertFailedUi();
+    this.updateModelBadge();
 
     this.actualHideTimerId = setTimeout(() => {
       this.actualHideTimerId = null;

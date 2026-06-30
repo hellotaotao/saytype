@@ -154,6 +154,7 @@ pub fn run() {
       commands::transcribe_audio,
       commands::type_text,
       commands::show_permission_dialog,
+      commands::copy_to_clipboard,
       commands::check_microphone_permission,
       commands::check_accessibility_permission,
       commands::request_accessibility_permission,

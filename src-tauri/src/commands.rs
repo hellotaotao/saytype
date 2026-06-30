@@ -297,6 +297,17 @@ pub async fn type_text(
   #[cfg(target_os = "macos")]
   {
     if current_accessibility_granted() {
+      if !macos_focused_element_accepts_text() {
+        // Nothing editable is focused (desktop, a button, window chrome) — the
+        // keystrokes would land nowhere, so report failure and let the prompt
+        // show the "click Copy" affordance instead of silently losing the text.
+        return Ok(TypeTextResponse {
+          success: false,
+          method: None,
+          message: Some("No editable text field is focused.".into()),
+          skipped_no_text: false,
+        });
+      }
       match insert_text_via_cgevent(&text) {
         Ok(()) => {
           return Ok(TypeTextResponse {
@@ -345,6 +356,42 @@ pub fn show_permission_dialog() -> Result<i32, String> {
   }
 
   Ok(0)
+}
+
+// Explicit, user-initiated clipboard write — used ONLY by the input-prompt's
+// "insertion failed → click Copy" affordance. We go through pbcopy (not the
+// webview's navigator.clipboard) because that window is created focus:false so
+// the target app keeps keyboard focus for CGEvent insertion, and clipboard
+// writes from an unfocused WebKit document are unreliable. There is still no
+// AUTOMATIC clipboard touch anywhere — this only fires on a real button click.
+#[tauri::command]
+pub fn copy_to_clipboard(text: String) -> Result<bool, String> {
+  #[cfg(target_os = "macos")]
+  {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("pbcopy")
+      .stdin(Stdio::piped())
+      .spawn()
+      .map_err(stringify_error)?;
+    child
+      .stdin
+      .as_mut()
+      .ok_or_else(|| "failed to open pbcopy stdin".to_string())?
+      .write_all(text.as_bytes())
+      .map_err(stringify_error)?;
+    let status = child.wait().map_err(stringify_error)?;
+    if !status.success() {
+      return Err("pbcopy exited with a non-zero status".into());
+    }
+    Ok(true)
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    let _ = text;
+    Err("Clipboard write is not supported on this platform".into())
+  }
 }
 
 #[tauri::command]
@@ -510,6 +557,10 @@ fn broadcast_settings_updates(app: &AppHandle, config: &AppConfig) -> Result<()>
     json!({
       "recordShortcut": config.shortcut,
       "translateShortcut": config.translate_shortcut,
+      // Piggyback provider+model so the input-prompt's model badge updates live
+      // on save without a dedicated event (non-secret, unlike the API keys).
+      "provider": config.provider,
+      "model": config.model,
     }),
   )?;
   app.emit(
@@ -713,6 +764,68 @@ fn insert_text_via_cgevent(text: &str) -> Result<()> {
   Ok(())
 }
 
+// Best-effort guard: returns false ONLY when we're confident there is no
+// editable text target for the keystrokes (no focused UI element, or a focused
+// element that is neither value-settable nor a known text role — e.g. the
+// desktop, a button, window chrome). On ANY uncertainty it returns true, so we
+// never block a valid insertion in an app with imperfect Accessibility data.
+// Without this, CGEvent insertion silently "succeeds" into the void when no
+// field is focused (CGEventPost cannot report whether the keystrokes landed).
+#[cfg(target_os = "macos")]
+fn macos_focused_element_accepts_text() -> bool {
+  use core_foundation::string::CFStringRef;
+
+  unsafe {
+    let system_wide = AXUIElementCreateSystemWide();
+    if system_wide.is_null() {
+      return true; // can't introspect — don't block insertion
+    }
+
+    let focused_attr = CFString::new("AXFocusedUIElement");
+    let mut focused: *const c_void = std::ptr::null();
+    let err = AXUIElementCopyAttributeValue(
+      system_wide,
+      focused_attr.as_concrete_TypeRef() as *const c_void,
+      &mut focused,
+    );
+    CFRelease(system_wide as *const c_void);
+    if err != 0 || focused.is_null() {
+      return false; // nothing is focused — the keys would land nowhere
+    }
+
+    // Signal 1: AXValue is settable — true for text fields / text areas.
+    let value_attr = CFString::new("AXValue");
+    let mut settable: u8 = 0;
+    let settable_err = AXUIElementIsAttributeSettable(
+      focused,
+      value_attr.as_concrete_TypeRef() as *const c_void,
+      &mut settable,
+    );
+    let value_settable = settable_err == 0 && settable != 0;
+
+    // Signal 2: a known text-bearing role (e.g. Terminal's AXTextArea, whose
+    // value isn't "settable" in the AX sense but still accepts keystrokes).
+    let mut text_role = false;
+    let role_attr = CFString::new("AXRole");
+    let mut role_ref: *const c_void = std::ptr::null();
+    let role_err = AXUIElementCopyAttributeValue(
+      focused,
+      role_attr.as_concrete_TypeRef() as *const c_void,
+      &mut role_ref,
+    );
+    if role_err == 0 && !role_ref.is_null() {
+      let role = CFString::wrap_under_create_rule(role_ref as CFStringRef).to_string();
+      text_role = matches!(
+        role.as_str(),
+        "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField"
+      );
+    }
+
+    CFRelease(focused);
+    value_settable || text_role
+  }
+}
+
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -720,6 +833,9 @@ extern "C" {
   fn CGEventCreateKeyboardEvent(source: *mut c_void, virtualKey: u16, keyDown: bool) -> *mut c_void;
   fn CGEventKeyboardSetUnicodeString(event: *mut c_void, stringLength: usize, unicodeString: *const u16);
   fn CGEventPost(tap: u32, event: *mut c_void);
+  fn AXUIElementCreateSystemWide() -> *const c_void;
+  fn AXUIElementCopyAttributeValue(element: *const c_void, attribute: *const c_void, value: *mut *const c_void) -> i32;
+  fn AXUIElementIsAttributeSettable(element: *const c_void, attribute: *const c_void, settable: *mut u8) -> i32;
 }
 
 #[cfg(target_os = "macos")]
