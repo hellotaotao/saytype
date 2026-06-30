@@ -494,6 +494,14 @@ function renderHistory() {
     return;
   }
 
+  // Skip rebuilding the (up to 100-row) history DOM while the History page isn't
+  // visible — on every activity-updated event from Home (the common case) this
+  // avoids rebuilding a hidden list. showPage('history') re-renders it on nav,
+  // and the search box (the only other caller) lives on the then-active page.
+  if (!document.getElementById("history-page")?.classList.contains("active")) {
+    return;
+  }
+
   if (!cachedActivities.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
