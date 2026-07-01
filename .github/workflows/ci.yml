@@ -1,0 +1,88 @@
+# Cross-platform build verification + installer artifacts.
+#
+# This is SayType's "build farm": every push/PR compiles the app on macOS,
+# Windows, and Linux and uploads the resulting installers as downloadable
+# workflow artifacts. It lets a Mac-only developer get + smoke-test Windows and
+# Linux builds without owning those machines. It does NOT publish GitHub
+# Releases — that stays in release.yml (macOS, signed + notarized) for now.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            label: Windows
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            label: Linux
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # Tauri 2 Linux build prerequisites. webkit2gtk-4.1 (NOT 4.0) is required
+      # for Tauri 2; libayatana-appindicator backs the system tray; libxdo/libxtst
+      # are needed by the (future) enigo insertion + rdev XRecord hotkey paths.
+      # NOTE: stock WebKitGTK may lack getUserMedia/MediaStream — recording on
+      # Linux is a separate, known blocker tracked in the cross-platform plan.
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libxtst-dev \
+            build-essential \
+            curl wget file libssl-dev pkg-config
+
+      - name: Install JS tooling (@tauri-apps/cli)
+        run: npm ci
+
+      - name: Build (bundles for this host)
+        run: npm run tauri -- build --target ${{ matrix.target }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: saytype-${{ matrix.label }}
+          if-no-files-found: warn
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm

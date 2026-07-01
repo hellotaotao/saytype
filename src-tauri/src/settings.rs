@@ -113,6 +113,10 @@ pub struct SettingsPayload {
   pub auto_launch: bool,
   pub start_minimized: bool,
   pub provider: String,
+  /// The OS the backend runs on ("macos" | "windows" | "linux"), so the frontend
+  /// can choose OS-correct copy and modifier glyphs instead of relying on the
+  /// deprecated navigator.platform.
+  pub os: String,
   #[serde(rename = "isDev")]
   pub is_dev: bool,
 }
@@ -131,6 +135,7 @@ impl SettingsPayload {
       auto_launch: config.auto_launch,
       start_minimized: config.start_minimized,
       provider: config.provider.clone(),
+      os: std::env::consts::OS.to_string(),
       is_dev: cfg!(debug_assertions),
     }
   }
@@ -268,48 +273,12 @@ pub fn auto_launch_needs_update(previous: bool, next: bool) -> bool {
   previous != next
 }
 
+/// Apply (or remove) the OS login item. The per-OS mechanism — a LaunchAgent
+/// plist on macOS, a no-op on platforms not yet wired up — lives behind
+/// `platform::set_auto_launch`. Callers gate this with `auto_launch_needs_update`
+/// so it only runs when the value actually changed.
 pub fn update_auto_launch(enabled: bool) -> Result<()> {
-  #[cfg(target_os = "macos")]
-  {
-    let agent_dir = dirs::home_dir()
-      .context("failed to resolve home directory")?
-      .join("Library")
-      .join("LaunchAgents");
-    fs::create_dir_all(&agent_dir)
-      .with_context(|| format!("failed to create {}", agent_dir.display()))?;
-    let plist_path = agent_dir.join(format!("{}.plist", APP_IDENTIFIER));
-
-    if enabled {
-      let executable = std::env::current_exe().context("failed to resolve executable path")?;
-      let plist = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{executable}</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <false/>\n</dict>\n</plist>\n",
-        label = APP_IDENTIFIER,
-        executable = executable.display(),
-      );
-      fs::write(&plist_path, plist)
-        .with_context(|| format!("failed to write {}", plist_path.display()))?;
-      let _ = std::process::Command::new("launchctl")
-        .args(["unload", plist_path.to_string_lossy().as_ref()])
-        .status();
-      let _ = std::process::Command::new("launchctl")
-        .args(["load", plist_path.to_string_lossy().as_ref()])
-        .status();
-    } else {
-      let _ = std::process::Command::new("launchctl")
-        .args(["unload", plist_path.to_string_lossy().as_ref()])
-        .status();
-      if plist_path.exists() {
-        let _ = fs::remove_file(&plist_path);
-      }
-    }
-  }
-
-  #[cfg(not(target_os = "macos"))]
-  {
-    let _ = enabled;
-  }
-
-  Ok(())
+  crate::platform::set_auto_launch(enabled)
 }
 
 #[cfg(test)]
