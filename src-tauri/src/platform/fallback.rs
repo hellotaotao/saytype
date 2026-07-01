@@ -1,15 +1,18 @@
-//! Stub platform implementation for non-macOS targets (Windows, Linux).
+//! Platform implementation for non-macOS targets (Windows, Linux).
 //!
-//! These preserve the app's current pre-cross-platform behavior:
-//! * permissions report "not required" / "granted" (no OS gate today),
-//! * synthetic insertion is unsupported (the prompt falls back to History),
-//! * clipboard writes and autostart are not wired up yet.
+//! * text insertion: synthetic Unicode typing via `enigo` (SendInput on Windows,
+//!   XTEST/libxdo on Linux/X11) — layout-independent, no special permission,
+//!   works with CJK/emoji.
+//! * permissions: report "not required" / "granted" (Windows/X11 have no gate;
+//!   the mic prompt is handled by the webview at capture time).
+//! * clipboard write and autostart are not wired up yet.
 //!
-//! Each capability gets a real implementation in a later per-platform phase, at
-//! which point this single `fallback` module splits into `windows` / `linux`.
+//! Shared by Windows and Linux while their behavior is identical; splits into
+//! `windows` / `linux` when Linux needs Wayland-specific handling.
 
 use super::InsertResult;
 use anyhow::{anyhow, Result};
+use enigo::{Enigo, Keyboard, Settings};
 
 pub fn accessibility_required() -> bool {
   false
@@ -29,8 +32,27 @@ pub fn copy_to_clipboard(_text: &str) -> Result<()> {
   Err(anyhow!("Clipboard write is not supported on this platform"))
 }
 
-pub fn insert_text(_text: &str) -> InsertResult {
-  InsertResult::Unsupported
+pub fn insert_text(text: &str) -> InsertResult {
+  // enigo drives SendInput (KEYEVENTF_UNICODE) on Windows and XTEST/libxdo on
+  // Linux/X11 — layout-independent Unicode, so CJK/emoji go through. No special
+  // permission needed. On any failure the transcription is still in History, so
+  // report Failed and let the prompt offer the manual "Copy" affordance.
+  let mut enigo = match Enigo::new(&Settings::default()) {
+    Ok(enigo) => enigo,
+    Err(error) => {
+      log::warn!("failed to initialize enigo for text insertion: {error}");
+      return InsertResult::Failed;
+    }
+  };
+  match enigo.text(text) {
+    Ok(()) => InsertResult::Inserted {
+      method: "enigo_text",
+    },
+    Err(error) => {
+      log::warn!("enigo text insertion failed: {error}");
+      InsertResult::Failed
+    }
+  }
 }
 
 pub fn set_auto_launch(_enabled: bool) -> Result<()> {

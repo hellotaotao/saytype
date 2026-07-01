@@ -301,12 +301,6 @@ pub async fn type_text(
       message: Some("Text insertion failed; copy it from History.".into()),
       skipped_no_text: false,
     },
-    InsertResult::Unsupported => TypeTextResponse {
-      success: false,
-      method: None,
-      message: Some("Text insertion is not yet supported on this platform.".into()),
-      skipped_no_text: false,
-    },
   })
 }
 

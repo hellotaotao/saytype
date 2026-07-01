@@ -50,8 +50,9 @@ jobs:
           workspaces: "./src-tauri -> target"
 
       # Tauri 2 Linux build prerequisites. webkit2gtk-4.1 (NOT 4.0) is required
-      # for Tauri 2; libayatana-appindicator backs the system tray; libxdo/libxtst
-      # are needed by the (future) enigo insertion + rdev XRecord hotkey paths.
+      # for Tauri 2; libayatana-appindicator backs the system tray. libxdo backs
+      # enigo's default xdo insertion backend; libxkbcommon backs enigo's keymap
+      # crate; libx11/libxtst back rdev's X11/XRecord global hotkey listener.
       # NOTE: stock WebKitGTK may lack getUserMedia/MediaStream — recording on
       # Linux is a separate, known blocker tracked in the cross-platform plan.
       - name: Install Linux system dependencies
@@ -64,6 +65,8 @@ jobs:
             librsvg2-dev \
             patchelf \
             libxdo-dev \
+            libxkbcommon-dev \
+            libx11-dev \
             libxtst-dev \
             build-essential \
             curl wget file libssl-dev pkg-config

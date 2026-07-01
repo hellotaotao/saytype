@@ -1017,7 +1017,10 @@ class VoiceInputPrompt {
     try {
       const result = await ipc.invoke("type-text", text);
 
-      if (result?.success && result.method === "cgevent_unicode") {
+      // Any backend success means the text was injected directly (there is no
+      // clipboard fallback). `method` differs per OS ("cgevent_unicode" on
+      // macOS, "enigo_text" on Windows/Linux) and is kept only for diagnostics.
+      if (result?.success) {
         if (!suppressUi) {
           this.statusText.textContent = t("inputPrompt.textInserted");
           this.statusText.style.color = "var(--status-success)";

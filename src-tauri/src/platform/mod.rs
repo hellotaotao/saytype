@@ -45,16 +45,16 @@ pub use fallback::*;
 #[derive(Debug)]
 pub enum InsertResult {
   /// Text was injected directly. `method` names the mechanism (e.g.
-  /// `"cgevent_unicode"`) for the frontend / diagnostics.
+  /// `"cgevent_unicode"` on macOS, `"enigo_text"` on Windows/Linux) for the
+  /// frontend / diagnostics.
   Inserted { method: &'static str },
   /// The mechanism is available, but nothing editable is focused — the
   /// keystrokes would land nowhere, so the prompt should offer "copy" instead.
+  /// Only macOS detects this (Accessibility focus check), so it reads as dead
+  /// code on non-macOS builds.
+  #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
   NoEditableTarget,
   /// Insertion was attempted and failed, or the permission it needs is not
   /// granted. The transcription is still saved to History.
   Failed,
-  /// This platform has no insertion implementation yet. Constructed only by the
-  /// non-macOS `fallback` impl, so it reads as dead code on a macOS-only build.
-  #[cfg_attr(target_os = "macos", allow(dead_code))]
-  Unsupported,
 }
