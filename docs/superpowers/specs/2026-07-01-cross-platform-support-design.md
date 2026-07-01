@@ -1,7 +1,9 @@
 # Cross-platform (Windows + Linux) support — design
 
-**Status:** Phase 0 (platform abstraction) + CI scaffold implemented. Later
-phases not started.
+**Status:** Landed on `main` — Phase 0 (platform abstraction, verified on macOS),
+build/CI matrix, Windows/Linux text insertion (enigo), and frontend OS-awareness.
+Windows autostart is **deliberately deferred** (see Phase 2). Remaining Windows
+work (hotkey + insertion behavior, autostart) needs a real machine/VM to verify.
 **Date:** 2026-07-01
 **Scope:** Make SayType — today a macOS-only Tauri 2 + Rust app — run on Windows
 and Linux, starting with a behavior-preserving abstraction layer, then filling
@@ -14,8 +16,9 @@ for v1).
    behind `src-tauri/src/platform/` with a clear contract; macOS behavior stays
    identical; non-macOS keeps its current stub behavior. Then fill platforms.
 2. **Pragmatic implementation style.** Prefer mature cross-platform crates when
-   filling platforms — `enigo` for synthetic input, `tauri-plugin-autostart`
-   for the login item — over hand-rolled per-OS FFI.
+   filling platforms — `enigo` for synthetic input — over hand-rolled per-OS FFI.
+   (Autostart is the exception: see Phase 2 — deferred, and macOS is NOT migrated
+   to a plugin.)
 3. **Windows before Linux.** Windows is low-risk and ships fast. Linux X11 is
    medium. **Native Wayland is explicitly out of scope for v1** (run under
    XWayland); it breaks both the global hold-hotkey and synthetic insertion at
@@ -98,23 +101,47 @@ build (no MSVC headers) — use `cargo-xwin` for local Windows compile-checks.
 - Linux build deps documented in the workflow (webkit2gtk-4.1, libxdo,
   libxtst, libayatana-appindicator, librsvg, patchelf, …).
 
-## Phase 2 — Windows (next)
+## Phase 2 — Windows (largely landed; autostart deferred)
 
-Low-risk, ships fast. WebView2 = Chromium gives getUserMedia / MediaRecorder /
-WASM-VAD for free (one-time mic prompt).
+Low-risk. WebView2 = Chromium gives getUserMedia / MediaRecorder / WASM-VAD for
+free (one-time mic prompt).
 
-- Deps: `enigo` (`cfg(not(target_os = "macos"))`), `tauri-plugin-autostart`.
-- Split `fallback.rs` → `windows.rs`: `insert_text` via `enigo.text()`
-  (SendInput KEYEVENTF_UNICODE); `set_auto_launch` via the autostart plugin
-  (HKCU Run key — adopting the plugin also migrates macOS off the hand-rolled
-  plist, verified separately).
-- Enable the existing `rdev::listen` branch (WH_KEYBOARD_LL). The hotkey state
-  machine needs no change.
-- Frontend: generalize the `result.method === "cgevent_unicode"` success check
-  (`input-prompt.js:912`) to key off `result.success`; OS-aware modifier glyphs
-  / copy via the new `os` field.
-- Document the UIPI caveat (a non-elevated app can't inject into elevated
-  windows).
+**Done (on `main`):**
+- **Text insertion** — `enigo` 0.3.0 (`cfg(not(target_os = "macos"))`, MSRV 1.75)
+  in `fallback.rs`: `Enigo::new(&Settings::default())` + `.text()` (SendInput
+  KEYEVENTF_UNICODE on Windows, XTEST/libxdo on Linux/X11). Shared by Windows +
+  Linux; the `InsertResult::Unsupported` variant was dropped. macOS keeps CGEvent.
+- **Frontend insertion check** — `input-prompt.js` now keys success off
+  `result.success` (the method string differs per OS: `cgevent_unicode` vs
+  `enigo_text`).
+- **Frontend OS-awareness** — `main.js` / `input-prompt.js` render modifier
+  labels from the backend `os` field: Apple glyphs on macOS, words
+  (Ctrl/Shift/Alt/Win|Super) on Windows/Linux; i18n hint neutralized to
+  "Shift + Alt".
+- **CI** — Linux deps include libxdo / libxkbcommon / libx11 / libxtst; all three
+  legs build and upload installers.
+
+**Compiles, but needs real-machine verification:**
+- **Global hotkey** — the existing `rdev::listen` branch (WH_KEYBOARD_LL) is live
+  on Windows; the hotkey state machine is unchanged. UIPI caveat: a non-elevated
+  app can't inject into / hook elevated foreground windows.
+
+**Deferred — do NOT build blind:**
+- **Autostart** stays the `fallback.rs` no-op. Rationale: it is non-core (the app
+  works fully without it), cannot be behaviorally verified without a Windows
+  machine, and there are no Windows/Linux users yet. A compile-green autostart
+  says nothing about whether it actually launches at login, so shipping it now
+  would be false "done". Build it when there's a machine/VM to test on (Windows:
+  HKCU `Run` key; Linux: `~/.config/autostart/*.desktop`), likely via the
+  `auto-launch` crate gated to non-macOS.
+- **macOS autostart stays on the hand-rolled LaunchAgent plist and is NOT
+  migrated to `tauri-plugin-autostart`.** Migrating would swap a working
+  mechanism on the primary (daily-driver) platform for a different one
+  (AppleScript login item / plugin plist) plus an old-plist cleanup migration —
+  unjustified regression risk. Revisit only with a concrete reason.
+
+macOS Phase 0 refactor was verified end-to-end by the developer
+(`build:mac:install` + hands-on dictation) — no regression.
 
 ## Phase 3 — Linux X11
 
