@@ -105,6 +105,13 @@
             <li data-i18n="dictionary.helpItem4">This content will be sent as a prompt to improve transcription accuracy</li>
           </ul>
         </div>
+
+        <div class="dictionary-help">
+          <h3 data-i18n="dictionary.punctuationTitle">Automatic punctuation for Chinese</h3>
+          <p class="punctuation-desc" data-i18n="dictionary.punctuationDesc">When transcribing Chinese with a Whisper model, SayType automatically appends the fixed example below after your dictionary so punctuation comes out reliably. It contains no personal data, and is not added for gpt-4o models or other languages.</p>
+          <!-- Read-only display. Mirrors SEED_ZH in src-tauri/src/commands.rs — keep the two in sync. -->
+          <pre class="punctuation-seed" id="punctuation-seed">以下是一段简体中文语音的转写记录。你好，欢迎使用听写工具。今天的会议进展如何？太好了，我们继续！</pre>
+        </div>
       </div>
     </div>
   </div>

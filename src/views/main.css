@@ -634,6 +634,29 @@ body {
   color: var(--text-muted);
 }
 
+.punctuation-desc {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* Read-only display of the auto-appended Chinese punctuation seed. */
+.punctuation-seed {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
 /* Notification toast */
 .notification {
   font-family: inherit;

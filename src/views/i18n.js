@@ -56,6 +56,9 @@
         helpItem3: "Use clear, descriptive language",
         helpItem4:
           "This content will be sent as a prompt to improve transcription accuracy",
+        punctuationTitle: "Automatic punctuation for Chinese",
+        punctuationDesc:
+          "When transcribing Chinese with a Whisper model, SayType automatically appends the fixed example below after your dictionary so punctuation comes out reliably. It contains no personal data, and is not added for gpt-4o models or other languages.",
         saveError: "Error saving dictionary: {message}",
       },
       activity: {
@@ -254,6 +257,9 @@
         helpItem2: "提供上下文或示例以提升识别效果",
         helpItem3: "使用清晰、具体的描述",
         helpItem4: "此内容将作为提示发送，以提升转录准确率",
+        punctuationTitle: "中文标点自动优化",
+        punctuationDesc:
+          "使用 Whisper 模型转录中文时，SayType 会在你的词典之后自动追加下面这句固定示例，让标点稳定输出。它不含任何隐私内容；gpt-4o 模型和其它语言不会追加。",
         saveError: "保存词典出错：{message}",
       },
       activity: {

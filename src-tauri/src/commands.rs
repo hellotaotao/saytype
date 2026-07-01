@@ -499,69 +499,57 @@ fn append_activity(
   Ok(())
 }
 
-// Richly-punctuated example sentences — one per dictation language.
+// A strong, richly-punctuated Chinese example appended to the transcription
+// `prompt` — but ONLY for Whisper + Chinese (see `build_transcription_prompt`).
 //
-// Whisper-family models treat the transcription `prompt` as a *style example*,
-// NOT an instruction: they mirror its punctuation density rather than obeying a
-// request like "add punctuation". Verified on real audio (2026-07-02) — with no
-// prompt, or with an unpunctuated word-list prompt, Groq `whisper-large-v3-turbo`
-// returns a wall of text with zero punctuation; prepend a punctuated example and
-// punctuation comes back reliably. The Chinese seed also says "简体中文" to pin
-// Simplified output. gpt-4o-transcribe models already punctuate on their own and
-// get no seed (see `build_transcription_prompt`).
+// Whisper-family models treat the `prompt` as a *style example*, NOT an
+// instruction: they mirror its punctuation density rather than obeying "add
+// punctuation". Verified on real audio (2026-07-02) — with no prompt, or an
+// unpunctuated word-list dictionary, Groq `whisper-large-v3-turbo` returns a
+// wall of text with ZERO punctuation for Chinese; prepend this seed and
+// punctuation comes back reliably and deterministically (a hard clip went
+// 0 → 12 marks, identical across repeated runs). It says "简体中文" to pin
+// Simplified output, and must stay multi-sentence carrying all four marks
+// (。，？！): a one-liner lost to the user's comma-list dictionary on the hard
+// clip, while this held.
 //
-// The seed must be STRONG — several sentences carrying all four marks (。，？！).
-// A short one-liner loses to a long unpunctuated user dictionary on some clips
-// (measured: a 1-sentence seed left a hard clip at zero punctuation, while this
-// multi-sentence seed keeps it fully punctuated even after the raw dictionary).
-const SEED_ZH: &str =
+// Chinese-ONLY on purpose. Whisper's zero-punctuation collapse is a CJK/Chinese
+// trait; high-resource languages punctuate acceptably on their own, and
+// gpt-4o-transcribe punctuates everywhere by default. Injecting an unverified,
+// possibly wrong-script seed into another language could only hurt — so every
+// non-Chinese language (and every gpt-4o model) gets no seed at all.
+//
+// NOTE: this literal is mirrored in `src/views/main.html` (`#punctuation-seed`,
+// in the Dictionary page) for the read-only display — keep the two in sync.
+pub const SEED_ZH: &str =
   "以下是一段简体中文语音的转写记录。你好，欢迎使用听写工具。今天的会议进展如何？太好了，我们继续！";
-const SEED_EN: &str = "The following is a dictation transcript. Hi there, welcome to the tool! \
-How is the meeting going today? Great, let's keep going.";
-// Language-neutral seed for `auto` / unmapped languages: it only switches
-// punctuation ON — the spoken language is still detected from the audio, not
-// forced by the seed. (The user's own Mac is an English system used for Chinese
-// dictation, so following the OS locale would guess the wrong language.) It
-// carries both Latin and CJK punctuation so either script gets the hint.
-const SEED_AUTO: &str = "Hi there, welcome! How is it going today? Great, let's continue. \
-你好，欢迎使用！今天进展如何？非常好，我们继续。";
 
-fn punctuation_seed(language: &str) -> &'static str {
-  let lang = language.trim().to_lowercase();
-  if lang.starts_with("zh") {
-    SEED_ZH
-  } else if lang.starts_with("en") {
-    SEED_EN
-  } else {
-    SEED_AUTO
-  }
+fn is_chinese(language: &str) -> bool {
+  language.trim().to_lowercase().starts_with("zh")
 }
 
-/// Build the transcription `prompt` field from the resolved model, the dictation
+/// Build the transcription `prompt` from the resolved model, the dictation
 /// language, and the user's vocabulary dictionary.
 ///
-/// - **Whisper family** (any model whose name isn't `gpt-4o…`): append a
-///   punctuation seed, placed LAST so it sits closest to the audio — Whisper
-///   weights the style right before the audio most heavily (verified:
-///   seed-last beats seed-first). The seed is injected even with an empty
-///   dictionary, so punctuation is reliable regardless of what the user typed.
-/// - **gpt-4o family**: no seed (it already punctuates); pass the dictionary
-///   through as a vocabulary hint, or nothing when it's empty.
+/// A punctuation seed is added only for **Whisper + Chinese**: it's appended
+/// LAST, closest to the audio, where Whisper weights style most heavily
+/// (verified: seed-last beats seed-first), and is injected even with an empty
+/// dictionary. Every other case — a gpt-4o model (already punctuates) or any
+/// non-Chinese language — passes the dictionary through unchanged, or sends no
+/// prompt at all when the dictionary is empty.
 fn build_transcription_prompt(model: &str, language: &str, dictionary: &str) -> Option<String> {
   let dict = dictionary.trim();
-  if model.to_lowercase().contains("gpt-4o") {
+  let seed_chinese = !model.to_lowercase().contains("gpt-4o") && is_chinese(language);
+  if seed_chinese {
     if dict.is_empty() {
-      None
+      Some(SEED_ZH.to_string())
     } else {
-      Some(dict.to_string())
+      Some(format!("{dict}\n{SEED_ZH}"))
     }
+  } else if dict.is_empty() {
+    None
   } else {
-    let seed = punctuation_seed(language);
-    if dict.is_empty() {
-      Some(seed.to_string())
-    } else {
-      Some(format!("{dict}\n{seed}"))
-    }
+    Some(dict.to_string())
   }
 }
 
@@ -680,86 +668,72 @@ fn accessibility_status(prompt: bool) -> AccessibilityStatus {
 mod tests {
   use super::*;
 
-  // --- Whisper family: a punctuation seed is always injected, placed LAST ---
+  // --- Whisper + Chinese: the seed is injected, placed LAST ---
 
   #[test]
-  fn whisper_empty_dictionary_still_gets_a_seed() {
-    // Bug repro: no prompt at all -> Whisper emits zero punctuation. So even with
-    // an empty dictionary we must inject the seed.
+  fn whisper_chinese_empty_dictionary_gets_the_seed() {
+    // Bug repro: no prompt at all -> Whisper emits zero punctuation for Chinese,
+    // so the seed must be injected even with an empty dictionary.
     let p = build_transcription_prompt("whisper-large-v3-turbo", "zh", "").unwrap();
     assert_eq!(p, SEED_ZH);
     assert!(p.contains('。') && p.contains('？') && p.contains('！'));
   }
 
   #[test]
-  fn whisper_appends_seed_after_dictionary() {
-    // The seed must sit LAST (closest to the audio), with the vocabulary first.
+  fn whisper_chinese_appends_seed_after_dictionary() {
+    // Seed sits LAST (closest to the audio); the vocabulary comes first.
     let dict = "Claude\nAzure";
     let p = build_transcription_prompt("whisper-large-v3-turbo", "zh", dict).unwrap();
     assert_eq!(p, format!("{dict}\n{SEED_ZH}"));
-    assert!(p.starts_with(dict));
-    assert!(p.ends_with(SEED_ZH));
-    // seed strictly after the dictionary
+    assert!(p.starts_with(dict) && p.ends_with(SEED_ZH));
     assert!(p.find(SEED_ZH).unwrap() > p.find("Claude").unwrap());
   }
 
   #[test]
-  fn whisper_trims_dictionary_whitespace() {
+  fn whisper_chinese_trims_dictionary_whitespace() {
     let p = build_transcription_prompt("whisper-large-v3-turbo", "zh", "  \n Claude \n ").unwrap();
     assert_eq!(p, format!("Claude\n{SEED_ZH}"));
   }
 
   #[test]
-  fn whisper_seed_follows_language() {
-    assert_eq!(
-      build_transcription_prompt("whisper-large-v3", "en", "").unwrap(),
-      SEED_EN
-    );
-    assert_eq!(
-      build_transcription_prompt("whisper-large-v3", "zh", "").unwrap(),
-      SEED_ZH
-    );
-  }
-
-  #[test]
-  fn auto_and_unknown_language_use_the_bilingual_seed() {
-    // `auto` (and any unmapped code) get the language-neutral seed, which
-    // carries both Latin and CJK punctuation so it can't force a language.
-    for lang in ["auto", "", "fr", "ja"] {
+  fn chinese_detection_is_case_and_region_insensitive() {
+    // Any zh* code counts as Chinese and is seeded. (There is no Traditional
+    // option in the app today; a zh-TW user would still get the Simplified seed —
+    // an accepted limitation, revisit if Traditional is ever offered.)
+    for lang in ["zh", "ZH", "zh-Hans", "zh-CN", "zh-TW"] {
       let p = build_transcription_prompt("whisper-large-v3-turbo", lang, "").unwrap();
-      assert_eq!(p, SEED_AUTO, "language {lang:?} should fall back to SEED_AUTO");
+      assert_eq!(p, SEED_ZH, "language {lang:?} should be seeded as Chinese");
     }
-    // carries both CJK and Latin punctuation cues
-    assert!(SEED_AUTO.contains('你') && SEED_AUTO.contains("welcome"));
-    assert!(SEED_AUTO.contains('？') && SEED_AUTO.contains('?'));
   }
 
+  // --- Non-Chinese languages: NO seed (dictionary passes through, or nothing) ---
+
   #[test]
-  fn language_code_matching_is_case_and_region_insensitive() {
-    assert_eq!(punctuation_seed("ZH"), SEED_ZH);
-    assert_eq!(punctuation_seed("zh-Hans"), SEED_ZH);
-    assert_eq!(punctuation_seed("en-AU"), SEED_EN);
+  fn whisper_non_chinese_is_never_seeded() {
+    for lang in ["en", "en-AU", "ja", "es", "auto", ""] {
+      // empty dictionary -> no prompt at all
+      assert_eq!(
+        build_transcription_prompt("whisper-large-v3-turbo", lang, ""),
+        None,
+        "language {lang:?} should send no prompt when the dictionary is empty"
+      );
+      // non-empty dictionary -> passed through verbatim, never seeded
+      let p = build_transcription_prompt("whisper-large-v3-turbo", lang, "Claude").unwrap();
+      assert_eq!(p, "Claude", "language {lang:?} must not be seeded");
+      assert!(!p.contains(SEED_ZH));
+    }
   }
 
-  // --- gpt-4o family: never seeded (it already punctuates); dictionary passes through ---
+  // --- gpt-4o family: never seeded, even for Chinese (it already punctuates) ---
 
   #[test]
-  fn gpt4o_empty_dictionary_sends_no_prompt() {
-    assert_eq!(
-      build_transcription_prompt("gpt-4o-transcribe", "zh", ""),
-      None
-    );
-    assert_eq!(
-      build_transcription_prompt("gpt-4o-mini-transcribe", "zh", "   "),
-      None
-    );
-  }
-
-  #[test]
-  fn gpt4o_passes_dictionary_through_without_a_seed() {
-    let p = build_transcription_prompt("gpt-4o-mini-transcribe", "zh", "Claude\nAzure").unwrap();
-    assert_eq!(p, "Claude\nAzure");
-    assert!(!p.contains(SEED_ZH));
-    assert!(!p.contains('。'));
+  fn gpt4o_is_never_seeded_even_for_chinese() {
+    for model in ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"] {
+      assert_eq!(build_transcription_prompt(model, "zh", ""), None);
+      assert_eq!(build_transcription_prompt(model, "zh", "   "), None);
+      let p = build_transcription_prompt(model, "zh", "Claude\nAzure").unwrap();
+      assert_eq!(p, "Claude\nAzure");
+      assert!(!p.contains(SEED_ZH) && !p.contains('。'));
+    }
   }
 }
