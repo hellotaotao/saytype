@@ -6,16 +6,6 @@ const { initI18n, setLanguage, applyI18n, t, getLocale } = window.SayTypeI18n;
 const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
 const RECENT_LIMIT = 12;
 let currentThemePref = "elegant";
-const KEY_SYMBOLS = {
-  ctrl: "⌃",
-  control: "⌃",
-  shift: "⇧",
-  alt: "⌥",
-  option: "⌥",
-  cmd: "⌘",
-  command: "⌘",
-  meta: "⌘",
-};
 
 let cachedSettings = null;
 let cachedActivities = [];
@@ -52,12 +42,21 @@ function watchSystemTheme() {
   });
 }
 
+// Render each modifier as an OS-appropriate keycap: Apple glyphs on macOS,
+// plain words (Ctrl/Shift/Alt/Win|Super) on Windows/Linux. Driven by the backend
+// `os` field (get-settings), with a navigator fallback before settings load.
 function shortcutKeycaps(shortcut) {
+  const os = (cachedSettings?.os || "").toLowerCase();
+  const isMac = os ? os === "macos" : /Mac/i.test(navigator.platform || "");
+  const metaWord = os === "linux" ? "Super" : "Win";
+  const macGlyphs = { ctrl: "⌃", control: "⌃", shift: "⇧", alt: "⌥", option: "⌥", cmd: "⌘", command: "⌘", meta: "⌘", super: "⌘", win: "⌘", windows: "⌘" };
+  const textWords = { ctrl: "Ctrl", control: "Ctrl", shift: "Shift", alt: "Alt", option: "Alt", cmd: metaWord, command: metaWord, meta: metaWord, super: metaWord, win: metaWord, windows: metaWord };
+  const map = isMac ? macGlyphs : textWords;
   return String(shortcut || "")
     .split("+")
     .map((part) => part.trim())
     .filter(Boolean)
-    .map((part) => KEY_SYMBOLS[part.toLowerCase()] || part);
+    .map((part) => map[part.toLowerCase()] || part);
 }
 
 function hasApiKey(settings) {

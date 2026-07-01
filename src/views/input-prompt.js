@@ -258,6 +258,7 @@ class VoiceInputPrompt {
       if (!settings) {
         return;
       }
+      this.osName = settings.os || this.osName;
       this.currentProvider = settings.provider || "openai";
       this.currentModel = settings.model || "";
       this.updateShortcutHint(
@@ -276,7 +277,12 @@ class VoiceInputPrompt {
       return "";
     }
     const label = shortcut.replace(/\+/g, " + ");
-    const isMac = window.navigator?.platform?.includes("Mac");
+    // macOS labels Alt as Option; Windows/Linux keep Alt. Use the backend `os`
+    // field (set in syncShortcutFromSettings), falling back to navigator only
+    // before settings have loaded.
+    const isMac = this.osName
+      ? this.osName === "macos"
+      : /Mac/i.test(window.navigator?.platform || "");
     return isMac ? label.replace(/Alt/g, "Option") : label;
   }
 

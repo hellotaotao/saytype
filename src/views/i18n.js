@@ -73,7 +73,7 @@
         recordingShortcut: {
           title: "Recording shortcut",
           description:
-            "Choose your preferred hold-to-record shortcut. Translation uses Shift + Option.",
+            "Choose your preferred hold-to-record shortcut. Translation uses Shift + Alt.",
           selectTitle: "Select recording shortcut",
         },
         accessibility: {
@@ -271,7 +271,7 @@
         recordingShortcut: {
           title: "录音快捷键",
           description:
-            "选择你偏好的按住录音快捷键。翻译使用 Shift + Option。",
+            "选择你偏好的按住录音快捷键。翻译使用 Shift + Alt。",
           selectTitle: "选择录音快捷键",
         },
         accessibility: {
