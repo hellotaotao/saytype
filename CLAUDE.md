@@ -48,6 +48,14 @@ the ticket, and opens a **draft** GitHub Release with the DMG attached.
 Notarization is intentionally CI-only: it uploads the build to Apple and waits
 minutes, whereas local signing is instant (local builds skip it).
 
+> **Signing is optional in CI.** The release workflow's "Configure Apple signing"
+> step injects the `APPLE_*` secrets into the environment **only when
+> `APPLE_CERTIFICATE` is set**. If the signing secrets are not yet configured, no
+> `APPLE_*` vars are passed to tauri-cli, so it produces an **unsigned,
+> un-notarized** DMG and the release still succeeds (a workflow warning is
+> emitted). Adding the six secrets below later enables signing + notarization
+> automatically — no workflow changes needed.
+
 Notarization = Apple scans the signed app and returns a ticket that gets
 **stapled into the bundle**, so Gatekeeper lets *other* Macs run it without the
 "unidentified developer" warning. Prereqs: Hardened Runtime (already on) **and a
