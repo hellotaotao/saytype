@@ -36,13 +36,46 @@ jobs:
       - name: Install JS tooling (@tauri-apps/cli)
         run: npm ci
 
+      - name: Import Apple signing certificate
+        # Only run when the certificate secret is populated.
+        if: secrets.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          # Use mktemp in RUNNER_TEMP so the p12 path is unpredictable.
+          CERT_FILE="$(mktemp "$RUNNER_TEMP/cert.XXXXXX")"
+          # Strip any line-wrapping that macOS `base64` adds (every 76 chars)
+          # before decoding to avoid SecKeychainItemImport EINVAL errors.
+          echo "$APPLE_CERTIFICATE" | tr -d '\n\r' | base64 --decode > "$CERT_FILE"
+          # Create a short-lived dedicated keychain so we never pollute the
+          # login keychain and the cert is automatically gone after the job.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Lock the keychain after 6 hours (21600 s) — long enough for a full
+          # CI run but short enough to limit exposure on a shared runner pool.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_FILE" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          # Allow codesign (and related tools) to use the key without prompting.
+          security set-key-partition-list \
+            -S "apple-tool:,apple:,codesign:" -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Set the new keychain as the active keychain search list.
+          # The runner is ephemeral, so we don't need to preserve the old list.
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          rm "$CERT_FILE"
+
       - name: Build, sign, notarize & publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # —— 代码签名(Developer ID Application) ——
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # Certificate is already imported into the keychain in the step above;
+          # passing APPLE_CERTIFICATE here would make tauri-cli attempt a second
+          # import (via `security import`) which fails with EINVAL on the runners.
+          # Only the identity name is needed for codesign to find the cert.
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           # —— 公证(notarization,Apple ID 方式) ——
           APPLE_ID: ${{ secrets.APPLE_ID }}
