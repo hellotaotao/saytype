@@ -42,9 +42,9 @@
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
     "read-debug-audio": [["id"]],
-    "type-text": [["text"]],
+    "type-text": [["text"], ["shape"]],
     "save-dictionary": [["text"]],
-    "copy-to-clipboard": [["text"]],
+    "copy-to-clipboard": [["text"], ["shape"]],
   };
 
   // Channels whose first arg is binary and is sent as the RAW IPC body (Tauri's

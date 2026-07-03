@@ -83,6 +83,26 @@ function hasMeaningfulText(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// Shape-only text metric (counts, never content) sent alongside type-text /
+// copy-to-clipboard; the backend logs it next to its own count of the received
+// string, so a mismatch pins text corruption to the JS→Rust IPC leg. Must
+// mirror text_shape() in commands.rs.
+function textShape(text) {
+  let chars = 0;
+  let cjk = 0;
+  let latin1 = 0;
+  for (const ch of text) {
+    chars += 1;
+    const c = ch.codePointAt(0);
+    if (c >= 0x3000 && c <= 0x9fff) {
+      cjk += 1;
+    } else if (c >= 0x80 && c <= 0xff) {
+      latin1 += 1;
+    }
+  }
+  return `chars=${chars} cjk=${cjk} latin1sup=${latin1}`;
+}
+
 class VoiceInputPrompt {
   constructor() {
     this.isRecording = false;
@@ -351,7 +371,7 @@ class VoiceInputPrompt {
       return;
     }
     try {
-      await ipc.invoke("copy-to-clipboard", this._failedText);
+      await ipc.invoke("copy-to-clipboard", this._failedText, textShape(this._failedText));
       this.statusText.textContent = t("inputPrompt.copied");
       this.statusText.style.color = "var(--status-success)";
       if (this.copyBtn) this.copyBtn.hidden = true;
@@ -1021,7 +1041,7 @@ class VoiceInputPrompt {
 
     // Send the transcribed text to the active application.
     try {
-      const result = await ipc.invoke("type-text", text);
+      const result = await ipc.invoke("type-text", text, textShape(text));
 
       // Any backend success means the text was injected directly (there is no
       // clipboard fallback). `method` differs per OS ("cgevent_unicode" on

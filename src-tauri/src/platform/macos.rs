@@ -175,11 +175,38 @@ fn insert_text_via_cgevent(text: &str) -> Result<()> {
   Ok(())
 }
 
+/// How the system-wide `AXFocusedUIElement` query resolved.
+#[derive(Debug, PartialEq)]
+enum FocusQuery {
+  /// The query succeeded and explicitly handed back no element — the system
+  /// affirmatively says nothing is focused, so keys would land nowhere.
+  NothingFocused,
+  /// The query errored out. Chromium-shell apps whose web content is not
+  /// bridged into the AX tree make this path routine — ChatGPT Atlas returns
+  /// kAXErrorCannotComplete (-25204) or kAXErrorNoValue (-25212) even while
+  /// an editable field is visibly focused (both observed live, 2026-07-02/03),
+  /// and Claude Desktop behaves the same until its a11y tree wakes. An error —
+  /// ANY error — is uncertainty, not a "nothing is focused" verdict, so the
+  /// guard must not block on it.
+  Unanswerable,
+  /// A focused element came back and can be inspected.
+  Element,
+}
+
+fn classify_focus_query(err: i32, has_element: bool) -> FocusQuery {
+  match (err, has_element) {
+    (0, true) => FocusQuery::Element,
+    (0, false) => FocusQuery::NothingFocused,
+    _ => FocusQuery::Unanswerable,
+  }
+}
+
 // Best-effort guard: returns false ONLY when we're confident there is no
 // editable text target for the keystrokes (no focused UI element, or a focused
 // element that is neither value-settable nor a known text role — e.g. the
 // desktop, a button, window chrome). On ANY uncertainty it returns true, so we
-// never block a valid insertion in an app with imperfect Accessibility data.
+// never block a valid insertion in an app with imperfect Accessibility data —
+// including apps whose AX tree is opaque and can't be queried at all.
 // Without this, CGEvent insertion silently "succeeds" into the void when no
 // field is focused (CGEventPost cannot report whether the keystrokes landed).
 fn focused_element_accepts_text() -> bool {
@@ -197,8 +224,18 @@ fn focused_element_accepts_text() -> bool {
       &mut focused,
     );
     CFRelease(system_wide as *const c_void);
-    if err != 0 || focused.is_null() {
-      return false; // nothing is focused — the keys would land nowhere
+    // Warn-level so shipped builds keep a per-dictation trace of this guard's
+    // decision — it has misfired on AX-opaque apps (ChatGPT Atlas) before.
+    match classify_focus_query(err, !focused.is_null()) {
+      FocusQuery::NothingFocused => {
+        log::warn!("insert-guard: focus query err={err} -> block (nothing focused)");
+        return false;
+      }
+      FocusQuery::Unanswerable => {
+        log::warn!("insert-guard: focus query err={err} -> allow (app doesn't answer AX)");
+        return true;
+      }
+      FocusQuery::Element => {}
     }
 
     // Signal 1: AXValue is settable — true for text fields / text areas.
@@ -214,6 +251,7 @@ fn focused_element_accepts_text() -> bool {
     // Signal 2: a known text-bearing role (e.g. Terminal's AXTextArea, whose
     // value isn't "settable" in the AX sense but still accepts keystrokes).
     let mut text_role = false;
+    let mut role_name: Option<String> = None;
     let role_attr = CFString::new("AXRole");
     let mut role_ref: *const c_void = std::ptr::null();
     let role_err = AXUIElementCopyAttributeValue(
@@ -227,10 +265,17 @@ fn focused_element_accepts_text() -> bool {
         role.as_str(),
         "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField"
       );
+      role_name = Some(role);
     }
 
     CFRelease(focused);
-    value_settable || text_role
+    let accepts = value_settable || text_role;
+    log::warn!(
+      "insert-guard: focused role={} settable={value_settable} -> {}",
+      role_name.as_deref().unwrap_or("<unavailable>"),
+      if accepts { "allow" } else { "block (no editable target)" }
+    );
+    accepts
   }
 }
 
@@ -251,4 +296,43 @@ extern "C" {}
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
   fn CFRelease(cf: *const c_void);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const AX_ERROR_CANNOT_COMPLETE: i32 = -25204;
+  const AX_ERROR_API_DISABLED: i32 = -25211;
+  const AX_ERROR_NO_VALUE: i32 = -25212;
+
+  #[test]
+  fn successful_query_yields_element_to_inspect() {
+    assert_eq!(classify_focus_query(0, true), FocusQuery::Element);
+  }
+
+  #[test]
+  fn explicit_no_focus_blocks_insertion() {
+    assert_eq!(classify_focus_query(0, false), FocusQuery::NothingFocused);
+  }
+
+  #[test]
+  fn unanswerable_query_must_not_block_insertion() {
+    // Chromium-shell apps with an unbridged AX tree fail this query while an
+    // editable field IS focused. Both errors observed live in ChatGPT Atlas:
+    // -25204 (2026-07-02 probe) and -25212 (2026-07-03 shipped-log evidence,
+    // the case the first fix missed). Errors are uncertainty — never block.
+    assert_eq!(
+      classify_focus_query(AX_ERROR_CANNOT_COMPLETE, false),
+      FocusQuery::Unanswerable
+    );
+    assert_eq!(
+      classify_focus_query(AX_ERROR_NO_VALUE, false),
+      FocusQuery::Unanswerable
+    );
+    assert_eq!(
+      classify_focus_query(AX_ERROR_API_DISABLED, false),
+      FocusQuery::Unanswerable
+    );
+  }
 }

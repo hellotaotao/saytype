@@ -264,11 +264,34 @@ pub async fn transcribe_audio(
   }
 }
 
+// Shape-only text diagnostics (counts, never content — the "no transcribed
+// text in logs" promise holds). `shape` is the same metric computed by the
+// sender in JS; a mismatch between the two pins IPC-leg text corruption.
+fn text_shape(text: &str) -> String {
+  let (mut chars, mut cjk, mut latin1) = (0usize, 0usize, 0usize);
+  for c in text.chars() {
+    chars += 1;
+    let u = c as u32;
+    if (0x3000..=0x9FFF).contains(&u) {
+      cjk += 1;
+    } else if (0x80..=0xFF).contains(&u) {
+      latin1 += 1;
+    }
+  }
+  format!("chars={chars} cjk={cjk} latin1sup={latin1}")
+}
+
 #[tauri::command]
 pub async fn type_text(
   _state: State<'_, AppState>,
   text: String,
+  shape: Option<String>,
 ) -> Result<TypeTextResponse, String> {
+  log::warn!(
+    "diag:type_text rust[{}] js[{}]",
+    text_shape(&text),
+    shape.as_deref().unwrap_or("-")
+  );
   if text.trim().is_empty() {
     return Ok(TypeTextResponse {
       success: false,
@@ -315,7 +338,12 @@ pub fn show_permission_dialog() -> Result<i32, String> {
 // macOS) lives behind `platform::copy_to_clipboard`. There is still no
 // AUTOMATIC clipboard touch anywhere — this only fires on a real button click.
 #[tauri::command]
-pub fn copy_to_clipboard(text: String) -> Result<bool, String> {
+pub fn copy_to_clipboard(text: String, shape: Option<String>) -> Result<bool, String> {
+  log::warn!(
+    "diag:copy_to_clipboard rust[{}] js[{}]",
+    text_shape(&text),
+    shape.as_deref().unwrap_or("-")
+  );
   platform::copy_to_clipboard(&text)
     .map(|_| true)
     .map_err(stringify_error)
