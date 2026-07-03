@@ -30,6 +30,20 @@
         microphone: "Microphone",
         accessibility: "Accessibility",
         addApiKey: "Add API key",
+        axGuide: {
+          title: "Turn on Accessibility to finish setup",
+          lead: "macOS asks for this permission so SayType can do exactly two things:",
+          useInsert: "Type your dictated text into whatever app you're using",
+          useHotkey: "Notice the hold-to-dictate shortcut while you're in any app",
+          privacy:
+            "SayType never logs your keystrokes, never watches other apps, and never uploads anything — this permission is used only for the two things above.",
+          open: "Open Accessibility Settings",
+          waiting: "Waiting for permission…",
+          waitingHint:
+            "In System Settings, turn on the switch next to SayType — this screen continues automatically once it's on.",
+          retryHint:
+            "Permission not detected yet. Turn on SayType in the Accessibility list, or try again.",
+        },
       },
       history: {
         title: "History",
@@ -232,6 +246,18 @@
         microphone: "麦克风",
         accessibility: "辅助功能",
         addApiKey: "添加 API 密钥",
+        axGuide: {
+          title: "开启辅助功能，完成最后一步",
+          lead: "macOS 需要这项权限，SayType 才能做到这两件事：",
+          useInsert: "把听写好的文字直接输入到你正在用的应用里",
+          useHotkey: "在任意应用中响应“按住说话”快捷键",
+          privacy:
+            "SayType 不会记录你的按键、不会监控其他应用、也不会上传任何数据——这项权限只用于上面两件事。",
+          open: "打开辅助功能设置",
+          waiting: "等待授权中…",
+          waitingHint: "在系统设置里打开 SayType 旁边的开关，授权后这里会自动继续。",
+          retryHint: "还没检测到授权。请在辅助功能列表中打开 SayType，或再试一次。",
+        },
       },
       history: {
         title: "历史",

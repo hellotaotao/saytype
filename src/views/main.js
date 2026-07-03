@@ -167,6 +167,18 @@ if (document.readyState === "loading") {
 
 /* ---------- Readiness card ---------- */
 
+// Accessibility onboarding: after the user clicks through to System Settings we
+// actively poll `recheck` (which restarts the hotkey listener on grant) so the
+// flow continues by itself — bounded, so a user who walks away doesn't leave a
+// poller running forever. State lives at module level because renderReadiness
+// rebuilds the whole card (replaceChildren) on every refresh.
+const AX_POLL_INTERVAL_MS = 1000;
+const AX_POLL_MAX_MS = 90_000;
+let axGuideWaiting = false;
+let axGuideTimedOut = false;
+let axPollTimer = null;
+let axPollDeadline = 0;
+
 async function refreshReadiness() {
   try {
     cachedSettings = await ipc.invoke("get-settings");
@@ -175,6 +187,10 @@ async function refreshReadiness() {
   }
 
   const [micOk, axOk] = await Promise.all([checkMicOk(), checkAxOk()]);
+  if (axOk) {
+    stopAxPolling();
+    axGuideTimedOut = false;
+  }
   renderReadiness({
     hasKey: hasApiKey(cachedSettings),
     micOk,
@@ -196,11 +212,88 @@ async function checkMicOk() {
 
 async function checkAxOk() {
   try {
-    const result = await ipc.invoke("check-accessibility-permission");
+    // recheck (not the read-only check): it also syncs backend state, so a
+    // grant made while this window was away restarts the hotkey listener the
+    // moment we refocus. It only emits accessibility-permission-changed on a
+    // real change, so the event handler re-entering here can't loop.
+    const result = await ipc.invoke("recheck-accessibility-permission");
     return !!result.granted || result.status === "not_required";
   } catch (error) {
     console.error("Failed to check accessibility permission:", error);
     return false;
+  }
+}
+
+async function startAccessibilityFlow() {
+  if (axGuideWaiting) {
+    return;
+  }
+  axGuideTimedOut = false;
+
+  // Prompt first (prompt:true): the one-time system dialog is what pre-adds
+  // SayType to the Accessibility list — deep-linking without it lands a
+  // first-run user on a list with nothing to toggle.
+  try {
+    const result = await ipc.invoke("request-accessibility-permission");
+    if (result?.granted || result?.status === "not_required") {
+      await refreshReadiness();
+      return;
+    }
+  } catch (error) {
+    console.error("Failed to request accessibility permission:", error);
+  }
+
+  // Then deep-link straight to the Accessibility pane.
+  try {
+    await ipc.invoke("show-permission-dialog");
+  } catch (error) {
+    console.error("Failed to open accessibility settings:", error);
+  }
+
+  beginAxPolling();
+}
+
+function beginAxPolling() {
+  stopAxPolling();
+  axGuideWaiting = true;
+  axPollDeadline = Date.now() + AX_POLL_MAX_MS;
+  void refreshReadiness();
+  scheduleAxPoll();
+}
+
+function scheduleAxPoll() {
+  axPollTimer = window.setTimeout(async () => {
+    axPollTimer = null;
+    let granted = false;
+    try {
+      const result = await ipc.invoke("recheck-accessibility-permission");
+      granted = !!result.granted || result.status === "not_required";
+    } catch (error) {
+      console.error("Failed to recheck accessibility permission:", error);
+    }
+    if (!axGuideWaiting) {
+      return; // stopped while the recheck was in flight (e.g. a focus refresh saw the grant)
+    }
+    if (granted) {
+      stopAxPolling();
+      await refreshReadiness();
+      return;
+    }
+    if (Date.now() >= axPollDeadline) {
+      stopAxPolling();
+      axGuideTimedOut = true;
+      await refreshReadiness();
+      return;
+    }
+    scheduleAxPoll();
+  }, AX_POLL_INTERVAL_MS);
+}
+
+function stopAxPolling() {
+  axGuideWaiting = false;
+  if (axPollTimer) {
+    window.clearTimeout(axPollTimer);
+    axPollTimer = null;
   }
 }
 
@@ -302,8 +395,101 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
     buildPill({ label: hasKey ? t("readiness.apiKey") : t("readiness.addApiKey"), ok: hasKey, onFix: openSettings })
   );
   pills.appendChild(buildPill({ label: t("readiness.microphone"), ok: micOk, onFix: openSettings }));
-  pills.appendChild(buildPill({ label: t("readiness.accessibility"), ok: axOk, onFix: openSettings }));
+  pills.appendChild(
+    buildPill({
+      label: t("readiness.accessibility"),
+      ok: axOk,
+      onFix: () => {
+        void startAccessibilityFlow();
+      },
+    })
+  );
   card.appendChild(pills);
+
+  if (!axOk) {
+    card.appendChild(buildAxGuide());
+  }
+}
+
+// The in-card Accessibility onboarding panel. The copy leads with what the
+// permission is used for AND what it is not used for — the permission sounds
+// scary, and Apple forbids apps from granting it to themselves, so persuading
+// the user through the System Settings toggle is the whole game here.
+function buildAxGuide() {
+  const guide = document.createElement("div");
+  guide.className = "ax-guide";
+
+  const head = document.createElement("div");
+  head.className = "ax-guide-head";
+  head.appendChild(makeIcon("accessibility_new"));
+  const headText = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "ax-guide-title";
+  title.textContent = t("readiness.axGuide.title");
+  const lead = document.createElement("div");
+  lead.className = "ax-guide-lead";
+  lead.textContent = t("readiness.axGuide.lead");
+  headText.appendChild(title);
+  headText.appendChild(lead);
+  head.appendChild(headText);
+  guide.appendChild(head);
+
+  const list = document.createElement("ul");
+  list.className = "ax-guide-list";
+  [
+    { icon: "keyboard", key: "readiness.axGuide.useInsert" },
+    { icon: "bolt", key: "readiness.axGuide.useHotkey" },
+  ].forEach(({ icon, key }) => {
+    const item = document.createElement("li");
+    item.appendChild(makeIcon(icon));
+    const text = document.createElement("span");
+    text.textContent = t(key);
+    item.appendChild(text);
+    list.appendChild(item);
+  });
+  guide.appendChild(list);
+
+  const privacy = document.createElement("div");
+  privacy.className = "ax-guide-privacy";
+  privacy.appendChild(makeIcon("verified_user"));
+  const privacyText = document.createElement("span");
+  privacyText.textContent = t("readiness.axGuide.privacy");
+  privacy.appendChild(privacyText);
+  guide.appendChild(privacy);
+
+  const actions = document.createElement("div");
+  actions.className = "ax-guide-actions";
+  if (axGuideWaiting) {
+    const waiting = document.createElement("div");
+    waiting.className = "ax-guide-waiting";
+    waiting.appendChild(makeIcon("sync"));
+    const label = document.createElement("span");
+    label.textContent = t("readiness.axGuide.waiting");
+    waiting.appendChild(label);
+    actions.appendChild(waiting);
+    const hint = document.createElement("div");
+    hint.className = "ax-guide-hint";
+    hint.textContent = t("readiness.axGuide.waitingHint");
+    actions.appendChild(hint);
+  } else {
+    const button = document.createElement("button");
+    button.className = "btn";
+    button.type = "button";
+    button.textContent = t("readiness.axGuide.open");
+    button.addEventListener("click", () => {
+      void startAccessibilityFlow();
+    });
+    actions.appendChild(button);
+    if (axGuideTimedOut) {
+      const hint = document.createElement("div");
+      hint.className = "ax-guide-hint";
+      hint.textContent = t("readiness.axGuide.retryHint");
+      actions.appendChild(hint);
+    }
+  }
+  guide.appendChild(actions);
+
+  return guide;
 }
 
 /* ---------- Activities (recent + history) ---------- */
