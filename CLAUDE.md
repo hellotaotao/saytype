@@ -247,6 +247,35 @@ a backend encoder) — extra CPU/complexity, not worth it for short dictation cl
 too: Whisper resamples to 16 kHz server-side regardless. (Windows WebView2 = Chromium *does* honor
 `audioBitsPerSecond`, so this is WebKit-specific, like the NS/AGC gap above.)
 
+### Whisper punctuation: prompt seed & temperature are dead ends on large-v3 (measured 2026-07-03)
+
+Chinese transcriptions carry a punctuation seed (`SEED_ZH` in `commands.rs`, Whisper+zh only).
+It is **not sufficient**, and no request-parameter tweak fixes it. A 77-call controlled sweep
+(same audio → Groq/OpenAI via curl, temperature × prompt × 3–5 reps per condition) established:
+
+- **Punctuation "instability" is per-content, not per-run.** At default temperature the same
+  audio returns byte-identical text across repeats, every condition. Whether the decode lands in
+  "punctuating mode" depends on the utterance itself — so no sampling knob can stabilize it.
+- **Temperature is a dead end.** Groq's default ≡ explicit `temperature=0` (identical output);
+  `0.4` is strictly worse (zero-punct collapse returns, plus run-to-run variance). Do NOT add a
+  temperature parameter for punctuation.
+- **On run-on colloquial speech the seed does nothing on `whisper-large-v3`.** A real 96-char
+  zero-punct dictation (TTS-resynthesized) gives punct=0 deterministically under dict+seed,
+  seed-only, and no-prompt alike; OpenAI `whisper-1`+seed is also 0. Whisper-family trait, not
+  Groq-specific. The seed only helps content the model was already close to punctuating.
+- **`whisper-large-v3-turbo`+seed punctuates where lv3+seed fails** (3 deterministic, well-placed
+  marks on that clip; 0 without seed) — but density is ~half of `gpt-4o-mini-transcribe` (6–7
+  marks, the reference), and turbo misheard a word on one real-mic clip, so its accuracy needs a
+  real-use trial (settings → model) before any default change.
+- **Prompt-leak is real on degenerate audio**: on a repetitive clip, `whisper-1` emitted the seed
+  text ("欢迎使用听写工具。" ×15) as its entire output, and lv3 hallucinated video-spam
+  boilerplate. The VAD gate already drops non-speech clips before upload, which covers the main
+  (silence) case; highly repetitive real speech is the rare residual path.
+
+**Conclusion:** within the Whisper prompt/params channel there is no reliable punctuation fix for
+lv3. The seed stays (it's free and helps turbo); the real fix is the small-LLM post-processing
+pass — TODO.md #1, confirmed by this experiment as the long-term direction.
+
 ## Development Notes
 
 - Global shortcut is hold `Ctrl+Shift` to record (hardcoded default); Shift+Alt triggers
