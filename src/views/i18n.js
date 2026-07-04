@@ -50,6 +50,7 @@
         next: "Next",
         back: "Back",
         skip: "Skip for now",
+        skipStep: "Skip this step for now",
         finish: "Done",
         welcome: {
           title: "Speak. It types.",
@@ -107,6 +108,10 @@
           placeholder: "Put the cursor here, hold {keys} and say: nice weather today",
           hint: "Hold {keys} and speak → release → the text lands here",
           tip: "Bonus: hold {keys} and speak Chinese — it comes out in English.",
+        },
+        tryPending: {
+          title: "Almost there",
+          lead: "Finish the items below and you're set — or head into the app; the readiness card on Home will keep track.",
         },
       },
       history: {
@@ -328,6 +333,7 @@
         next: "下一步",
         back: "上一步",
         skip: "先跳过",
+        skipStep: "暂时跳过这一步",
         finish: "完成",
         welcome: {
           title: "说话，就是打字",
@@ -384,6 +390,10 @@
           placeholder: "把光标放在这里，按住 {keys} 说：今天天气不错",
           hint: "按住 {keys} 说话 → 松手 → 文字出现在这里",
           tip: "进阶：按住 {keys} 说中文，出来的是英文。",
+        },
+        tryPending: {
+          title: "还差一点",
+          lead: "补齐下面几项就能用了；也可以先进入主界面，首页的就绪卡会随时提醒你。",
         },
       },
       history: {

@@ -133,6 +133,7 @@ function bindEvents() {
 
   document.getElementById("obNextBtn")?.addEventListener("click", () => obMove(1));
   document.getElementById("obBackBtn")?.addEventListener("click", () => obMove(-1));
+  document.getElementById("obStepSkipBtn")?.addEventListener("click", () => obMove(1));
   document.getElementById("obSkipBtn")?.addEventListener("click", () => {
     void finishOnboarding();
   });
@@ -233,6 +234,8 @@ async function refreshReadiness() {
   }
   if (onboardingVisible()) {
     renderObAx();
+    renderObFooter();
+    renderObFinal();
   }
   renderReadiness({
     hasKey: hasApiKey(cachedSettings),
@@ -646,13 +649,51 @@ function renderOnboarding() {
     );
   }
 
+  renderObKeycaps();
+  renderObMic();
+  renderObAx();
+  renderObKey();
+  renderObFooter();
+  renderObFinal();
+}
+
+// Whether a wizard page's job is done. Info pages (1/2/6) are always
+// "done"; the three action pages gate the Next button on real state.
+function obStepSatisfied(page) {
+  if (page === 3) {
+    return obMicState === "granted";
+  }
+  if (page === 4) {
+    return obAxGranted;
+  }
+  if (page === 5) {
+    return obKeyStatus === "saved" || !!cachedSettings?.hasApiKey;
+  }
+  return true;
+}
+
+// Footer gating: on an unfinished action page, Next is disabled so nobody
+// slides through unawares — but a low-key per-step skip link keeps anyone
+// who genuinely can't grant right now from being held hostage. The global
+// skip (whole wizard) only shows on the info pages before any gate.
+function renderObFooter() {
+  if (!onboardingVisible()) {
+    return;
+  }
+  const satisfied = obStepSatisfied(obCurrent);
+  const gated = obCurrent >= 3 && obCurrent <= 5;
+
   const back = document.getElementById("obBackBtn");
   if (back) {
     back.style.visibility = obCurrent === 1 ? "hidden" : "visible";
   }
   const skip = document.getElementById("obSkipBtn");
   if (skip) {
-    skip.style.display = obCurrent === OB_TOTAL ? "none" : "";
+    skip.style.display = obCurrent <= 2 ? "" : "none";
+  }
+  const stepSkip = document.getElementById("obStepSkipBtn");
+  if (stepSkip) {
+    stepSkip.style.display = gated && !satisfied ? "" : "none";
   }
   const next = document.getElementById("obNextBtn");
   if (next) {
@@ -662,12 +703,75 @@ function renderOnboarding() {
         : obCurrent === OB_TOTAL
           ? t("onboarding.finish")
           : t("onboarding.next");
+    next.disabled = gated && !satisfied;
+  }
+}
+
+// Page 6 tells the truth: celebration + practice box only when everything
+// is actually ready; otherwise a checklist of what's missing, each row
+// jumping back to its page — nobody leaves the wizard surprised later.
+function renderObFinal() {
+  if (!onboardingVisible() || obCurrent !== OB_TOTAL) {
+    return;
+  }
+  const steps = [
+    { page: 3, icon: "mic", label: t("readiness.microphone") },
+    { page: 4, icon: "accessibility_new", label: t("readiness.accessibility") },
+    { page: 5, icon: "vpn_key", label: t("readiness.apiKey") },
+  ];
+  const ready = steps.every(({ page }) => obStepSatisfied(page));
+
+  const title = document.getElementById("obTryTitle");
+  if (title) {
+    title.textContent = t(ready ? "onboarding.try.title" : "onboarding.tryPending.title");
+  }
+  const lead = document.getElementById("obTryLead");
+  if (lead) {
+    lead.textContent = t(ready ? "onboarding.try.lead" : "onboarding.tryPending.lead");
+  }
+  const icon = document.getElementById("obFinalIcon");
+  if (icon) {
+    icon.textContent = ready ? "celebration" : "playlist_add_check";
+  }
+  const tryBox = document.getElementById("obTryBox");
+  if (tryBox) {
+    tryBox.hidden = !ready;
+  }
+  const tip = document.getElementById("obTryTip");
+  if (tip) {
+    tip.hidden = !ready;
   }
 
-  renderObKeycaps();
-  renderObMic();
-  renderObAx();
-  renderObKey();
+  const checklist = document.getElementById("obChecklist");
+  if (!checklist) {
+    return;
+  }
+  checklist.hidden = ready;
+  if (ready) {
+    checklist.replaceChildren();
+    return;
+  }
+  checklist.replaceChildren(
+    ...steps.map(({ page, icon: rowIcon, label }) => {
+      const ok = obStepSatisfied(page);
+      const row = document.createElement(ok ? "div" : "button");
+      row.className = `ob-check-row${ok ? " ok" : ""}`;
+      if (!ok) {
+        row.type = "button";
+        row.addEventListener("click", () => {
+          obCurrent = page;
+          renderOnboarding();
+        });
+      }
+      row.appendChild(makeIcon(rowIcon));
+      const text = document.createElement("span");
+      text.className = "ob-check-label";
+      text.textContent = label;
+      row.appendChild(text);
+      row.appendChild(makeIcon(ok ? "check" : "chevron_right"));
+      return row;
+    })
+  );
 }
 
 // Fill an element from an i18n template containing a {keys} placeholder,
@@ -751,6 +855,8 @@ async function obRefreshMicState() {
     console.error("Failed to check microphone permission:", error);
   }
   renderObMic();
+  renderObFooter();
+  renderObFinal();
   if (previous !== "granted" && obMicState === "granted") {
     obScheduleAdvance(3);
   }
@@ -906,6 +1012,8 @@ async function obSaveKey() {
       console.error("Failed to reload settings after key save:", error);
     }
     renderObKey();
+    renderObFooter();
+    renderObFinal();
     obScheduleAdvance(5);
   } catch (error) {
     obKeyStatus = "error";

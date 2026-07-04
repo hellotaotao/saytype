@@ -111,12 +111,13 @@
         <div class="ob-key-help" id="obKeyHelp"></div>
       </div>
 
-      <!-- 6. First try -->
+      <!-- 6. First try — or, when steps were skipped, an honest checklist -->
       <div class="onboard-page" data-ob-page="6">
-        <div class="ob-hero-icon"><span class="material-icons">celebration</span></div>
-        <h1 data-i18n="onboarding.try.title">Ready! Say your first sentence</h1>
-        <p class="ob-lead" data-i18n="onboarding.try.lead">It works the same way in every app.</p>
-        <div class="ob-try-box">
+        <div class="ob-hero-icon"><span class="material-icons" id="obFinalIcon">celebration</span></div>
+        <h1 id="obTryTitle" data-i18n="onboarding.try.title">Ready! Say your first sentence</h1>
+        <p class="ob-lead" id="obTryLead" data-i18n="onboarding.try.lead">It works the same way in every app.</p>
+        <div class="ob-checklist" id="obChecklist" hidden></div>
+        <div class="ob-try-box" id="obTryBox">
           <input class="ob-try-input" id="obTryInput" type="text" autocomplete="off" spellcheck="false" />
           <div class="ob-try-hint" id="obTryHint"></div>
         </div>
@@ -126,6 +127,7 @@
       <div class="onboard-footer">
         <div class="ob-dots" id="obDots"></div>
         <button type="button" class="link-btn" id="obBackBtn" data-i18n="onboarding.back">Back</button>
+        <button type="button" class="link-btn" id="obStepSkipBtn" data-i18n="onboarding.skipStep">Skip this step for now</button>
         <button type="button" class="link-btn" id="obSkipBtn" data-i18n="onboarding.skip">Skip for now</button>
         <button type="button" class="btn" id="obNextBtn">Next</button>
       </div>
