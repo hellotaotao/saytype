@@ -513,6 +513,474 @@ body {
   color: var(--text-soft);
 }
 
+/* First-launch onboarding wizard (full-window takeover; see main.html).
+   One idea per page, generous spacing — density is the enemy here. */
+.onboarding {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  background: var(--app-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.onboarding[hidden] {
+  display: none;
+}
+
+.onboard-card {
+  width: 640px;
+  max-width: calc(100vw - 48px);
+  height: 560px;
+  max-height: calc(100vh - 48px);
+  background: var(--panel-bg-strong);
+  border: 1px solid var(--panel-border);
+  border-radius: 20px;
+  padding: 40px 52px 30px;
+  box-shadow: 0 18px 50px rgba(31, 38, 38, 0.10);
+  display: flex;
+  flex-direction: column;
+}
+
+.onboard-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--accent-text);
+  flex: none;
+}
+
+.onboard-brand .material-icons {
+  font-size: 18px;
+}
+
+.onboard-page {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.onboard-page.active {
+  display: flex;
+}
+
+.onboard-page h1 {
+  font-size: 27px;
+  font-weight: 700;
+  margin: 0 0 14px;
+  letter-spacing: 0.2px;
+}
+
+.ob-lead {
+  font-size: 15px;
+  color: var(--text-soft);
+  margin: 0;
+  line-height: 1.75;
+}
+
+.ob-hero-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent-soft-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 22px;
+  flex: none;
+}
+
+.ob-hero-icon .material-icons {
+  font-size: 30px;
+  color: var(--accent-text);
+}
+
+/* Page 1: three steps */
+.ob-steps {
+  display: flex;
+  gap: 14px;
+  margin-top: 34px;
+}
+
+.ob-step {
+  flex: 1;
+  background: var(--accent-soft-bg);
+  border-radius: 14px;
+  padding: 22px 16px;
+  text-align: center;
+}
+
+.ob-step > .material-icons {
+  font-size: 28px;
+  color: var(--accent-text);
+}
+
+.ob-step-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.ob-step-desc {
+  font-size: 12.5px;
+  color: var(--text-soft);
+  margin-top: 6px;
+  line-height: 1.55;
+}
+
+/* Page 2: privacy flow diagram */
+.ob-flow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 36px 0 30px;
+}
+
+.ob-flow-node {
+  flex: 1;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 20px 14px;
+  text-align: center;
+}
+
+.ob-flow-node.accent {
+  background: var(--accent-soft-bg);
+  border-color: transparent;
+}
+
+.ob-flow-node .material-icons {
+  font-size: 26px;
+  color: var(--accent-text);
+}
+
+.ob-flow-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-top: 9px;
+}
+
+.ob-flow-desc {
+  font-size: 11.5px;
+  color: var(--text-soft);
+  margin-top: 3px;
+}
+
+.ob-flow-arrow {
+  text-align: center;
+  color: var(--accent-text);
+  flex: none;
+}
+
+.ob-flow-arrow .material-icons {
+  font-size: 22px;
+}
+
+.ob-flow-arrow-label {
+  font-size: 10.5px;
+  color: var(--text-soft);
+  margin-top: 3px;
+  white-space: nowrap;
+}
+
+.ob-privacy-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ob-privacy-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+
+.ob-privacy-line .material-icons {
+  font-size: 17px;
+  color: var(--accent-text);
+  flex: none;
+}
+
+/* Pages 3/4: permission points + reassurance + action row */
+.ob-points {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  margin: 30px 0 26px;
+}
+
+.ob-point {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  font-size: 14px;
+}
+
+.ob-point .material-icons {
+  font-size: 18px;
+  color: var(--accent-text);
+  flex: none;
+}
+
+.ob-reassure {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  line-height: 1.65;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 13px 15px;
+  margin-bottom: 28px;
+}
+
+.ob-reassure .material-icons {
+  font-size: 16px;
+  color: var(--accent-text);
+  flex: none;
+  margin-top: 2px;
+}
+
+.ob-actions {
+  margin-top: 34px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  flex-wrap: wrap;
+  min-height: 42px;
+}
+
+.onboard-page[data-ob-page="4"] .ob-actions {
+  margin-top: 0;
+}
+
+.ob-action-hint {
+  font-size: 12.5px;
+  color: var(--text-soft);
+  line-height: 1.5;
+  flex: 1;
+  min-width: 200px;
+}
+
+.ob-status-pill {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 13px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ob-status-pill .material-icons {
+  font-size: 15px;
+}
+
+.ob-status-pill.ok {
+  background: var(--pill-ok-bg);
+  color: var(--pill-ok-text);
+}
+
+.ob-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.ob-waiting .material-icons {
+  font-size: 16px;
+  animation: ax-guide-spin 1.6s linear infinite;
+}
+
+/* Page 5: provider + key */
+.ob-providers {
+  display: flex;
+  gap: 12px;
+  margin: 32px 0 18px;
+}
+
+.ob-provider {
+  flex: 1;
+  border: 1.5px solid var(--input-border);
+  border-radius: 14px;
+  background: var(--input-bg);
+  padding: 17px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  display: block;
+}
+
+.ob-provider.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft-bg);
+}
+
+.ob-provider-name {
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ob-provider-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--pill-ok-bg);
+  color: var(--pill-ok-text);
+  padding: 2.5px 8px;
+  border-radius: 6px;
+}
+
+.ob-provider-desc {
+  font-size: 12px;
+  color: var(--text-soft);
+  margin-top: 6px;
+  line-height: 1.55;
+  display: block;
+}
+
+.ob-key-row {
+  display: flex;
+  gap: 9px;
+}
+
+.ob-key-input {
+  flex: 1;
+  font-size: 13px;
+  padding: 11px 13px;
+  border: 1px solid var(--input-border);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--app-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ob-key-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+}
+
+.ob-key-help {
+  font-size: 12.5px;
+  color: var(--text-soft);
+  margin-top: 12px;
+  line-height: 1.55;
+}
+
+.ob-key-help.error {
+  color: var(--danger-text);
+}
+
+.ob-key-help.ok {
+  color: var(--pill-ok-text);
+}
+
+/* Page 6: practice box */
+.ob-try-box {
+  background: var(--accent-soft-bg);
+  border: 1.5px dashed var(--input-border-focus);
+  border-radius: 16px;
+  padding: 26px 24px;
+  margin: 32px 0 22px;
+}
+
+.ob-try-input {
+  width: 100%;
+  font-size: 15px;
+  padding: 15px 16px;
+  border: 1px solid var(--input-border);
+  border-radius: 11px;
+  background: var(--input-bg);
+  color: var(--app-text);
+  box-sizing: border-box;
+}
+
+.ob-try-input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+}
+
+.ob-try-hint {
+  font-size: 13px;
+  color: var(--text-soft);
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.ob-tip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  flex-wrap: wrap;
+}
+
+.ob-tip > .material-icons {
+  font-size: 16px;
+  color: var(--accent-text);
+}
+
+/* Footer: dots + nav buttons */
+.onboard-footer {
+  display: flex;
+  align-items: center;
+  margin-top: 18px;
+  flex: none;
+}
+
+.ob-dots {
+  display: flex;
+  gap: 7px;
+  flex: 1;
+}
+
+.ob-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--panel-border-strong);
+}
+
+.ob-dot.active {
+  background: var(--accent);
+}
+
+.onboard-footer .link-btn {
+  color: var(--text-soft);
+  font-size: 13px;
+  padding: 11px 14px;
+}
+
+.onboard-footer .btn {
+  padding: 11px 26px;
+}
+
 /* Recent / section header */
 .recent-activity {
   margin-top: 28px;

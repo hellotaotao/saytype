@@ -25,6 +25,7 @@
     "transcribe-audio": "transcribe_audio",
     "type-text": "type_text",
     "show-permission-dialog": "show_permission_dialog",
+    "open-microphone-settings": "open_microphone_settings",
     "copy-to-clipboard": "copy_to_clipboard",
     "check-microphone-permission": "check_microphone_permission",
     "check-accessibility-permission": "check_accessibility_permission",
@@ -36,6 +37,8 @@
     "clear-history": "clear_history",
     "get-dictionary": "get_dictionary",
     "save-dictionary": "save_dictionary",
+    "set-onboarding-completed": "set_onboarding_completed",
+    "save-onboarding-api-key": "save_onboarding_api_key",
   };
 
   const tauriArgs = {
@@ -45,6 +48,7 @@
     "type-text": [["text"], ["shape"]],
     "save-dictionary": [["text"]],
     "copy-to-clipboard": [["text"], ["shape"]],
+    "save-onboarding-api-key": [["provider"], ["apiKey", "api_key"]],
   };
 
   // Channels whose first arg is binary and is sent as the RAW IPC body (Tauri's

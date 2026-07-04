@@ -155,6 +155,7 @@ pub fn run() {
       commands::transcribe_audio,
       commands::type_text,
       commands::show_permission_dialog,
+      commands::open_microphone_settings,
       commands::copy_to_clipboard,
       commands::check_microphone_permission,
       commands::check_accessibility_permission,
@@ -166,6 +167,8 @@ pub fn run() {
       commands::clear_history,
       commands::get_dictionary,
       commands::save_dictionary,
+      commands::set_onboarding_completed,
+      commands::save_onboarding_api_key,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")

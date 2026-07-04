@@ -28,6 +28,8 @@ pub fn microphone_status() -> String {
 
 pub fn open_accessibility_settings() {}
 
+pub fn open_microphone_settings() {}
+
 pub fn copy_to_clipboard(_text: &str) -> Result<()> {
   Err(anyhow!("Clipboard write is not supported on this platform"))
 }

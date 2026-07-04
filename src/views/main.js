@@ -96,6 +96,12 @@ async function initializeMainPage() {
   }
 
   bindEvents();
+
+  // First launch (or the flag was never set): take over with the onboarding
+  // wizard. Strictly `=== false` so a settings-load error doesn't flash it.
+  if (cachedSettings?.onboardingCompleted === false) {
+    showOnboarding();
+  }
 }
 
 function bindEvents() {
@@ -120,6 +126,30 @@ function bindEvents() {
   // granted a permission in System Settings or added a key in Settings.
   window.addEventListener("focus", () => {
     void refreshReadiness();
+    if (onboardingVisible()) {
+      void obRefreshMicState();
+    }
+  });
+
+  document.getElementById("obNextBtn")?.addEventListener("click", () => obMove(1));
+  document.getElementById("obBackBtn")?.addEventListener("click", () => obMove(-1));
+  document.getElementById("obSkipBtn")?.addEventListener("click", () => {
+    void finishOnboarding();
+  });
+  document.getElementById("obKeySaveBtn")?.addEventListener("click", () => {
+    void obSaveKey();
+  });
+  document.getElementById("obKeyInput")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      void obSaveKey();
+    }
+  });
+  document.querySelectorAll(".ob-provider").forEach((card) => {
+    card.addEventListener("click", () => {
+      obKeyProvider = card.getAttribute("data-provider") || "groq";
+      obKeyStatus = "idle";
+      renderObKey();
+    });
   });
 
   ipc.on("activity-updated", async () => {
@@ -147,6 +177,9 @@ function bindEvents() {
     await refreshReadiness();
     renderRecent();
     renderHistory();
+    if (onboardingVisible()) {
+      renderOnboarding();
+    }
   });
 
   ipc.on("ui-theme-updated", (_event, payload) => {
@@ -190,6 +223,16 @@ async function refreshReadiness() {
   if (axOk) {
     stopAxPolling();
     axGuideTimedOut = false;
+  }
+  // Keep the onboarding wizard's Accessibility page in sync — every AX state
+  // change (button flow, polling, focus recheck) funnels through here.
+  const axWasGranted = obAxGranted;
+  obAxGranted = axOk;
+  if (!axWasGranted && axOk) {
+    obScheduleAdvance(4);
+  }
+  if (onboardingVisible()) {
+    renderObAx();
   }
   renderReadiness({
     hasKey: hasApiKey(cachedSettings),
@@ -490,6 +533,385 @@ function buildAxGuide() {
   guide.appendChild(actions);
 
   return guide;
+}
+
+/* ---------- Onboarding wizard ---------- */
+
+// A first-launch takeover of the main window (6 pages, one idea per page).
+// Static copy lives in main.html via data-i18n; everything stateful — keycaps,
+// permission statuses, the provider/key form — renders here. Completing OR
+// skipping sets settings.onboardingCompleted; the readiness card remains the
+// everyday fallback for anything left unfinished. Help reopens the wizard.
+
+const OB_TOTAL = 6;
+let obCurrent = 1;
+let obMicState = "unknown"; // "unknown" | "prompt" | "granted" | "denied"
+let obMicBusy = false;
+let obAxGranted = false;
+let obKeyProvider = "groq";
+let obKeyStatus = "idle"; // "idle" | "saving" | "saved" | "error"
+let obKeyError = "";
+let obAdvanceTimer = null;
+
+function onboardingVisible() {
+  const overlay = document.getElementById("onboarding");
+  return !!overlay && !overlay.hidden;
+}
+
+function showOnboarding(page = 1) {
+  const overlay = document.getElementById("onboarding");
+  if (!overlay) {
+    return;
+  }
+  obCurrent = page;
+  obKeyStatus = "idle";
+  obKeyError = "";
+  // Recommend Groq (free tier) unless the user already runs on OpenAI.
+  obKeyProvider =
+    cachedSettings?.hasApiKey && cachedSettings.provider === "openai" ? "openai" : "groq";
+  overlay.hidden = false;
+  renderOnboarding();
+  void obRefreshMicState();
+}
+
+async function finishOnboarding() {
+  const overlay = document.getElementById("onboarding");
+  if (overlay) {
+    overlay.hidden = true;
+  }
+  if (obAdvanceTimer) {
+    window.clearTimeout(obAdvanceTimer);
+    obAdvanceTimer = null;
+  }
+  try {
+    await ipc.invoke("set-onboarding-completed");
+    if (cachedSettings) {
+      cachedSettings.onboardingCompleted = true;
+    }
+  } catch (error) {
+    console.error("Failed to persist onboarding completion:", error);
+  }
+  void refreshReadiness();
+}
+
+function obMove(delta) {
+  if (obAdvanceTimer) {
+    window.clearTimeout(obAdvanceTimer);
+    obAdvanceTimer = null;
+  }
+  if (obCurrent === OB_TOTAL && delta > 0) {
+    void finishOnboarding();
+    return;
+  }
+  obCurrent = Math.min(OB_TOTAL, Math.max(1, obCurrent + delta));
+  renderOnboarding();
+  if (obCurrent === 3) {
+    void obRefreshMicState();
+  }
+}
+
+// Advance shortly after a step completes, so the user sees the ✓ land first.
+// Only fires while the user is actually looking at the page that completed.
+function obScheduleAdvance(fromPage) {
+  if (!onboardingVisible() || obCurrent !== fromPage || obAdvanceTimer) {
+    return;
+  }
+  obAdvanceTimer = window.setTimeout(() => {
+    obAdvanceTimer = null;
+    if (onboardingVisible() && obCurrent === fromPage) {
+      obMove(1);
+    }
+  }, 900);
+}
+
+function renderOnboarding() {
+  if (!onboardingVisible()) {
+    return;
+  }
+  document.querySelectorAll(".onboard-page").forEach((page) => {
+    page.classList.toggle(
+      "active",
+      Number(page.getAttribute("data-ob-page")) === obCurrent
+    );
+  });
+
+  const dots = document.getElementById("obDots");
+  if (dots) {
+    dots.replaceChildren(
+      ...Array.from({ length: OB_TOTAL }, (_, index) => {
+        const dot = document.createElement("div");
+        dot.className = `ob-dot${index + 1 === obCurrent ? " active" : ""}`;
+        return dot;
+      })
+    );
+  }
+
+  const back = document.getElementById("obBackBtn");
+  if (back) {
+    back.style.visibility = obCurrent === 1 ? "hidden" : "visible";
+  }
+  const skip = document.getElementById("obSkipBtn");
+  if (skip) {
+    skip.style.display = obCurrent === OB_TOTAL ? "none" : "";
+  }
+  const next = document.getElementById("obNextBtn");
+  if (next) {
+    next.textContent =
+      obCurrent === 1
+        ? t("onboarding.start")
+        : obCurrent === OB_TOTAL
+          ? t("onboarding.finish")
+          : t("onboarding.next");
+  }
+
+  renderObKeycaps();
+  renderObMic();
+  renderObAx();
+  renderObKey();
+}
+
+// Fill an element from an i18n template containing a {keys} placeholder,
+// rendering the shortcut as keycap chips instead of plain text.
+function fillKeycapTemplate(element, key, shortcut) {
+  if (!element) {
+    return;
+  }
+  const [before, after] = t(key).split("{keys}");
+  element.replaceChildren();
+  if (before) {
+    element.appendChild(document.createTextNode(before));
+  }
+  element.appendChild(keycapRow(shortcut));
+  if (after) {
+    element.appendChild(document.createTextNode(after));
+  }
+}
+
+function renderObKeycaps() {
+  const record = cachedSettings?.shortcut || "Ctrl+Shift";
+  const translate = cachedSettings?.translateShortcut || "Shift+Alt";
+  fillKeycapTemplate(document.getElementById("obStepHold"), "onboarding.welcome.holdTitle", record);
+  fillKeycapTemplate(document.getElementById("obTryHint"), "onboarding.try.hint", record);
+
+  const tip = document.getElementById("obTryTip");
+  if (tip) {
+    tip.replaceChildren(makeIcon("translate"));
+    const body = document.createElement("span");
+    fillKeycapTemplate(body, "onboarding.try.tip", translate);
+    tip.appendChild(body);
+  }
+
+  const tryInput = document.getElementById("obTryInput");
+  if (tryInput) {
+    tryInput.placeholder = t("onboarding.try.placeholder", {
+      keys: shortcutKeycaps(record).join(" "),
+    });
+  }
+}
+
+function obStatusPill(label) {
+  const pill = document.createElement("span");
+  pill.className = "ob-status-pill ok";
+  pill.appendChild(makeIcon("check"));
+  const text = document.createElement("span");
+  text.textContent = label;
+  pill.appendChild(text);
+  return pill;
+}
+
+function obActionHint(label) {
+  const hint = document.createElement("div");
+  hint.className = "ob-action-hint";
+  hint.textContent = label;
+  return hint;
+}
+
+function obActionButton(label, onClick) {
+  const button = document.createElement("button");
+  button.className = "btn";
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+/* --- page 3: microphone --- */
+
+async function obRefreshMicState() {
+  const previous = obMicState;
+  try {
+    const result = await ipc.invoke("check-microphone-permission");
+    obMicState =
+      result.status === "granted"
+        ? "granted"
+        : result.status === "not-determined"
+          ? "prompt"
+          : "denied";
+  } catch (error) {
+    console.error("Failed to check microphone permission:", error);
+  }
+  renderObMic();
+  if (previous !== "granted" && obMicState === "granted") {
+    obScheduleAdvance(3);
+  }
+}
+
+async function obEnableMic() {
+  if (obMicBusy) {
+    return;
+  }
+  obMicBusy = true;
+  try {
+    // A momentary capture purely to trigger the macOS microphone prompt now,
+    // instead of surprising the user mid-first-dictation.
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+  } catch (error) {
+    console.error("Microphone request was blocked or denied:", error);
+  } finally {
+    obMicBusy = false;
+  }
+  await obRefreshMicState();
+}
+
+function renderObMic() {
+  const container = document.getElementById("obMicActions");
+  if (!container || !onboardingVisible()) {
+    return;
+  }
+  container.replaceChildren();
+  if (obMicState === "granted") {
+    container.appendChild(obStatusPill(t("onboarding.mic.granted")));
+    return;
+  }
+  if (obMicState === "denied") {
+    container.appendChild(
+      obActionButton(t("onboarding.mic.openSettings"), () => {
+        ipc.invoke("open-microphone-settings").catch((error) => {
+          console.error("Failed to open microphone settings:", error);
+        });
+      })
+    );
+    container.appendChild(obActionHint(t("onboarding.mic.denied")));
+    return;
+  }
+  container.appendChild(
+    obActionButton(t("onboarding.mic.enable"), () => {
+      void obEnableMic();
+    })
+  );
+  container.appendChild(obActionHint(t("onboarding.mic.enableHint")));
+}
+
+/* --- page 4: accessibility (shares state + flow with the readiness card) --- */
+
+function renderObAx() {
+  const container = document.getElementById("obAxActions");
+  if (!container || !onboardingVisible()) {
+    return;
+  }
+  container.replaceChildren();
+  if (obAxGranted) {
+    container.appendChild(obStatusPill(t("onboarding.ax.granted")));
+    return;
+  }
+  if (axGuideWaiting) {
+    const waiting = document.createElement("div");
+    waiting.className = "ob-waiting";
+    waiting.appendChild(makeIcon("sync"));
+    const label = document.createElement("span");
+    label.textContent = t("readiness.axGuide.waiting");
+    waiting.appendChild(label);
+    container.appendChild(waiting);
+    container.appendChild(obActionHint(t("readiness.axGuide.waitingHint")));
+    return;
+  }
+  container.appendChild(
+    obActionButton(t("readiness.axGuide.open"), () => {
+      void startAccessibilityFlow();
+    })
+  );
+  container.appendChild(
+    obActionHint(
+      t(axGuideTimedOut ? "readiness.axGuide.retryHint" : "readiness.axGuide.waitingHint")
+    )
+  );
+}
+
+/* --- page 5: provider + API key --- */
+
+function renderObKey() {
+  if (!onboardingVisible()) {
+    return;
+  }
+  document.querySelectorAll(".ob-provider").forEach((card) => {
+    card.classList.toggle(
+      "selected",
+      card.getAttribute("data-provider") === obKeyProvider
+    );
+  });
+
+  const input = document.getElementById("obKeyInput");
+  if (input) {
+    input.placeholder = t(
+      obKeyProvider === "groq"
+        ? "onboarding.key.placeholderGroq"
+        : "onboarding.key.placeholderOpenai"
+    );
+  }
+
+  const help = document.getElementById("obKeyHelp");
+  if (help) {
+    if (obKeyStatus === "error") {
+      help.className = "ob-key-help error";
+      help.textContent = t("onboarding.key.error", { message: obKeyError });
+    } else if (obKeyStatus === "saved") {
+      help.className = "ob-key-help ok";
+      help.textContent = t("onboarding.key.saved");
+    } else if (cachedSettings?.hasApiKey && cachedSettings.provider === obKeyProvider) {
+      help.className = "ob-key-help ok";
+      help.textContent = t("onboarding.key.configured");
+    } else {
+      help.className = "ob-key-help";
+      help.textContent = t(
+        obKeyProvider === "groq" ? "onboarding.key.getKeyGroq" : "onboarding.key.getKeyOpenai"
+      );
+    }
+  }
+
+  const save = document.getElementById("obKeySaveBtn");
+  if (save) {
+    save.disabled = obKeyStatus === "saving";
+  }
+}
+
+async function obSaveKey() {
+  const input = document.getElementById("obKeyInput");
+  const key = (input?.value || "").trim();
+  if (!key || obKeyStatus === "saving") {
+    input?.focus();
+    return;
+  }
+  obKeyStatus = "saving";
+  renderObKey();
+  try {
+    await ipc.invoke("save-onboarding-api-key", obKeyProvider, key);
+    obKeyStatus = "saved";
+    if (input) {
+      input.value = "";
+    }
+    try {
+      cachedSettings = await ipc.invoke("get-settings");
+    } catch (error) {
+      console.error("Failed to reload settings after key save:", error);
+    }
+    renderObKey();
+    obScheduleAdvance(5);
+  } catch (error) {
+    obKeyStatus = "error";
+    obKeyError = error?.message || String(error);
+    renderObKey();
+  }
 }
 
 /* ---------- Activities (recent + history) ---------- */
@@ -813,13 +1235,11 @@ function openSettings() {
   ipc.invoke("open-settings");
 }
 
+// Help = replay the onboarding wizard. It covers everything the old shortcut
+// toast did (page 1 shows the live shortcuts) plus permissions and setup, and
+// it's freely skippable.
 function showHelp() {
-  const record = shortcutKeycaps(cachedSettings?.shortcut || "Ctrl+Shift").join(" ");
-  const translate = shortcutKeycaps(cachedSettings?.translateShortcut || "Shift+Alt").join(" ");
-  showNotification(
-    `${t("home.dictate")}: ${record}   ·   ${t("home.english")}: ${translate}`,
-    "info"
-  );
+  showOnboarding();
 }
 
 async function copyToClipboard(text, button) {

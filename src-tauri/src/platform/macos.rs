@@ -67,6 +67,12 @@ pub fn open_accessibility_settings() {
     .status();
 }
 
+pub fn open_microphone_settings() {
+  let _ = Command::new("open")
+    .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+    .status();
+}
+
 // Explicit, user-initiated clipboard write — used ONLY by the input-prompt's
 // "insertion failed → click Copy" affordance. We go through pbcopy (not the
 // webview's navigator.clipboard) because that window is created focus:false so

@@ -73,6 +73,8 @@ pub struct AppConfig {
   pub provider: String,
   #[serde(default)]
   pub dictionary: String,
+  #[serde(default)]
+  pub onboarding_completed: bool,
 }
 
 impl Default for AppConfig {
@@ -92,6 +94,7 @@ impl Default for AppConfig {
       start_minimized: false,
       provider: default_provider(),
       dictionary: String::new(),
+      onboarding_completed: false,
     }
   }
 }
@@ -119,6 +122,9 @@ pub struct SettingsPayload {
   pub os: String,
   #[serde(rename = "isDev")]
   pub is_dev: bool,
+  /// Whether the first-launch onboarding wizard has been completed (or skipped).
+  /// The main window shows the wizard while this is false.
+  pub onboarding_completed: bool,
 }
 
 impl SettingsPayload {
@@ -137,6 +143,7 @@ impl SettingsPayload {
       provider: config.provider.clone(),
       os: std::env::consts::OS.to_string(),
       is_dev: cfg!(debug_assertions),
+      onboarding_completed: config.onboarding_completed,
     }
   }
 }
@@ -359,6 +366,23 @@ mod tests {
     let read = read_config_from_path(&path).unwrap();
     assert_eq!(read.provider, "openai");
     assert_eq!(read.api_key_openai, "sk-test");
+  }
+
+  #[test]
+  fn onboarding_completed_roundtrips_and_defaults_false() {
+    // Pre-wizard config files don't have the field → must default to false so
+    // the wizard shows exactly once for them.
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("config.json");
+    fs::write(&path, r#"{ "provider": "groq" }"#).unwrap();
+    let config = read_config_from_path(&path).unwrap();
+    assert!(!config.onboarding_completed);
+
+    let mut config = config;
+    config.onboarding_completed = true;
+    write_config_to_path(&path, &config).unwrap();
+    assert!(read_config_from_path(&path).unwrap().onboarding_completed);
+    assert!(SettingsPayload::from_config(&config).onboarding_completed);
   }
 
   #[test]

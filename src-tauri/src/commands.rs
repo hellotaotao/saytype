@@ -79,6 +79,10 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
   let existing = settings::read_config().map_err(stringify_error)?;
   let mut config = settings_input;
   config.dictionary = existing.dictionary;
+  // Like dictionary: the settings form never carries this flag, and a missing
+  // field deserializes to false — without this line every settings save would
+  // re-trigger the onboarding wizard.
+  config.onboarding_completed = existing.onboarding_completed;
   config.translate_shortcut = TRANSLATE_SHORTCUT.into();
   config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
   config.api_key = settings::selected_api_key(&config);
@@ -95,6 +99,52 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
     handle.update_shortcut(config.shortcut.clone());
   }
 
+  broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
+  Ok(true)
+}
+
+// Marks the first-launch onboarding wizard as done (finished or skipped). A
+// dedicated read-modify-write command instead of save_settings because the
+// latter takes a FULL AppConfig — building that in the main window would
+// require shipping the API keys to it, which get_api_keys deliberately avoids.
+#[tauri::command]
+pub fn set_onboarding_completed() -> Result<bool, String> {
+  log::info!("command:set_onboarding_completed");
+  let mut config = settings::read_config().map_err(stringify_error)?;
+  config.onboarding_completed = true;
+  settings::write_config(&config).map_err(stringify_error)?;
+  Ok(true)
+}
+
+// Onboarding page 5: set the provider + its API key without round-tripping the
+// full config (keys flow INTO Rust only, never out to the main window). When
+// the provider actually changes, the model is reset to that provider's default
+// — otherwise a fresh config would send the OpenAI default model name to Groq.
+#[tauri::command]
+pub fn save_onboarding_api_key(app: AppHandle, provider: String, api_key: String) -> Result<bool, String> {
+  log::info!("command:save_onboarding_api_key provider={provider}");
+  let key = api_key.trim().to_string();
+  if key.is_empty() {
+    return Err("API key is empty".into());
+  }
+
+  let mut config = settings::read_config().map_err(stringify_error)?;
+  match provider.as_str() {
+    "groq" => config.api_key_groq = key,
+    "openai" => config.api_key_openai = key,
+    other => return Err(format!("Unknown provider: {other}")),
+  }
+  if config.provider != provider {
+    config.provider = provider;
+    config.model = if config.provider == "groq" {
+      "whisper-large-v3-turbo".into()
+    } else {
+      "gpt-4o-mini-transcribe".into()
+    };
+  }
+  config.api_key = settings::selected_api_key(&config);
+
+  settings::write_config(&config).map_err(stringify_error)?;
   broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
   Ok(true)
 }
@@ -331,6 +381,14 @@ pub async fn type_text(
 pub fn show_permission_dialog() -> Result<i32, String> {
   platform::open_accessibility_settings();
   Ok(0)
+}
+
+// Onboarding: deep link to the Microphone privacy pane, for when the user
+// denied the system prompt and needs to flip the toggle manually.
+#[tauri::command]
+pub fn open_microphone_settings() -> Result<(), String> {
+  platform::open_microphone_settings();
+  Ok(())
 }
 
 // Explicit, user-initiated clipboard write — used ONLY by the input-prompt's

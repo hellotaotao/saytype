@@ -9,6 +9,129 @@
   <link rel="stylesheet" href="main.css">
 </head>
 <body>
+  <!-- First-launch onboarding wizard: a full-window takeover shown while
+       settings.onboardingCompleted is false (and reopenable from Help).
+       Static copy is translated via data-i18n; keycaps, permission states and
+       the provider/key form are rendered by main.js. -->
+  <div id="onboarding" class="onboarding" hidden>
+    <div class="onboard-card">
+      <div class="onboard-brand"><span class="material-icons">mic</span>SayType</div>
+
+      <!-- 1. Welcome -->
+      <div class="onboard-page" data-ob-page="1">
+        <h1 data-i18n="onboarding.welcome.title">Speak. It types.</h1>
+        <p class="ob-lead" data-i18n="onboarding.welcome.lead">In any app, hold the shortcut and talk.</p>
+        <div class="ob-steps">
+          <div class="ob-step">
+            <span class="material-icons">keyboard</span>
+            <div class="ob-step-title" id="obStepHold"></div>
+            <div class="ob-step-desc" data-i18n="onboarding.welcome.holdDesc">in any text field</div>
+          </div>
+          <div class="ob-step">
+            <span class="material-icons">mic</span>
+            <div class="ob-step-title" data-i18n="onboarding.welcome.speakTitle">Speak</div>
+            <div class="ob-step-desc" data-i18n="onboarding.welcome.speakDesc">then just let go</div>
+          </div>
+          <div class="ob-step">
+            <span class="material-icons">edit_note</span>
+            <div class="ob-step-title" data-i18n="onboarding.welcome.insertTitle">Text appears</div>
+            <div class="ob-step-desc" data-i18n="onboarding.welcome.insertDesc">typed at your cursor</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Privacy -->
+      <div class="onboard-page" data-ob-page="2">
+        <h1 data-i18n="onboarding.privacy.title">Your voice goes only where you point it</h1>
+        <p class="ob-lead" data-i18n="onboarding.privacy.lead">SayType has no servers of its own.</p>
+        <div class="ob-flow">
+          <div class="ob-flow-node">
+            <span class="material-icons">laptop_mac</span>
+            <div class="ob-flow-title" data-i18n="onboarding.privacy.nodeMac">This Mac</div>
+            <div class="ob-flow-desc" data-i18n="onboarding.privacy.nodeMacDesc">recording · history</div>
+          </div>
+          <div class="ob-flow-arrow">
+            <span class="material-icons">arrow_forward</span>
+            <div class="ob-flow-arrow-label" data-i18n="onboarding.privacy.arrow">direct, with your own key</div>
+          </div>
+          <div class="ob-flow-node accent">
+            <span class="material-icons">cloud</span>
+            <div class="ob-flow-title" data-i18n="onboarding.privacy.nodeCloud">Groq / OpenAI</div>
+            <div class="ob-flow-desc" data-i18n="onboarding.privacy.nodeCloudDesc">your own account</div>
+          </div>
+        </div>
+        <div class="ob-privacy-lines">
+          <div class="ob-privacy-line"><span class="material-icons">verified_user</span><span data-i18n="onboarding.privacy.line1">Audio goes straight to your service</span></div>
+          <div class="ob-privacy-line"><span class="material-icons">laptop_mac</span><span data-i18n="onboarding.privacy.line2">History stays on this Mac</span></div>
+        </div>
+      </div>
+
+      <!-- 3. Microphone -->
+      <div class="onboard-page" data-ob-page="3">
+        <div class="ob-hero-icon"><span class="material-icons">mic</span></div>
+        <h1 data-i18n="onboarding.mic.title">Let SayType hear you</h1>
+        <p class="ob-lead" data-i18n="onboarding.mic.lead">It records only while you hold the shortcut.</p>
+        <div class="ob-actions" id="obMicActions"></div>
+      </div>
+
+      <!-- 4. Accessibility (copy shared with the readiness card's guide panel) -->
+      <div class="onboard-page" data-ob-page="4">
+        <div class="ob-hero-icon"><span class="material-icons">accessibility_new</span></div>
+        <h1 data-i18n="onboarding.ax.title">Let it type for you</h1>
+        <p class="ob-lead" data-i18n="readiness.axGuide.lead">macOS asks for this permission so SayType can do exactly two things:</p>
+        <div class="ob-points">
+          <div class="ob-point"><span class="material-icons">keyboard</span><span data-i18n="readiness.axGuide.useInsert">Type your dictated text into whatever app you're using</span></div>
+          <div class="ob-point"><span class="material-icons">bolt</span><span data-i18n="readiness.axGuide.useHotkey">Notice the hold-to-dictate shortcut while you're in any app</span></div>
+        </div>
+        <div class="ob-reassure">
+          <span class="material-icons">verified_user</span>
+          <span data-i18n="readiness.axGuide.privacy">SayType never logs your keystrokes.</span>
+        </div>
+        <div class="ob-actions" id="obAxActions"></div>
+      </div>
+
+      <!-- 5. Provider + API key -->
+      <div class="onboard-page" data-ob-page="5">
+        <h1 data-i18n="onboarding.key.title">Connect your transcription service</h1>
+        <p class="ob-lead" data-i18n="onboarding.key.lead">You use your own API key.</p>
+        <div class="ob-providers">
+          <button type="button" class="ob-provider" id="obProviderGroq" data-provider="groq">
+            <span class="ob-provider-name">Groq<span class="ob-provider-tag" data-i18n="onboarding.key.groqTag">Recommended · free</span></span>
+            <span class="ob-provider-desc" data-i18n="onboarding.key.groqDesc">The free tier is generous</span>
+          </button>
+          <button type="button" class="ob-provider" id="obProviderOpenai" data-provider="openai">
+            <span class="ob-provider-name">OpenAI</span>
+            <span class="ob-provider-desc" data-i18n="onboarding.key.openaiDesc">gpt-4o-transcribe / whisper-1, pay as you go</span>
+          </button>
+        </div>
+        <div class="ob-key-row">
+          <input class="ob-key-input" id="obKeyInput" type="password" autocomplete="off" spellcheck="false" />
+          <button type="button" class="btn" id="obKeySaveBtn" data-i18n="onboarding.key.save">Save</button>
+        </div>
+        <div class="ob-key-help" id="obKeyHelp"></div>
+      </div>
+
+      <!-- 6. First try -->
+      <div class="onboard-page" data-ob-page="6">
+        <div class="ob-hero-icon"><span class="material-icons">celebration</span></div>
+        <h1 data-i18n="onboarding.try.title">Ready! Say your first sentence</h1>
+        <p class="ob-lead" data-i18n="onboarding.try.lead">It works the same way in every app.</p>
+        <div class="ob-try-box">
+          <input class="ob-try-input" id="obTryInput" type="text" autocomplete="off" spellcheck="false" />
+          <div class="ob-try-hint" id="obTryHint"></div>
+        </div>
+        <div class="ob-tip" id="obTryTip"></div>
+      </div>
+
+      <div class="onboard-footer">
+        <div class="ob-dots" id="obDots"></div>
+        <button type="button" class="link-btn" id="obBackBtn" data-i18n="onboarding.back">Back</button>
+        <button type="button" class="link-btn" id="obSkipBtn" data-i18n="onboarding.skip">Skip for now</button>
+        <button type="button" class="btn" id="obNextBtn">Next</button>
+      </div>
+    </div>
+  </div>
+
   <div class="sidebar">
     <div class="sidebar-header">
       <div class="logo">SayType</div>
