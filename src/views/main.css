@@ -522,6 +522,22 @@ body {
   color: var(--text-soft);
 }
 
+/* "Reveal in Finder" recovery row (timed-out state only; shared between the
+   readiness-card guide and the wizard's Accessibility page) */
+.ax-reveal-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.ax-reveal-hint {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
 /* First-launch onboarding wizard (full-window takeover; see main.html).
    One idea per page, generous spacing — density is the enemy here. */
 .onboarding {

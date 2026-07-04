@@ -73,6 +73,31 @@ pub fn open_microphone_settings() {
     .status();
 }
 
+/// What to reveal in Finder for "drag SayType into the Accessibility list":
+/// the .app bundle when running installed (exe = SayType.app/Contents/MacOS/x),
+/// else the bare executable (dev builds outside a bundle).
+fn finder_reveal_target(exe: &std::path::Path) -> &std::path::Path {
+  exe
+    .ancestors()
+    .nth(3)
+    .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+    .unwrap_or(exe)
+}
+
+// Recovery path for the one case the prompt+deep-link flow can't fix: after
+// the user removes SayType from the Accessibility list, TCC's re-registration
+// via the prompt is unreliable, so the row may never reappear. Dropping the
+// app file onto the list (same as clicking "+") always works — this reveals
+// the bundle in Finder so the user can drag it in.
+pub fn reveal_app_in_finder() {
+  if let Ok(exe) = std::env::current_exe() {
+    let _ = Command::new("open")
+      .arg("-R")
+      .arg(finder_reveal_target(&exe))
+      .status();
+  }
+}
+
 // Explicit, user-initiated clipboard write — used ONLY by the input-prompt's
 // "insertion failed → click Copy" affordance. We go through pbcopy (not the
 // webview's navigator.clipboard) because that window is created focus:false so
@@ -311,6 +336,20 @@ mod tests {
   const AX_ERROR_CANNOT_COMPLETE: i32 = -25204;
   const AX_ERROR_API_DISABLED: i32 = -25211;
   const AX_ERROR_NO_VALUE: i32 = -25212;
+
+  #[test]
+  fn finder_reveal_prefers_the_app_bundle_over_the_binary() {
+    use std::path::Path;
+    assert_eq!(
+      finder_reveal_target(Path::new("/Applications/SayType.app/Contents/MacOS/saytype")),
+      Path::new("/Applications/SayType.app")
+    );
+    // Bare dev binary (no bundle ancestor) → reveal the executable itself.
+    assert_eq!(
+      finder_reveal_target(Path::new("/Users/tao/code/SayType/target/debug/saytype")),
+      Path::new("/Users/tao/code/SayType/target/debug/saytype")
+    );
+  }
 
   #[test]
   fn successful_query_yields_element_to_inspect() {

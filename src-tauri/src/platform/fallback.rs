@@ -30,6 +30,8 @@ pub fn open_accessibility_settings() {}
 
 pub fn open_microphone_settings() {}
 
+pub fn reveal_app_in_finder() {}
+
 pub fn copy_to_clipboard(_text: &str) -> Result<()> {
   Err(anyhow!("Clipboard write is not supported on this platform"))
 }

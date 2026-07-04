@@ -43,6 +43,8 @@
             "In System Settings, turn on the switch next to SayType — this screen continues automatically once it's on.",
           retryHint:
             "Permission not detected yet. Turn on SayType in the Accessibility list, or try again.",
+          revealApp: "Reveal SayType in Finder",
+          revealHint: "Can't find SayType in the list? Drag it in from Finder — same as clicking +.",
         },
       },
       onboarding: {
@@ -326,6 +328,8 @@
           waiting: "等待授权中…",
           waitingHint: "在系统设置里打开 SayType 旁边的开关，授权后这里会自动继续。",
           retryHint: "还没检测到授权。请在辅助功能列表中打开 SayType，或再试一次。",
+          revealApp: "在 Finder 中显示 SayType",
+          revealHint: "列表里找不到 SayType？把它从 Finder 拖进列表即可（等同于点 +）。",
         },
       },
       onboarding: {

@@ -343,6 +343,31 @@ function stopAxPolling() {
   }
 }
 
+// Shown only in the timed-out state, in both the readiness-card guide and the
+// wizard's Accessibility page. Covers the one case the prompt+deep-link flow
+// can't fix: the user once removed SayType from the Accessibility list, and
+// TCC won't reliably re-add the row — dragging the app in from Finder (same
+// as clicking "+") always works.
+function buildAxRevealRow() {
+  const row = document.createElement("div");
+  row.className = "ax-reveal-row";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "link-btn";
+  button.textContent = t("readiness.axGuide.revealApp");
+  button.addEventListener("click", () => {
+    ipc.invoke("reveal-app-in-finder").catch((error) => {
+      console.error("Failed to reveal app in Finder:", error);
+    });
+  });
+  row.appendChild(button);
+  const hint = document.createElement("span");
+  hint.className = "ax-reveal-hint";
+  hint.textContent = t("readiness.axGuide.revealHint");
+  row.appendChild(hint);
+  return row;
+}
+
 function makeIcon(name) {
   const icon = document.createElement("span");
   icon.className = "material-icons";
@@ -531,6 +556,7 @@ function buildAxGuide() {
       hint.className = "ax-guide-hint";
       hint.textContent = t("readiness.axGuide.retryHint");
       actions.appendChild(hint);
+      actions.appendChild(buildAxRevealRow());
     }
   }
   guide.appendChild(actions);
@@ -942,6 +968,9 @@ function renderObAx() {
       t(axGuideTimedOut ? "readiness.axGuide.retryHint" : "readiness.axGuide.waitingHint")
     )
   );
+  if (axGuideTimedOut) {
+    container.appendChild(buildAxRevealRow());
+  }
 }
 
 /* --- page 5: provider + API key --- */

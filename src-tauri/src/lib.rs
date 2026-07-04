@@ -156,6 +156,7 @@ pub fn run() {
       commands::type_text,
       commands::show_permission_dialog,
       commands::open_microphone_settings,
+      commands::reveal_app_in_finder,
       commands::copy_to_clipboard,
       commands::check_microphone_permission,
       commands::check_accessibility_permission,

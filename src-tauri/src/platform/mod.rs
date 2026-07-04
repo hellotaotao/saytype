@@ -24,6 +24,7 @@
 //! fn microphone_status() -> String;
 //! fn open_accessibility_settings();
 //! fn open_microphone_settings();
+//! fn reveal_app_in_finder();
 //! fn copy_to_clipboard(text: &str) -> anyhow::Result<()>;
 //! fn insert_text(text: &str) -> InsertResult;
 //! fn set_auto_launch(enabled: bool) -> anyhow::Result<()>;

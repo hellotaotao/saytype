@@ -391,6 +391,16 @@ pub fn open_microphone_settings() -> Result<(), String> {
   Ok(())
 }
 
+// Accessibility recovery: reveal the app bundle in Finder so the user can
+// drag it into the Accessibility list — the drop equals clicking "+". Needed
+// when the row is absent and the one-shot system prompt won't re-add it
+// (typically after the user once removed SayType from the list).
+#[tauri::command]
+pub fn reveal_app_in_finder() -> Result<(), String> {
+  platform::reveal_app_in_finder();
+  Ok(())
+}
+
 // Explicit, user-initiated clipboard write — used ONLY by the input-prompt's
 // "insertion failed → click Copy" affordance. The per-OS mechanism (pbcopy on
 // macOS) lives behind `platform::copy_to_clipboard`. There is still no
