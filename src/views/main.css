@@ -1060,6 +1060,19 @@ body {
   padding: 11px 14px;
 }
 
+/* Deliberately demoted below Back/Next: the escape hatch for a locked page
+   should be findable when you need it, never inviting when you don't. */
+.onboard-footer .ob-step-skip {
+  font-size: 11.5px;
+  opacity: 0.55;
+  margin-right: 6px;
+}
+
+.onboard-footer .ob-step-skip:hover {
+  opacity: 1;
+  color: var(--text-muted);
+}
+
 .onboard-footer .btn {
   padding: 11px 26px;
 }

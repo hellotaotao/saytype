@@ -126,8 +126,11 @@
 
       <div class="onboard-footer">
         <div class="ob-dots" id="obDots"></div>
+        <!-- The per-step skip sits OUTSIDE the back/next pair and is styled a
+             notch smaller and fainter: it must read as a deliberate escape
+             hatch for when Next is locked, not as a sibling nav button. -->
+        <button type="button" class="link-btn ob-step-skip" id="obStepSkipBtn" data-i18n="onboarding.skipStep">Skip this step for now</button>
         <button type="button" class="link-btn" id="obBackBtn" data-i18n="onboarding.back">Back</button>
-        <button type="button" class="link-btn" id="obStepSkipBtn" data-i18n="onboarding.skipStep">Skip this step for now</button>
         <button type="button" class="link-btn" id="obSkipBtn" data-i18n="onboarding.skip">Skip for now</button>
         <button type="button" class="btn" id="obNextBtn">Next</button>
       </div>
