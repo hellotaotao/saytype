@@ -1,6 +1,12 @@
-// Frontend VAD gate. Classic script. Exposes window.SayTypeVadGate.hasSpeech(blob).
-// Lazy-loads the vendored onnxruntime-web + vad-web bundles on first use; decodes the
-// recording to mono Float32 and lets NonRealTimeVAD resample to 16 kHz internally.
+// Frontend VAD gate. Classic script. Exposes window.SayTypeVadGate.analyze(blob):
+// no-speech verdict for the whole clip, plus — when the clip carries enough
+// leading/trailing silence — a head/tail-trimmed 16 kHz mono WAV to upload
+// instead of the raw recording. Trimming exists because Whisper (zh) fills
+// silence gaps with training-data boilerplate ("明镜与点点" outros — TODO #10);
+// cutting the silence around the detected speech removes the main trigger.
+// Lazy-loads the vendored onnxruntime-web + vad-web bundles on first use; the
+// recording is decoded and resampled to 16 kHz mono ONCE (OfflineAudioContext),
+// so the Silero segment timestamps line up 1:1 with the PCM we slice for the WAV.
 //
 // Asset paths MUST be absolute URLs: onnxruntime-web loads its wasm glue via dynamic
 // import(), which rejects bare/relative specifiers like "vendor/vad/" (verified failing
@@ -8,6 +14,13 @@
 (function () {
   const VENDOR = new URL("vendor/vad/", document.baseURI).href;
   const MIN_SPEECH_MS = 250; // start/end are milliseconds (vad-web NonRealTimeVAD source)
+  const TARGET_RATE = 16000; // Whisper's native rate; the server resamples to it anyway
+  // Generous padding: cutting a soft first/last word is worse than leaving
+  // silence (same trade-off as hotkey.rs STOP_DEBOUNCE). Skip re-encoding
+  // entirely unless trimming actually removes a meaningful stretch.
+  const PAD_START_MS = 300;
+  const PAD_END_MS = 450;
+  const MIN_TRIM_SAVINGS_MS = 500;
   let vadPromise = null;
 
   function loadScript(src) {
@@ -37,25 +50,56 @@
     return vadPromise;
   }
 
-  async function blobToMonoFloat32(blob) {
+  // Decode the recording and resample to 16 kHz mono in one pass. The
+  // OfflineAudioContext both mixes down to one channel and resamples, and its
+  // output is the SAME stream the VAD timestamps refer to (vad.run at 16 kHz
+  // resamples as a no-op), so slicing it by segment milliseconds is exact.
+  async function blobToPcm16k(blob) {
     const buf = await blob.arrayBuffer();
     const ctx = new AudioContext();
+    let audio;
     try {
-      const audio = await ctx.decodeAudioData(buf);
-      return { pcm: Float32Array.from(audio.getChannelData(0)), sampleRate: audio.sampleRate };
+      audio = await ctx.decodeAudioData(buf);
     } finally {
       try { ctx.close(); } catch (_) {}
     }
+    const length = Math.ceil((audio.length * TARGET_RATE) / audio.sampleRate);
+    const offline = new OfflineAudioContext(1, length, TARGET_RATE);
+    const source = offline.createBufferSource();
+    source.buffer = audio;
+    source.connect(offline.destination);
+    source.start();
+    const rendered = await offline.startRendering();
+    return rendered.getChannelData(0);
   }
 
-  async function hasSpeech(blob) {
+  // Analyze one recording: speech verdict + (when worthwhile) a head/tail
+  // trimmed 16 kHz mono WAV. `wav` is null when trimming was skipped — too
+  // little silence to matter — and the caller sends the original recording.
+  async function analyze(blob) {
     const vad = await getVad();
-    const { pcm, sampleRate } = await blobToMonoFloat32(blob);
+    const pcm = await blobToPcm16k(blob);
+    const durationMs = (pcm.length / TARGET_RATE) * 1000;
     const segments = [];
-    for await (const seg of vad.run(pcm, sampleRate)) {
+    for await (const seg of vad.run(pcm, TARGET_RATE)) {
       segments.push({ start: seg.start, end: seg.end });
     }
-    return window.SayTypeVad.decideSpeech(segments, MIN_SPEECH_MS);
+    const verdict = window.SayTypeVad.decideSpeech(segments, MIN_SPEECH_MS);
+    let wav = null;
+    let trimmedMs = 0;
+    if (verdict.speech) {
+      const range = window.SayTypeVad.trimRangeMs(segments, durationMs, {
+        padStartMs: PAD_START_MS,
+        padEndMs: PAD_END_MS,
+      });
+      if (window.SayTypeVad.shouldTrim(range, durationMs, MIN_TRIM_SAVINGS_MS)) {
+        const startSample = Math.max(0, Math.floor((range.startMs / 1000) * TARGET_RATE));
+        const endSample = Math.min(pcm.length, Math.ceil((range.endMs / 1000) * TARGET_RATE));
+        wav = window.SayTypeVad.encodeWavPcm16(pcm.subarray(startSample, endSample), TARGET_RATE);
+        trimmedMs = Math.round(durationMs - (range.endMs - range.startMs));
+      }
+    }
+    return { speech: verdict.speech, totalSpeechMs: verdict.totalSpeechMs, durationMs, wav, trimmedMs };
   }
 
   // Prewarm: load the wasm runtime + Silero model (and run one short silent
@@ -71,5 +115,5 @@
     }
   }
 
-  window.SayTypeVadGate = { hasSpeech, warmup };
+  window.SayTypeVadGate = { analyze, warmup };
 })();

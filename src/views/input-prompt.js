@@ -907,12 +907,17 @@ class VoiceInputPrompt {
       });
 
       // Neural VAD gate: if the clip contains no speech, skip transcription
-      // entirely (no API call, no history) and reuse the no-speech UI. Fail
-      // OPEN — any VAD error falls through to normal transcription so a VAD
-      // bug can never drop a real recording.
+      // entirely (no API call, no history) and reuse the no-speech UI. When
+      // speech IS present, prefer the gate's head/tail-trimmed 16 kHz WAV —
+      // silence around the speech is what makes Whisper hallucinate outro
+      // boilerplate (TODO #10). Fail OPEN — any VAD error falls through to
+      // uploading the original recording so a VAD bug can never drop or
+      // mangle a real dictation.
+      let uploadBuffer = null;
+      let uploadMime = mimeType || "audio/webm";
       try {
         if (window.SayTypeVadGate) {
-          const verdict = await window.SayTypeVadGate.hasSpeech(audioBlob);
+          const verdict = await window.SayTypeVadGate.analyze(audioBlob);
           if (!verdict.speech) {
             this.removePendingInsertion(sessionId);
             if (allowUi) {
@@ -921,21 +926,30 @@ class VoiceInputPrompt {
             }
             return;
           }
+          if (verdict.wav) {
+            uploadBuffer = verdict.wav;
+            uploadMime = "audio/wav";
+            console.log(
+              `VAD trim: cut ${verdict.trimmedMs}ms of head/tail silence from a ${Math.round(verdict.durationMs)}ms clip`
+            );
+          }
         }
       } catch (vadError) {
         console.warn("VAD gate failed; proceeding to transcription:", vadError);
       }
 
       // Send the raw bytes as a Uint8Array so the IPC bridge ships them as the
-      // octet-stream body (not a JSON number array). translateMode/mimeType go
+      // octet-stream body (not a JSON number array). translateMode/mime go
       // along as headers — see ipc-bridge.js (tauriRawBody).
-      const audioBuffer = new Uint8Array(await audioBlob.arrayBuffer());
+      if (!uploadBuffer) {
+        uploadBuffer = new Uint8Array(await audioBlob.arrayBuffer());
+      }
 
       const transcription = await ipc.invoke(
         "transcribe-audio",
-        audioBuffer,
+        uploadBuffer,
         translateMode,
-        mimeType // Pass the actual MIME type
+        uploadMime // The upload's actual MIME type (WAV when trimmed)
       );
 
       if (transcription && transcription.trim()) {
