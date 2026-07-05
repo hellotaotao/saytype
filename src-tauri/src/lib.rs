@@ -1,6 +1,7 @@
 mod commands;
 mod history;
 mod hotkey;
+mod scrub;
 mod platform;
 mod settings;
 mod state;

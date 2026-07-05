@@ -281,7 +281,24 @@ pub async fn transcribe_audio(
   state.active_transcriptions.lock().unwrap().remove(&request_id);
 
   match result {
-    Ok(text) => {
+    Ok(raw) => {
+      // Strip known Whisper hallucination boilerplate (明镜与点点 outros etc.)
+      // before the text reaches history or insertion — see scrub.rs / TODO #10.
+      let text = crate::scrub::scrub_transcription(&raw);
+      if text != raw {
+        // Counts only — the "no transcribed text in logs" promise holds.
+        log::info!(
+          "transcribe: scrubbed hallucination boilerplate ({} -> {} chars)",
+          raw.chars().count(),
+          text.chars().count()
+        );
+      }
+      if text.is_empty() {
+        // The entire output was boilerplate. Return the empty string (the
+        // frontend renders it as the no-speech state) without logging an
+        // empty history row.
+        return Ok(text);
+      }
       // Saving to history is best-effort: the transcription already succeeded,
       // so a history read/write failure must NOT bubble up as an Err — that
       // would show the user "transcription failed" AND drop the text without
