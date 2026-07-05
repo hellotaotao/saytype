@@ -343,11 +343,13 @@ function stopAxPolling() {
   }
 }
 
-// Shown only in the timed-out state, in both the readiness-card guide and the
+// Shown as soon as the user is sent to System Settings (waiting state) and
+// kept in the timed-out state, in both the readiness-card guide and the
 // wizard's Accessibility page. Covers the one case the prompt+deep-link flow
 // can't fix: the user once removed SayType from the Accessibility list, and
 // TCC won't reliably re-add the row — dragging the app in from Finder (same
-// as clicking "+") always works.
+// as clicking "+") always works. Whoever needs this discovers it the moment
+// they see a list without SayType in it, so it must not hide behind a delay.
 function buildAxRevealRow() {
   const row = document.createElement("div");
   row.className = "ax-reveal-row";
@@ -542,6 +544,7 @@ function buildAxGuide() {
     hint.className = "ax-guide-hint";
     hint.textContent = t("readiness.axGuide.waitingHint");
     actions.appendChild(hint);
+    actions.appendChild(buildAxRevealRow());
   } else {
     const button = document.createElement("button");
     button.className = "btn";
@@ -956,6 +959,7 @@ function renderObAx() {
     waiting.appendChild(label);
     container.appendChild(waiting);
     container.appendChild(obActionHint(t("readiness.axGuide.waitingHint")));
+    container.appendChild(buildAxRevealRow());
     return;
   }
   container.appendChild(
