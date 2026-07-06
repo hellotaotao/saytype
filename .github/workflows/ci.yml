@@ -74,6 +74,18 @@ jobs:
       - name: Install JS tooling (@tauri-apps/cli)
         run: npm ci
 
+      # Run both test suites before the (expensive) bundle build: a red test
+      # fails the leg fast and never uploads installers. This is also the only
+      # automated check the Windows/Linux legs get — the cross-platform logic
+      # tests (settings/history/hotkey parsing/scrub) run on real hosts here.
+      # macOS-only tests (platform::macos) are cfg'd out on the other legs.
+      - name: Run Node tests
+        run: node src/views/vad-decision.test.mjs
+
+      - name: Run Rust tests
+        run: cargo test
+        working-directory: src-tauri
+
       - name: Build (bundles for this host)
         run: npm run tauri -- build --target ${{ matrix.target }}
 
