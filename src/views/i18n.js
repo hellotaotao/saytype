@@ -236,6 +236,7 @@
           title: "Model Selection",
           description: "Select transcription model.",
           selectTitle: "Select transcription model",
+          recommendedTag: "★ Recommended",
           options: {
             whisper1: "Whisper-1 (Classic) — $0.006/min ($0.36/hr)",
             gpt4oTranscribe:
@@ -518,6 +519,7 @@
           title: "模型选择",
           description: "选择转录模型。",
           selectTitle: "选择转录模型",
+          recommendedTag: "★ 推荐",
           options: {
             whisper1: "Whisper-1（经典） — $0.006/分钟 ($0.36/小时)",
             gpt4oTranscribe:

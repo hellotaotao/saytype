@@ -13,17 +13,21 @@ const READY_POLL_MS = 25;
 const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
 let currentThemePref = "elegant";
 
+// First entry per provider is the effective default when switching provider
+// (the rebuilt <select> lands on it) — keep it in sync with the backend
+// default (settings.rs default_model / save_onboarding_api_key /
+// perform_transcription_request's empty-model fallback). `recommended` adds a
+// localized "★ 推荐" tag to the label. Turbo over lv3 and 4o-mini over
+// whisper-1 are evidence-backed: the 2026-07-03 punctuation sweep (CLAUDE.md)
+// showed lv3/whisper-1 collapse to zero punctuation on run-on Chinese speech
+// while turbo+seed and gpt-4o-mini-transcribe punctuate.
 const modelOptions = {
   groq: [
+    { value: "whisper-large-v3-turbo", labelKey: "settings.model.options.whisperLargeV3Turbo", recommended: true },
     { value: "whisper-large-v3", labelKey: "settings.model.options.whisperLargeV3" },
-    { value: "whisper-large-v3-turbo", labelKey: "settings.model.options.whisperLargeV3Turbo" },
   ],
-  // First entry is the effective default when switching provider (the rebuilt
-  // <select> lands on it) — keep it in sync with the backend default
-  // (settings.rs default_model / save_onboarding_api_key). whisper-1 stays
-  // last so nobody mistakes it for the recommended OpenAI choice.
   openai: [
-    { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe" },
+    { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe", recommended: true },
     { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
     { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
   ],
@@ -135,7 +139,10 @@ function updateModelOptions(provider) {
   (modelOptions[provider] || []).forEach((opt) => {
     const option = document.createElement("option");
     option.value = opt.value;
-    option.textContent = opt.labelKey ? translate(opt.labelKey) : opt.label || opt.value;
+    const label = opt.labelKey ? translate(opt.labelKey) : opt.label || opt.value;
+    option.textContent = opt.recommended
+      ? `${label} · ${translate("settings.model.recommendedTag")}`
+      : label;
     select.appendChild(option);
   });
 }
