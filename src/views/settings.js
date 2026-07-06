@@ -18,10 +18,14 @@ const modelOptions = {
     { value: "whisper-large-v3", labelKey: "settings.model.options.whisperLargeV3" },
     { value: "whisper-large-v3-turbo", labelKey: "settings.model.options.whisperLargeV3Turbo" },
   ],
+  // First entry is the effective default when switching provider (the rebuilt
+  // <select> lands on it) — keep it in sync with the backend default
+  // (settings.rs default_model / save_onboarding_api_key). whisper-1 stays
+  // last so nobody mistakes it for the recommended OpenAI choice.
   openai: [
-    { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
-    { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
     { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe" },
+    { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
+    { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
   ],
 };
 
