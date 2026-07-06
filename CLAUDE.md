@@ -134,8 +134,10 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   (insertion, permission checks, clipboard, autostart) live behind `platform/` (see below).
 - `platform/` — the platform abstraction layer (`mod.rs` contract + `macos.rs` / `fallback.rs`).
   All `#[cfg(target_os)]` capabilities — synthetic text insertion, Accessibility/Microphone
-  checks, clipboard write, login-item autostart — live here. macOS is implemented; non-macOS
-  (`fallback.rs`) is currently stubs ("not yet supported"), filled in per-platform later. See
+  checks, clipboard write, login-item autostart — live here. macOS is fully implemented.
+  Non-macOS (`fallback.rs`, shared by Windows/Linux): text insertion is **implemented** via
+  `enigo` (SendInput on Windows, XTEST/libxdo on Linux/X11), permission checks report
+  "not required"; clipboard write and autostart are still stubs. See
   `docs/superpowers/specs/2026-07-01-cross-platform-support-design.md`.
 - `hotkey.rs` — global hold-to-record. On macOS uses a CGEventTap (only when Accessibility is
   trusted); elsewhere falls back to `rdev::listen`. Parses the modifier-only shortcut
@@ -169,8 +171,10 @@ Rust → Renderer: `app.emit("shortcut-updated", …)` / `"ui-theme-updated"` /
 
 - **macOS**: requires Microphone and Accessibility permissions; entitlements at
   `build/entitlements.mac.plist` (referenced by `tauri.conf.json`). Text insertion and the
-  global hotkey are implemented for macOS; **Windows/Linux insertion is not yet implemented**
-  in the Rust backend.
+  global hotkey are implemented for macOS (CGEvent/CGEventTap) **and** for Windows/Linux
+  (`enigo`/`rdev`, commit `0807c49`) — but only macOS is verified on a real machine.
+  Windows/Linux remain untested end-to-end (CI builds their installers as artifacts), and
+  Linux recording is blocked on WebKitGTK `getUserMedia` support.
 - Reset macOS permissions when re-testing:
   ```
   tccutil reset Accessibility com.tao.saytype
@@ -210,7 +214,9 @@ So the limitation is **macOS-only**:
 - **Linux** — Tauri uses **WebKitGTK** (WebKit family). The 1s is a macOS VoiceProcessingIO
   artifact and does not apply, but WebKitGTK's getUserMedia processing support is limited/variable
   — verify if ever targeted.
-- (Text insertion + hotkey are macOS-only today, so Windows/Linux aren't live targets yet.)
+- (Windows/Linux insertion + hotkey are implemented (`enigo`/`rdev`) but unverified on real
+  machines, and Linux recording is blocked on WebKitGTK `getUserMedia` — so they aren't live
+  targets yet.)
 
 ### Decision: do NOT add NS/AGC, and do NOT pre-denoise (researched 2026-06-22)
 

@@ -9,7 +9,7 @@ A voice input method built with **Tauri** that lets you dictate text in any appl
 - **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe
 - **Real-time Audio Visualization**: Waveform animation while recording
 - **AI Transcription**: Uses Groq's or OpenAI's Whisper API for speech-to-text
-- **Auto-typing**: Inserts transcribed text into the active application (macOS)
+- **Auto-typing**: Inserts transcribed text into the active application (macOS; Windows/Linux experimental, untested)
 - **Background Operation**: Runs silently in the system tray
 - **Customizable Settings**: Configure API key/provider, microphone, and language
 
@@ -48,7 +48,7 @@ To publish a signed macOS `.dmg` to GitHub Releases (built automatically on a
 3. Hold down Ctrl+Shift to start recording
 4. Speak while holding the keys
 5. Release to stop recording and transcribe
-6. Text is inserted into the active application (macOS)
+6. Text is inserted into the active application (macOS; Windows/Linux experimental, untested)
 7. Press Escape to cancel recording or an in-progress transcription
 
 ## Configuration
@@ -85,7 +85,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 - **按住录音快捷键**:按住 Ctrl+Shift 开始录音,松开即停止并转写
 - **实时音频可视化**:录音时显示波形动画
 - **AI 转写**:使用 Groq 或 OpenAI 的 Whisper API 进行语音转文字
-- **自动输入**:将转写结果插入到当前活动应用(macOS)
+- **自动输入**:将转写结果插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 - **后台运行**:静默驻留在系统托盘
 - **可自定义设置**:配置 API key / 服务商、麦克风和语言
 
@@ -123,7 +123,7 @@ npm run build:linux
 3. 按住 Ctrl+Shift 开始录音
 4. 按住按键的同时说话
 5. 松开按键停止录音并转写
-6. 文字会插入到当前活动应用(macOS)
+6. 文字会插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 7. 按 Escape 取消录音或正在进行的转写
 
 ## 配置
