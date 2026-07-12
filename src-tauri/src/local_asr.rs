@@ -4,11 +4,15 @@
 //! engine: the subprocess exits after each transcription, so SayType's idle
 //! memory is unchanged. See docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
 use anyhow::{Context, Result};
+use serde::Serialize;
+use sha2::Digest;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tauri::Emitter;
+use tokio_util::sync::CancellationToken;
 
 pub const LOCAL_PROVIDER: &str = "local";
 pub const LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
@@ -224,6 +228,292 @@ pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
   Ok(text)
 }
 
+/// Emit a progress event at most every this many bytes.
+const PROGRESS_EMIT_STEP: u64 = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelStatus {
+  pub state: String,
+  pub downloaded_bytes: u64,
+  pub total_bytes: u64,
+}
+
+pub fn model_status(downloading: bool) -> ModelStatus {
+  match local_asr_dir() {
+    Ok(dir) => model_status_at(&dir, downloading),
+    Err(_) => ModelStatus {
+      state: "absent".into(),
+      downloaded_bytes: 0,
+      total_bytes: total_download_bytes(),
+    },
+  }
+}
+
+fn model_status_at(dir: &Path, downloading: bool) -> ModelStatus {
+  let mut downloaded = 0u64;
+  let mut complete = true;
+  let zip = llama_zip_asset();
+  // Model files count by exact size; the zip counts as fully downloaded once
+  // the extracted CLI exists (the archive is removed after extraction).
+  for a in MODEL_ASSETS {
+    let got = fs::metadata(dir.join(a.rel_path)).map(|m| m.len()).unwrap_or(0);
+    if got == a.size {
+      downloaded += a.size;
+    } else {
+      complete = false;
+      downloaded += got.min(a.size);
+      if let Ok(m) = fs::metadata(dir.join(format!("{}.part", a.rel_path))) {
+        downloaded += m.len().min(a.size);
+      }
+    }
+  }
+  let cli = cli_path(dir);
+  if fs::metadata(&cli).map(|m| m.is_file()).unwrap_or(false) && is_executable(&cli) {
+    downloaded += zip.size;
+  } else {
+    complete = false;
+    if let Ok(m) = fs::metadata(dir.join(format!("{}.part", zip.rel_path))) {
+      downloaded += m.len().min(zip.size);
+    } else if let Ok(m) = fs::metadata(dir.join(zip.rel_path)) {
+      downloaded += m.len().min(zip.size);
+    }
+  }
+  let state = if downloading {
+    "downloading"
+  } else if complete {
+    "ready"
+  } else if downloaded > 0 {
+    "partial"
+  } else {
+    "absent"
+  };
+  ModelStatus { state: state.into(), downloaded_bytes: downloaded, total_bytes: total_download_bytes() }
+}
+
+fn emit_progress(app: &tauri::AppHandle, state: &str, downloaded: u64, message: Option<&str>) {
+  let _ = app.emit(
+    "local-model-download-progress",
+    serde_json::json!({
+      "state": state,
+      "downloadedBytes": downloaded,
+      "totalBytes": total_download_bytes(),
+      "message": message,
+    }),
+  );
+}
+
+/// Download all missing assets (resumable), verify sha256, extract the llama
+/// archive, mark the CLI executable. Terminal events are emitted by the COMMAND.
+pub async fn download_model(app: tauri::AppHandle, cancel: CancellationToken) -> Result<(), String> {
+  let dir = local_asr_dir().map_err(|e| e.to_string())?;
+  let client = reqwest::Client::builder()
+    .connect_timeout(std::time::Duration::from_secs(15))
+    .build()
+    .map_err(|e| e.to_string())?;
+
+  let mut done: u64 = 0;
+  for a in MODEL_ASSETS {
+    if fs::metadata(dir.join(a.rel_path)).map(|m| m.len() == a.size).unwrap_or(false) {
+      done += a.size;
+      continue;
+    }
+    download_asset(&app, &client, &dir, a, &cancel, done).await?;
+    done += a.size;
+    emit_progress(&app, "downloading", done, None);
+  }
+
+  let zip = llama_zip_asset();
+  if !(fs::metadata(cli_path(&dir)).map(|m| m.is_file()).unwrap_or(false) && is_executable(&cli_path(&dir))) {
+    let zip_final = dir.join(zip.rel_path);
+    if !fs::metadata(&zip_final).map(|m| m.len() == zip.size).unwrap_or(false) {
+      download_asset(&app, &client, &dir, zip, &cancel, done).await?;
+    }
+    let dir2 = dir.clone();
+    tokio::task::spawn_blocking(move || extract_llama_archive(&dir2))
+      .await
+      .map_err(|e| e.to_string())??;
+    let _ = fs::remove_file(&zip_final); // archive no longer needed
+  }
+  Ok(())
+}
+
+/// Extract every regular file in the archive, flattened to its basename, into
+/// bin/<LLAMA_BUILD>/, and mark all of them executable on unix (the CLI needs
+/// it; the bundled dylibs don't care). Flattening keeps us independent of the
+/// archive's top-level folder naming across llama.cpp releases -- adjust ONLY
+/// if the Task-3 Step-1 rpath check demanded preserved structure.
+///
+/// macOS/Linux releases are gzip-compressed tarballs; Windows releases are a
+/// real zip (Task 2 finding) -- so the two platforms use different crates.
+#[cfg(unix)]
+fn extract_llama_archive(base: &Path) -> Result<(), String> {
+  let archive_path = base.join(llama_zip_asset().rel_path);
+  let out_dir = bin_dir(base);
+  fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+  let file = fs::File::open(&archive_path).map_err(|e| e.to_string())?;
+  let gz = flate2::read::GzDecoder::new(file);
+  let mut archive = tar::Archive::new(gz);
+  for entry in archive.entries().map_err(|e| e.to_string())? {
+    let mut entry = entry.map_err(|e| e.to_string())?;
+    if !entry.header().entry_type().is_file() {
+      continue;
+    }
+    let entry_path = entry.path().map_err(|e| e.to_string())?.into_owned();
+    let Some(name) = entry_path.file_name().map(|n| n.to_owned()) else { continue };
+    let out_path = out_dir.join(name);
+    let mut out = fs::File::create(&out_path).map_err(|e| e.to_string())?;
+    std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&out_path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+  }
+  if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
+    return Err("archive did not contain llama-mtmd-cli".into());
+  }
+  Ok(())
+}
+
+#[cfg(windows)]
+fn extract_llama_archive(base: &Path) -> Result<(), String> {
+  let zip_path = base.join(llama_zip_asset().rel_path);
+  let out_dir = bin_dir(base);
+  fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+  let file = fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+  let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+  for i in 0..archive.len() {
+    let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+    if entry.is_dir() {
+      continue;
+    }
+    let Some(name) = Path::new(entry.name()).file_name().map(|n| n.to_owned()) else { continue };
+    let out_path = out_dir.join(name);
+    let mut out = fs::File::create(&out_path).map_err(|e| e.to_string())?;
+    std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+  }
+  if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
+    return Err("archive did not contain llama-mtmd-cli".into());
+  }
+  Ok(())
+}
+
+async fn download_asset(
+  app: &tauri::AppHandle,
+  client: &reqwest::Client,
+  dir: &Path,
+  asset: &Asset,
+  cancel: &CancellationToken,
+  done_bytes: u64,
+) -> Result<(), String> {
+  let part_path = dir.join(format!("{}.part", asset.rel_path));
+  if let Some(parent) = part_path.parent() {
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+  }
+
+  let mut last_err = String::new();
+  for url in asset.urls {
+    if cancel.is_cancelled() {
+      return Err("DOWNLOAD_CANCELLED".into());
+    }
+    let offset = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+    let offset = if offset > asset.size { 0 } else { offset };
+    match stream_to_part(app, client, url, &part_path, offset, asset, cancel, done_bytes).await {
+      Ok(()) => {
+        let got = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+        if got != asset.size {
+          last_err = format!("{}: size mismatch {got} != {}", asset.rel_path, asset.size);
+          let _ = fs::remove_file(&part_path);
+          continue;
+        }
+        let path_for_hash = part_path.clone();
+        let hash = tokio::task::spawn_blocking(move || -> Result<String, String> {
+          let mut hasher = sha2::Sha256::new();
+          let mut reader = fs::File::open(&path_for_hash).map_err(|e| e.to_string())?;
+          std::io::copy(&mut reader, &mut hasher).map_err(|e| e.to_string())?;
+          Ok(format!("{:x}", hasher.finalize()))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if hash != asset.sha256 {
+          last_err = format!("{}: sha256 mismatch", asset.rel_path);
+          let _ = fs::remove_file(&part_path);
+          continue;
+        }
+        fs::rename(&part_path, dir.join(asset.rel_path)).map_err(|e| e.to_string())?;
+        return Ok(());
+      }
+      Err(err) if err == "DOWNLOAD_CANCELLED" => return Err(err),
+      Err(err) => {
+        // Keep the .part -- the next source (byte-identical) resumes it.
+        last_err = format!("{url}: {err}");
+        log::warn!("asset download source failed: {last_err}");
+      }
+    }
+  }
+  Err(format!("failed to download {}: {last_err}", asset.rel_path))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_to_part(
+  app: &tauri::AppHandle,
+  client: &reqwest::Client,
+  url: &str,
+  part_path: &Path,
+  offset: u64,
+  asset: &Asset,
+  cancel: &CancellationToken,
+  done_bytes: u64,
+) -> Result<(), String> {
+  use std::io::Write;
+
+  let mut request = client.get(url);
+  if offset > 0 {
+    request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+  }
+  let response = request.send().await.map_err(|e| e.to_string())?;
+  let status = response.status();
+  if !status.is_success() {
+    return Err(format!("HTTP {status}"));
+  }
+  let append = offset > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
+  let mut out = fs::OpenOptions::new()
+    .create(true)
+    .append(append)
+    .write(true)
+    .truncate(!append)
+    .open(part_path)
+    .map_err(|e| e.to_string())?;
+  let mut written = if append { offset } else { 0 };
+  let mut last_emit = written;
+
+  let mut response = response;
+  loop {
+    let chunk = tokio::select! {
+      _ = cancel.cancelled() => return Err("DOWNLOAD_CANCELLED".into()),
+      chunk = response.chunk() => chunk.map_err(|e| e.to_string())?,
+    };
+    let Some(chunk) = chunk else { break };
+    out.write_all(&chunk).map_err(|e| e.to_string())?;
+    written += chunk.len() as u64;
+    if written - last_emit >= PROGRESS_EMIT_STEP {
+      last_emit = written;
+      emit_progress(app, "downloading", done_bytes + written.min(asset.size), None);
+    }
+  }
+  out.flush().map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+/// Settings "delete model": remove the whole local-asr dir (models + bin).
+/// No engine unload needed -- nothing is resident between transcriptions.
+pub fn delete_model() -> Result<(), String> {
+  let dir = local_asr_dir().map_err(|e| e.to_string())?;
+  match fs::remove_dir_all(&dir) {
+    Ok(()) => Ok(()),
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    Err(err) => Err(err.to_string()),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -288,6 +578,50 @@ mod tests {
   fn parse_without_marker_falls_back_to_trimmed_whole() {
     assert_eq!(parse_mtmd_output("  plain text out  \n"), "plain text out");
     assert_eq!(parse_mtmd_output(""), "");
+  }
+
+  #[test]
+  fn model_status_reports_absent_partial_ready() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path();
+    let s = model_status_at(dir, false);
+    assert_eq!(s.state, "absent");
+    assert_eq!(s.total_bytes, total_download_bytes());
+    assert_eq!(s.downloaded_bytes, 0);
+
+    // One finished GGUF + one .part -> partial, bytes add up.
+    let a0 = &MODEL_ASSETS[0];
+    let p = dir.join(a0.rel_path);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::File::create(&p).unwrap().set_len(a0.size).unwrap();
+    let part = dir.join(format!("{}.part", MODEL_ASSETS[1].rel_path));
+    fs::create_dir_all(part.parent().unwrap()).unwrap();
+    fs::File::create(&part).unwrap().set_len(1000).unwrap();
+    let s = model_status_at(dir, false);
+    assert_eq!(s.state, "partial");
+    assert_eq!(s.downloaded_bytes, a0.size + 1000);
+
+    assert_eq!(model_status_at(dir, true).state, "downloading");
+
+    // Everything in place (incl. executable cli) -> ready. The zip itself is
+    // deleted after extraction, so "ready" ignores it; its bytes count as
+    // downloaded when the cli exists.
+    for a in MODEL_ASSETS {
+      let p = dir.join(a.rel_path);
+      fs::create_dir_all(p.parent().unwrap()).unwrap();
+      fs::File::create(&p).unwrap().set_len(a.size).unwrap();
+    }
+    let cli = cli_path(dir);
+    fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    fs::write(&cli, b"x").unwrap();
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let s = model_status_at(dir, false);
+    assert_eq!(s.state, "ready");
+    assert_eq!(s.downloaded_bytes, s.total_bytes);
   }
 
   /// Needs the real assets laid out (Task 3 Step 1). Run manually:

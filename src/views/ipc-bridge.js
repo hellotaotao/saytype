@@ -40,6 +40,10 @@
     "save-dictionary": "save_dictionary",
     "set-onboarding-completed": "set_onboarding_completed",
     "save-onboarding-api-key": "save_onboarding_api_key",
+    "download-local-model": "download_local_model",
+    "cancel-local-model-download": "cancel_local_model_download",
+    "get-local-model-status": "get_local_model_status",
+    "delete-local-model": "delete_local_model",
   };
 
   const tauriArgs = {

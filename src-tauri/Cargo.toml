@@ -34,7 +34,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tokio-util = { version = "0.7", features = ["rt"] }
 tauri-plugin-single-instance = "2.4.2"
 sha2 = "0.10"
-zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
@@ -42,6 +41,13 @@ objc = "0.2"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 enigo = "0.3.0"
+
+[target.'cfg(windows)'.dependencies]
+zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+flate2 = "1"
+tar = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

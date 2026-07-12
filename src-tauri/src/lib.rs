@@ -172,6 +172,10 @@ pub fn run() {
       commands::save_dictionary,
       commands::set_onboarding_completed,
       commands::save_onboarding_api_key,
+      commands::download_local_model,
+      commands::cancel_local_model_download,
+      commands::get_local_model_status,
+      commands::delete_local_model,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")

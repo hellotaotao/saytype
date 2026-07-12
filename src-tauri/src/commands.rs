@@ -536,6 +536,75 @@ pub fn save_dictionary(text: String) -> Result<bool, String> {
   Ok(true)
 }
 
+// --- Local ASR asset management (settings window) ---
+
+#[tauri::command]
+pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+  log::info!("command:download_local_model");
+  let cancel = CancellationToken::new();
+  {
+    let mut slot = state.local_model_download.lock().unwrap();
+    if slot.is_some() {
+      return Err("Model download already in progress".into());
+    }
+    *slot = Some(cancel.clone());
+  }
+
+  let result = crate::local_asr::download_model(app.clone(), cancel).await;
+  *state.local_model_download.lock().unwrap() = None;
+
+  let status = crate::local_asr::model_status(false);
+  match result {
+    Ok(()) => {
+      let _ = app.emit(
+        "local-model-download-progress",
+        json!({ "state": "ready", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
+      );
+      Ok(true)
+    }
+    Err(err) if err == "DOWNLOAD_CANCELLED" => {
+      let _ = app.emit(
+        "local-model-download-progress",
+        json!({ "state": "cancelled", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
+      );
+      Ok(false)
+    }
+    Err(err) => {
+      let _ = app.emit(
+        "local-model-download-progress",
+        json!({ "state": "error", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes, "message": err }),
+      );
+      Err(err)
+    }
+  }
+}
+
+#[tauri::command]
+pub fn cancel_local_model_download(state: State<'_, AppState>) -> Result<bool, String> {
+  log::info!("command:cancel_local_model_download");
+  if let Some(token) = state.local_model_download.lock().unwrap().as_ref() {
+    token.cancel();
+    return Ok(true);
+  }
+  Ok(false)
+}
+
+#[tauri::command]
+pub fn get_local_model_status(state: State<'_, AppState>) -> crate::local_asr::ModelStatus {
+  let downloading = state.local_model_download.lock().unwrap().is_some();
+  crate::local_asr::model_status(downloading)
+}
+
+#[tauri::command]
+pub fn delete_local_model(state: State<'_, AppState>) -> Result<bool, String> {
+  log::info!("command:delete_local_model");
+  if state.local_model_download.lock().unwrap().is_some() {
+    return Err("Cancel the running download first".into());
+  }
+  crate::local_asr::delete_model()?;
+  Ok(true)
+}
+
 pub fn current_accessibility_granted() -> bool {
   platform::accessibility_granted(false)
 }

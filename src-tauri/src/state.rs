@@ -14,6 +14,9 @@ pub struct AppState {
   /// keep connection/TLS pooling instead of re-handshaking on every utterance,
   /// and carries the request timeouts so a hung network can't wedge the UI.
   pub http_client: reqwest::Client,
+  /// Cancellation token of the in-flight local-model download, if any
+  /// (single-flight guard for download_local_model).
+  pub local_model_download: Mutex<Option<CancellationToken>>,
 }
 
 impl Default for AppState {
@@ -28,6 +31,7 @@ impl Default for AppState {
         .connect_timeout(Duration::from_secs(15))
         .build()
         .expect("failed to build transcription HTTP client"),
+      local_model_download: Mutex::new(None),
     }
   }
 }
