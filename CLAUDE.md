@@ -283,6 +283,10 @@ It is **not sufficient**, and no request-parameter tweak fixes it. A 77-call con
   marks on that clip; 0 without seed) — but density is ~half of `gpt-4o-mini-transcribe` (6–7
   marks, the reference), and turbo misheard a word on one real-mic clip, so its accuracy needs a
   real-use trial (settings → model) before any default change.
+- **Bigger ≠ better punctuation: full `gpt-4o-transcribe` collapses like Whisper** (follow-up
+  2026-07-07, same clip ×3): 0/1/0 marks vs mini's 6/8/7, identical words otherwise. The
+  "High Quality" tier is about word accuracy, not punctuation — for zh dictation the mini is
+  the right OpenAI recommendation, confirmed against its bigger sibling.
 - **Prompt-leak is real on degenerate audio**: on a repetitive clip, `whisper-1` emitted the seed
   text ("欢迎使用听写工具。" ×15) as its entire output, and lv3 hallucinated video-spam
   boilerplate. The VAD gate already drops non-speech clips before upload, which covers the main
