@@ -1,6 +1,7 @@
 mod commands;
 mod history;
 mod hotkey;
+mod local_asr;
 mod scrub;
 mod platform;
 mod settings;
