@@ -31,6 +31,9 @@ const modelOptions = {
     { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
     { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
   ],
+  local: [
+    { value: "qwen3-asr-0.6b-q8_0", labelKey: "settings.model.options.qwen3AsrLocal", recommended: false },
+  ],
 };
 
 let currentSettings = {};
@@ -153,14 +156,123 @@ function toggleApiKeyVisibility(provider) {
   if (!fieldGroq || !fieldOpenAI) {
     return;
   }
+  fieldGroq.classList.toggle("hidden", provider !== "groq");
+  fieldOpenAI.classList.toggle("hidden", provider !== "openai");
+}
 
-  if (provider === "openai") {
-    fieldGroq.classList.add("hidden");
-    fieldOpenAI.classList.remove("hidden");
-  } else {
-    fieldOpenAI.classList.add("hidden");
-    fieldGroq.classList.remove("hidden");
+// --- Local model panel (provider "local") ---
+let localModelState = "absent"; // absent | partial | downloading | ready
+let localModelSyncBound = false;
+
+function formatGB(bytes) {
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function renderLocalModelPanel(status) {
+  const item = document.getElementById("localModelItem");
+  const statusEl = document.getElementById("localModelStatus");
+  const actionBtn = document.getElementById("localModelActionBtn");
+  const deleteBtn = document.getElementById("localModelDeleteBtn");
+  const progressEl = document.getElementById("localModelProgress");
+  if (!item || !statusEl || !actionBtn || !deleteBtn || !progressEl) {
+    return;
   }
+  localModelState = status.state;
+  const provider = document.getElementById("providerSelect")?.value;
+  item.classList.toggle("hidden", provider !== "local");
+
+  const pct = status.totalBytes ? status.downloadedBytes / status.totalBytes : 0;
+  progressEl.value = Math.round(pct * 1000);
+  progressEl.classList.toggle("hidden", status.state !== "downloading");
+  deleteBtn.classList.toggle("hidden", status.state !== "ready");
+  deleteBtn.textContent = translate("settings.localModel.delete");
+
+  if (status.state === "ready") {
+    statusEl.textContent = translate("settings.localModel.statusReady", {
+      size: formatGB(status.totalBytes),
+    });
+    actionBtn.classList.add("hidden");
+  } else if (status.state === "downloading") {
+    statusEl.textContent = translate("settings.localModel.statusDownloading", {
+      done: formatGB(status.downloadedBytes),
+      total: formatGB(status.totalBytes),
+    });
+    actionBtn.classList.remove("hidden");
+    actionBtn.textContent = translate("settings.localModel.cancel");
+  } else {
+    statusEl.textContent =
+      status.state === "partial"
+        ? translate("settings.localModel.statusPartial")
+        : translate("settings.localModel.statusAbsent", { total: formatGB(status.totalBytes) });
+    actionBtn.classList.remove("hidden");
+    actionBtn.textContent = translate(
+      status.state === "partial" ? "settings.localModel.resume" : "settings.localModel.download"
+    );
+  }
+}
+
+async function refreshLocalModelStatus() {
+  if (!ipc) {
+    return;
+  }
+  try {
+    renderLocalModelPanel(await ipc.invoke("get-local-model-status"));
+  } catch (error) {
+    console.error("Failed to fetch local model status:", error);
+  }
+}
+
+async function handleLocalModelAction() {
+  try {
+    if (localModelState === "downloading") {
+      await ipc.invoke("cancel-local-model-download");
+      return; // terminal event repaints the panel
+    }
+    // Optimistic repaint, then kick the (long-running) download; progress
+    // events keep the panel live. Errors surface via the "error" event too.
+    renderLocalModelPanel({ state: "downloading", downloadedBytes: 0, totalBytes: 1 });
+    void refreshLocalModelStatus();
+    await ipc.invoke("download-local-model");
+  } catch (error) {
+    console.error("Local model download failed:", error);
+  }
+}
+
+async function handleLocalModelDelete() {
+  if (!confirm(translate("settings.localModel.deleteConfirm"))) {
+    return;
+  }
+  try {
+    await ipc.invoke("delete-local-model");
+    await refreshLocalModelStatus();
+  } catch (error) {
+    console.error("Failed to delete local model:", error);
+  }
+}
+
+function setupLocalModelSync() {
+  if (localModelSyncBound || !ipc) {
+    return;
+  }
+  localModelSyncBound = true;
+  ipc.on("local-model-download-progress", (_event, payload) => {
+    if (!payload) {
+      return;
+    }
+    if (payload.state === "error") {
+      alert(translate("settings.localModel.downloadFailed", { reason: payload.message || "" }));
+    }
+    if (payload.state === "downloading") {
+      renderLocalModelPanel({
+        state: "downloading",
+        downloadedBytes: payload.downloadedBytes || 0,
+        totalBytes: payload.totalBytes || 0,
+      });
+    } else {
+      // ready/cancelled/error: re-derive the real on-disk state.
+      void refreshLocalModelStatus();
+    }
+  });
 }
 
 function toggleKeyReveal(button) {
@@ -197,6 +309,7 @@ function handleProviderChange(event) {
   const provider = event.target.value || "groq";
   updateModelOptions(provider);
   toggleApiKeyVisibility(provider);
+  void refreshLocalModelStatus();
 }
 
 function handleThemeChange(event) {
@@ -261,6 +374,13 @@ function bindEventHandlers() {
 
   document.querySelectorAll(".reveal-btn").forEach((button) => {
     button.addEventListener("click", () => toggleKeyReveal(button));
+  });
+
+  document.getElementById("localModelActionBtn")?.addEventListener("click", () => {
+    void handleLocalModelAction();
+  });
+  document.getElementById("localModelDeleteBtn")?.addEventListener("click", () => {
+    void handleLocalModelDelete();
   });
 
   // Any edit to a control marks the page dirty so the unsaved hint shows.
@@ -544,6 +664,7 @@ async function loadSettings() {
       startMinimizedCheck.checked = !!currentSettings.startMinimized;
     }
 
+    await refreshLocalModelStatus();
     await Promise.all([
       checkMicrophonePermissionStatus(),
       checkAccessibilityStatus(),
@@ -562,6 +683,10 @@ async function saveSettings() {
     await initializeDependencies();
 
     const provider = document.getElementById("providerSelect")?.value || "groq";
+    if (provider === "local" && localModelState !== "ready") {
+      alert(translate("settings.localModel.notReady"));
+      return;
+    }
     const themeSelect = document.getElementById("themeSelect");
     const settings = {
       apiKeyGroq: document.getElementById("apiKeyGroq")?.value || "",
@@ -631,6 +756,7 @@ async function bootstrapSettingsPage() {
     bindEventHandlers();
     setupShortcutSync();
     setupThemeSync();
+    setupLocalModelSync();
     await loadSettings();
     if (document?.documentElement) {
       document.documentElement.setAttribute("data-settings-bootstrap-complete", "1");

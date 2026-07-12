@@ -464,8 +464,17 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
 
   const pills = document.createElement("div");
   pills.className = "readiness-pills";
+  const isLocal = cachedSettings?.provider === "local";
   pills.appendChild(
-    buildPill({ label: hasKey ? t("readiness.apiKey") : t("readiness.addApiKey"), ok: hasKey, onFix: openSettings })
+    buildPill({
+      label: isLocal
+        ? t("readiness.localModel")
+        : hasKey
+          ? t("readiness.apiKey")
+          : t("readiness.addApiKey"),
+      ok: hasKey,
+      onFix: openSettings,
+    })
   );
   pills.appendChild(buildPill({ label: t("readiness.microphone"), ok: micOk, onFix: openSettings }));
   pills.appendChild(

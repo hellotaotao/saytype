@@ -248,6 +248,7 @@
               <select class="input provider-select" id="providerSelect" title="Select API provider" data-i18n="settings.apiProvider.selectTitle" data-i18n-attr="title">
                 <option value="groq">Groq</option>
                 <option value="openai">OpenAI</option>
+                <option value="local">Local · Qwen3-ASR</option>
               </select>
             </div>
           </div>
@@ -283,6 +284,18 @@
                 <option value="whisper-large-v3-turbo">Whisper Large V3 Turbo (Faster) · ★ Recommended</option>
                 <option value="whisper-large-v3">Whisper Large V3 (Standard)</option>
               </select>
+            </div>
+          </div>
+
+          <div class="setting-item hidden" id="localModelItem">
+            <div class="setting-info">
+              <div class="setting-title" data-i18n="settings.localModel.title">Local model</div>
+              <div class="setting-description" id="localModelStatus"></div>
+            </div>
+            <div class="setting-control">
+              <progress id="localModelProgress" class="hidden" max="1000" value="0"></progress>
+              <button class="btn btn-secondary" id="localModelActionBtn" type="button"></button>
+              <button class="btn btn-secondary hidden" id="localModelDeleteBtn" type="button"></button>
             </div>
           </div>
         </div>
