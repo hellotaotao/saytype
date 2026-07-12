@@ -1,745 +1,497 @@
-# 本地 Qwen3-ASR 转写后端 Implementation Plan
+# 本地 Qwen3-ASR 转写后端 Implementation Plan(rev2:llama.cpp 子进程)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 给 SayType 加第三个转写 provider `"local"`:sherpa-onnx 进程内跑 Qwen3-ASR-0.6B int8,模型按需下载,录音开始时预加载、闲置 10 分钟卸载。
+> **rev2 (2026-07-13)**:引擎从 sherpa-onnx 进程内改为 **llama.cpp 子进程**(两轮真机实测后用户拍板,见 spec 修订)。Task 1(sherpa spike)已完成并保留;sherpa 版计划在本文件 git 历史。
 
-**Architecture:** 新模块 `src-tauri/src/local_asr.rs` 承载模型清单/下载/专属 worker 线程(加载-转写-闲时卸载);`commands.rs` 的 `transcribe_audio` 增加路由层(local / cloud);前端在 local 模式下恒发 16k mono WAV;settings 窗新增本地模型面板。下游 scrub/历史/插入管线零改动。
+**Goal:** 给 SayType 加第三个转写 provider `"local"`:每次转写起一个 `llama-mtmd-cli` 子进程跑 Qwen3-ASR-0.6B Q8_0(Metal/CPU),模型与二进制按需下载,转写完进程即退(零常驻内存)。
 
-**Tech Stack:** Rust (Tauri 2), `sherpa-onnx = "1.13.4"`(官方 crate,default `static` feature,build.rs 自动下载预编译静态库,**无 cmake**), `hound`(WAV 解析), `sha2`(校验), reqwest(已有,流式下载), 前端 plain JS。
+**Architecture:** 新模块 `src-tauri/src/local_asr.rs` 承载资产清单(2 个 GGUF + 每平台一个 llama.cpp 官方 zip)/下载/子进程执行器;`commands.rs` 的 `transcribe_audio` 增加路由层(local / cloud),取消 = 杀子进程(`kill_on_drop`);前端在 local 模式下恒发 16k mono WAV;settings 窗新增本地模型面板。无 worker 线程、无预加载、无闲置卸载。下游 scrub/历史/插入管线零改动。
 
-**Spec:** `docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md`(已含 2026-07-12 调研定案:crate 选型、模型文件清单与字节数、镜像 URL、线程安全模型)。
+**Tech Stack:** Rust (Tauri 2), `tokio::process`, `zip`(解压 llama 包), `sha2`(校验), reqwest(已有,流式下载), 前端 plain JS。**不再依赖 sherpa-onnx/hound。**
+
+**Spec:** `docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md`(rev 2026-07-13,含全部实测事实:`-c 2048` 脚枪、`-p "a"` 必给、输出前缀格式、无 Q4、版本锁定 ≥b9173)。
 
 ## Global Constraints
 
-- Rust 代码 2 空格缩进(仓库既有风格);错误消息用英文(与现有 `commands.rs` 一致);**日志绝不含转写文本/API key**(只记计数/形状)。
-- **新增 IPC 命令必须三处同步**:`commands.rs` 的 `#[tauri::command]`、`lib.rs` 的 `invoke_handler!`、`ipc-bridge.js` 的 `tauriCommands`(带参数的还要 `tauriArgs`)。
-- 新 UI 文案一律进 `src/views/i18n.js`,**en + zh 两份**。
-- provider 标识字符串:`"local"`;模型标识:`"qwen3-asr-0.6b-int8"`。
-- 插入失败**无剪贴板回退**(既有设计,勿破坏);转写成功但历史写失败不许变成 Err(`b2dc1a6` 教训)。
-- 版本号**不在本计划内 bump**(发布时手动)。
-- Solo 项目:直接提交 main,不做旧配置兼容层。
-- `cargo test` 在 `src-tauri/` 下运行;Node 测试:`node src/views/vad-decision.test.mjs`。
-- 每个任务结束全量跑一遍 `cargo test`(不只是新增的测试)。
+- Rust 代码 2 空格缩进;错误消息英文;**日志绝不含转写文本/API key**(只记计数/形状;子进程 stderr 只入日志最后一行/计数)。
+- **新增 IPC 命令三处同步**:`commands.rs`、`lib.rs` `invoke_handler!`、`ipc-bridge.js` `tauriCommands`。
+- 新 UI 文案进 `src/views/i18n.js`,**en + zh 两份**。
+- provider 标识:`"local"`;模型标识:`"qwen3-asr-0.6b-q8_0"`;llama.cpp 锁定 build 常量 `LLAMA_BUILD`(Task 2 定值)。
+- 子进程必带 `-c 2048`(防 7GiB KV 预分配)与 `-p "a"`(防交互模式挂住)。
+- 插入失败无剪贴板回退;转写成功但历史写失败不许变成 Err;本地失败**不静默回退云端**。
+- 版本号不在本计划内 bump;solo 项目直接提交 main。
+- `cargo test` 在 `src-tauri/` 下跑;Node 测试 `node src/views/vad-decision.test.mjs`;每任务收尾全量跑。
 
-## 模型事实速查(实现时直接引用,已核实)
+## 资产事实速查(已核实)
 
-| 文件(rel_path,同为两镜像的 URL 后缀) | 字节数 |
-|---|---|
-| `conv_frontend.onnx` | 44,148,281 |
-| `encoder.int8.onnx` | 182,491,662 |
-| `decoder.int8.onnx` | 755,914,231 |
-| `tokenizer/merges.txt` | ~1.6 MiB(精确值 Task 2 核实) |
-| `tokenizer/vocab.json` | ~2.6 MiB(精确值 Task 2 核实) |
-| `tokenizer/tokenizer_config.json` | ~12 KiB(精确值 Task 2 核实) |
+| 工件 | 精确字节数 | 来源 |
+|---|---|---|
+| `Qwen3-ASR-0.6B-Q8_0.gguf` | 804,749,248 | HF `ggml-org/Qwen3-ASR-0.6B-GGUF` `/resolve/main/` |
+| `mmproj-Qwen3-ASR-0.6B-Q8_0.gguf` | 214,392,480 | 同上 |
+| llama.cpp 官方 zip(macos-arm64 / win-x64-CPU / linux-x64-CPU 各一) | Task 2 核实 | `github.com/ggml-org/llama.cpp/releases/download/<LLAMA_BUILD>/` |
 
-- 主源(国内):`https://modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx/resolve/master/model_0.6B/` + rel_path
-- 备源:`https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/` + rel_path
-- 两镜像文件**逐字节相同**(已核实 decoder/encoder 字节数一致),断点续传可跨源续。
-- 存放:`app_data_dir()/models/qwen3-asr-0.6b-int8/<rel_path>`。
+- 调用形态(实测):`llama-mtmd-cli -m <gguf> --mmproj <mmproj> --audio <wav> -p "a" -c 2048`,stdout 带 `language <lang><asr_text>` 前缀,静音时 lang 为 `None` 且正文为空。
+- 存放:`app_data_dir()/local-asr/models/*.gguf` + `app_data_dir()/local-asr/bin/<LLAMA_BUILD>/llama-mtmd-cli`(zip 解压、拍平、unix 置 +x;dylib/dll 与 cli 同目录,官方包本就按同目录运行设计)。
+- 由 app 自身 reqwest 下载 → 无 quarantine 属性 → 无 Gatekeeper 问题;安装包体积不变。
 
 ---
 
-### Task 1: Spike — sherpa-onnx 跑通 Qwen3 + 真实音频质量对比(⛔ GATE)
-
-**目的:** 花半天把两个不可逆风险排掉:① sherpa crate 的 Qwen3 路径在本机(Apple Silicon)真实可用、RTF/内存可接受;② int8 的中文准确率/标点让用户满意(相对 Groq large-v3-turbo)。**不达标 → 撤退到 llama.cpp sidecar 路线,本计划作废重写。**
+### Task 2: sherpa 遗留清理 + 资产清单/就绪检查
 
 **Files:**
-- Modify: `src-tauri/Cargo.toml`(加依赖)
-- Create: `src-tauri/examples/qwen3_spike.rs`
-
-- [ ] **Step 1: 加依赖并确认能编译链接**
-
-`src-tauri/Cargo.toml` 的 `[dependencies]` 追加:
-
-```toml
-sherpa-onnx = "1.13.4"
-hound = "3.5"
-sha2 = "0.10"
-```
-
-Run: `cd src-tauri && cargo build 2>&1 | tail -5`
-Expected: 编译通过。首次构建 build.rs 会从 GitHub 下载 `sherpa-onnx-v1.13.4-osx-arm64-static-lib.tar.bz2`(~19.5MB);若网络不通,先手动下载后设 `SHERPA_ONNX_ARCHIVE_DIR=<目录>`。
-记录:`ls -lh target/debug/examples/ 与主二进制体积`,对比增量。
-
-- [ ] **Step 2: 手动下载模型(spike 用,与正式下载器无关)**
-
-```bash
-MODEL_DIR="$HOME/Library/Application Support/com.tao.saytype/models/qwen3-asr-0.6b-int8"
-mkdir -p "$MODEL_DIR/tokenizer"
-BASE="https://modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx/resolve/master/model_0.6B"
-for f in conv_frontend.onnx encoder.int8.onnx decoder.int8.onnx \
-         tokenizer/merges.txt tokenizer/vocab.json tokenizer/tokenizer_config.json; do
-  curl -L --fail -o "$MODEL_DIR/$f" "$BASE/$f"
-done
-ls -l "$MODEL_DIR" "$MODEL_DIR/tokenizer"
-```
-Expected: decoder.int8.onnx = 755,914,231 B;encoder = 182,491,662 B;conv_frontend = 44,148,281 B。**顺手记下 tokenizer 三个文件的精确字节数(Task 2 的清单常量要用)。**
-若 ModelScope 某文件 404(tokenizer 路径可能有出入),用 `curl -sI` 探 `model_0.6B/tokenizer/<name>` 与 HF 备源,把实际可用路径记下来(Task 4 SOURCES 用)。
-
-- [ ] **Step 3: 写 spike example**
-
-`src-tauri/examples/qwen3_spike.rs`:
-
-```rust
-// Spike: sherpa-onnx + Qwen3-ASR-0.6B int8. Usage:
-//   cargo run --release --example qwen3_spike -- <model-dir> <wav-file> [max_new_tokens]
-// Prints the transcription, load time, decode time, and RTF.
-use std::time::Instant;
-
-fn main() {
-  let mut args = std::env::args().skip(1);
-  let model_dir = std::path::PathBuf::from(args.next().expect("model dir"));
-  let wav_path = args.next().expect("wav file");
-  let max_new_tokens: i32 = args.next().map(|s| s.parse().unwrap()).unwrap_or(512);
-
-  let mut config = sherpa_onnx::OfflineRecognizerConfig::default();
-  config.model_config.qwen3_asr = sherpa_onnx::OfflineQwen3ASRModelConfig {
-    conv_frontend: Some(model_dir.join("conv_frontend.onnx").to_string_lossy().into_owned()),
-    encoder: Some(model_dir.join("encoder.int8.onnx").to_string_lossy().into_owned()),
-    decoder: Some(model_dir.join("decoder.int8.onnx").to_string_lossy().into_owned()),
-    tokenizer: Some(model_dir.join("tokenizer").to_string_lossy().into_owned()),
-    max_total_len: 2048,
-    max_new_tokens,
-    ..Default::default()
-  };
-  config.model_config.tokens = Some(String::new());
-  config.model_config.num_threads = 2;
-  config.model_config.provider = Some("cpu".into());
-
-  let t0 = Instant::now();
-  let recognizer = sherpa_onnx::OfflineRecognizer::create(&config).expect("load model");
-  println!("load: {:?}", t0.elapsed());
-
-  let mut reader = hound::WavReader::open(&wav_path).expect("open wav");
-  let spec = reader.spec();
-  let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-  let samples: Vec<f32> = reader.samples::<i32>().map(|s| s.unwrap() as f32 / max).collect();
-  let audio_secs = samples.len() as f32 / spec.sample_rate as f32;
-
-  let t1 = Instant::now();
-  let stream = recognizer.create_stream();
-  stream.accept_waveform(spec.sample_rate as i32, &samples);
-  recognizer.decode(&stream);
-  let result = stream.get_result().expect("result");
-  let decode = t1.elapsed();
-  println!("text: {}", result.text);
-  println!("audio {audio_secs:.1}s, decode {decode:?}, RTF {:.3}", decode.as_secs_f32() / audio_secs);
-}
-```
-> 注:字段名/方法签名以 crate 1.13.4 实际 API 为准(调研确认过 `OfflineQwen3ASRModelConfig`/`create`/`create_stream`/`accept_waveform`/`decode`/`get_result` 的形态);编译报错就对着 `docs.rs/sherpa-onnx` 微调,**把最终能编译的形态记下来,Task 3 的 `load_sherpa_engine` 要按它写**。
-
-- [ ] **Step 4: 跑真实音频对比**
-
-素材:dev 构建的 `debug-audio` 目录里有真实听写留档(见 CLAUDE.md);不足就现录几条中文(短句 5–10s、长独白 60–90s、带停顿的对话式各一),用 `ffmpeg -i in.m4a -ar 16000 -ac 1 out.wav` 转 16k mono WAV。
-
-```bash
-cargo run --release --example qwen3_spike -- "$MODEL_DIR" test.wav
-```
-逐条记录并与 Groq(历史里的同源转写,或现调 API)对比:
-1. 中文字准确率(肉眼);2. 标点密度(Qwen3 是否补标点——这是相对 Whisper lv3 的核心期望);3. RTF(目标 < 0.5,预期 ~0.1–0.2);4. 加载耗时(预期数秒);5. **60–90s 长句是否截尾**(不够就把 max_new_tokens 提到 1024 重试,记录定稿值);6. Activity Monitor 峰值/稳态内存。
-另跑一条**纯静音/噪声 WAV**,记录输出(空?幻觉?)——决定要不要依赖 VAD 门保护。
-
-- [ ] **Step 5: ⛔ GATE — 向用户汇报数据,拿 go/no-go**
-
-汇报格式:准确率对比结论、标点表现、RTF/加载/内存实测、长句截尾结论 + 定稿的 max_new_tokens。**用户点头才继续 Task 2;否则停下讨论撤退。**
-
-- [ ] **Step 6: Commit(spike 通过后)**
-
-```bash
-git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/examples/qwen3_spike.rs
-git commit -m "spike: sherpa-onnx Qwen3-ASR-0.6B int8 runs locally, quality/RTF validated"
-```
-
----
-
-### Task 2: `local_asr.rs` 之一 — 模型清单/路径/就绪检查 + WAV 解码
-
-**Files:**
+- Modify: `src-tauri/Cargo.toml`(移除 sherpa-onnx/hound,加 zip,tokio 加 "process" feature)
+- Delete: `src-tauri/examples/qwen3_spike.rs`
 - Create: `src-tauri/src/local_asr.rs`
 - Modify: `src-tauri/src/lib.rs:1-8`(加 `mod local_asr;`)
 
 **Interfaces (Produces):**
-- `local_asr::LOCAL_PROVIDER: &str = "local"`、`LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-int8"`
-- `local_asr::MODEL_FILES: &[ModelFile]`(`ModelFile { rel_path: &'static str, size: u64, sha256: &'static str }`)
-- `local_asr::model_dir() -> anyhow::Result<PathBuf>`
-- `local_asr::model_ready() -> bool` / `model_ready_at(dir: &Path) -> bool`
-- `local_asr::total_download_bytes() -> u64`
-- `local_asr::wav_to_samples(bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32)>`
+- `local_asr::LOCAL_PROVIDER: &str = "local"`、`LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0"`、`LLAMA_BUILD: &str`
+- `local_asr::Asset { rel_path: &'static str, urls: &'static [&'static str], size: u64, sha256: &'static str }`
+- `local_asr::MODEL_ASSETS: &[Asset]`(2 个 GGUF)、`llama_zip_asset() -> &'static Asset`(当前平台)
+- `local_asr::local_asr_dir() -> anyhow::Result<PathBuf>`、`bin_dir(base) -> PathBuf`、`cli_path(base) -> PathBuf`
+- `local_asr::assets_ready() -> bool` / `assets_ready_at(dir: &Path) -> bool`
+- `local_asr::total_download_bytes() -> u64`(含当前平台 zip)
 
-- [ ] **Step 1: 取 6 个文件的精确 size + sha256**
+- [ ] **Step 1: 核实锁定版本与三平台 zip 的名称/大小/sha256**
 
 ```bash
-curl -s "https://huggingface.co/api/models/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/tree/main?recursive=true" \
-  | python3 -c "import json,sys; [print(f['path'], f['size'], (f.get('lfs') or {}).get('oid','(no-lfs: sha via download)')) for f in json.load(sys.stdin) if f['type']=='file']"
+# 1) 确认 b9960 tag 存在并列出资产名(没有就选最近的稳定 release,须 ≥ b9173,记录最终定值)
+curl -s "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b9960" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); [print(a['name'], a['size']) for a in d.get('assets',[])]"
+# 2) 选三个:macos-arm64、Windows x64 CPU 变体(名字含 win + x64,选 CPU/AVX2 而非 cuda/vulkan)、
+#    ubuntu/linux x64 CPU 变体;下载并算 sha256(每个 zip 约 10–50MB):
+curl -L -o /tmp/mac.zip  "https://github.com/ggml-org/llama.cpp/releases/download/<TAG>/<mac-asset>"
+shasum -a 256 /tmp/mac.zip   # win/linux 同理
+# 3) 两个 GGUF 的 sha256 从 HF LFS 元数据取:
+curl -s "https://huggingface.co/api/models/ggml-org/Qwen3-ASR-0.6B-GGUF/tree/main" \
+  | python3 -c "import json,sys; [print(f['path'], f['size'], (f.get('lfs') or {}).get('oid')) for f in json.load(sys.stdin) if f['type']=='file']"
+# 4) 顺手探 ModelScope 是否镜像了该 GGUF 仓库(国内备源;404 就算了,HF 实测直连顺畅):
+curl -sIL "https://modelscope.cn/models/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/master/Qwen3-ASR-0.6B-Q8_0.gguf" | head -5
+# 5) 检查 mac zip 内部结构(拍平解压要用):
+python3 -c "import zipfile; [print(n) for n in zipfile.ZipFile('/tmp/mac.zip').namelist()]" | head -20
 ```
-把 6 个目标文件的 size/sha256 抄进 Step 2 的常量。非 LFS 小文件(tokenizer 的 json/txt 可能不走 LFS)没有现成 oid,就用 Task 1 已下载的本地文件算:`shasum -a 256 <file>`(本地文件来自 ModelScope,与 HF 逐字节相同已核实过大文件;小文件算完后可再 curl HF 原文件比对一次)。
+记录:最终 TAG、三个资产名+字节数+sha256、GGUF 两个 oid、ModelScope 探测结果、zip 内部布局(`llama-mtmd-cli` 在哪层、伴随哪些 dylib)。
 
-- [ ] **Step 2: 写失败测试**
+- [ ] **Step 2: 依赖清理与新增**
 
-`src-tauri/src/local_asr.rs`(先只写清单/路径/WAV 部分与测试;worker 在 Task 3):
+`src-tauri/Cargo.toml`:删除 `sherpa-onnx = "1.13.4"` 与 `hound = "3.5"` 两行(`sha2` 保留);tokio 行改为:
+
+```toml
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process"] }
+```
+
+然后 `cargo add zip --no-default-features --features deflate`(记录落到的版本)。
+删除 `src-tauri/examples/qwen3_spike.rs`(数据已沉淀在 spec/报告;git 历史可回溯)。
+
+Run: `cd src-tauri && cargo build 2>&1 | tail -3` → 通过(顺带确认 sherpa 的构建期静态库下载消失)。
+
+- [ ] **Step 3: 写失败测试**
+
+`src-tauri/src/local_asr.rs`:
 
 ```rust
-//! Local Qwen3-ASR backend: model manifest/download/lifecycle + inference worker.
-//! The model lives under app_data_dir()/models/qwen3-asr-0.6b-int8/ and is
-//! downloaded on demand (never bundled). See
-//! docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
+//! Local Qwen3-ASR backend (provider "local"): on-demand assets (2 GGUF files
+//! + a pinned llama.cpp release binary), resumable downloads, and
+//! per-transcription subprocess inference via llama-mtmd-cli. No resident
+//! engine: the subprocess exits after each transcription, so SayType's idle
+//! memory is unchanged. See docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const LOCAL_PROVIDER: &str = "local";
-pub const LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-int8";
+pub const LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
+/// Pinned llama.cpp release. Must stay ≥ b9173 (Qwen3-ASR repetition fix,
+/// ggml-org/llama.cpp#22357). Upgrading requires re-verifying CLI flags,
+/// stdout format, all sha256s, and a real-dictation regression.
+pub const LLAMA_BUILD: &str = "<FILL-STEP-1>";
 
-pub struct ModelFile {
-  /// Path under model_dir(); ALSO the URL suffix on both mirrors. Forward
-  /// slashes are fine in PathBuf::join on Windows too.
+pub struct Asset {
+  /// Final location under local_asr_dir(); doubles as the download's .part
+  /// sibling name. Forward slashes are fine in PathBuf::join on Windows.
   pub rel_path: &'static str,
+  /// Try in order (mirror fallback); byte-identical across sources.
+  pub urls: &'static [&'static str],
   pub size: u64,
   pub sha256: &'static str,
 }
 
-// Sizes/hashes verified against the HF repo (csukuangfj2/...) — see the plan's
-// 模型事实速查. ModelScope serves byte-identical files.
-pub const MODEL_FILES: &[ModelFile] = &[
-  ModelFile { rel_path: "conv_frontend.onnx", size: 44_148_281, sha256: "<FILL-STEP-1>" },
-  ModelFile { rel_path: "encoder.int8.onnx", size: 182_491_662, sha256: "<FILL-STEP-1>" },
-  ModelFile { rel_path: "decoder.int8.onnx", size: 755_914_231, sha256: "<FILL-STEP-1>" },
-  ModelFile { rel_path: "tokenizer/merges.txt", size: 0 /*FILL*/, sha256: "<FILL-STEP-1>" },
-  ModelFile { rel_path: "tokenizer/vocab.json", size: 0 /*FILL*/, sha256: "<FILL-STEP-1>" },
-  ModelFile { rel_path: "tokenizer/tokenizer_config.json", size: 0 /*FILL*/, sha256: "<FILL-STEP-1>" },
+const HF_BASE: &str = "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/";
+
+pub const MODEL_ASSETS: &[Asset] = &[
+  Asset {
+    rel_path: "models/Qwen3-ASR-0.6B-Q8_0.gguf",
+    urls: &["<FILL: HF url; prepend ModelScope url if Step-1 probe hit 200>"],
+    size: 804_749_248,
+    sha256: "<FILL-STEP-1>",
+  },
+  Asset {
+    rel_path: "models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+    urls: &["<FILL>"],
+    size: 214_392_480,
+    sha256: "<FILL-STEP-1>",
+  },
 ];
 
-pub fn total_download_bytes() -> u64 {
-  MODEL_FILES.iter().map(|f| f.size).sum()
-}
-
-pub fn model_dir() -> Result<PathBuf> {
-  Ok(crate::settings::app_data_dir()?.join("models").join(LOCAL_MODEL_ID))
-}
-
-/// Cheap readiness check: every file exists with the exact expected size.
-/// (sha256 is verified once at download time, not on every check — hashing
-/// ~1GB per settings read would be absurd.)
-pub fn model_ready_at(dir: &Path) -> bool {
-  MODEL_FILES.iter().all(|f| {
-    fs::metadata(dir.join(f.rel_path)).map(|m| m.len() == f.size).unwrap_or(false)
-  })
-}
-
-pub fn model_ready() -> bool {
-  model_dir().map(|dir| model_ready_at(&dir)).unwrap_or(false)
-}
-
-/// Decode a (mono) WAV upload into f32 samples + sample rate for sherpa.
-/// The frontend always sends 16k mono PCM16 WAV in local mode, but parse
-/// generically: sherpa resamples internally, so only channel count is fatal.
-pub fn wav_to_samples(bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
-  let mut reader =
-    hound::WavReader::new(std::io::Cursor::new(bytes)).context("failed to parse WAV audio")?;
-  let spec = reader.spec();
-  if spec.channels != 1 {
-    anyhow::bail!("local transcription expects mono WAV, got {} channels", spec.channels);
+// One llama.cpp zip per platform; only the current platform's entry is used.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub fn llama_zip_asset() -> &'static Asset {
+  &Asset {
+    rel_path: "llama-macos-arm64.zip",
+    urls: &["https://github.com/ggml-org/llama.cpp/releases/download/<TAG>/<mac-asset>"],
+    size: 0, // FILL
+    sha256: "<FILL-STEP-1>",
   }
-  let samples: Vec<f32> = match spec.sample_format {
-    hound::SampleFormat::Int => {
-      let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-      reader
-        .samples::<i32>()
-        .map(|s| s.map(|v| v as f32 / max))
-        .collect::<std::result::Result<_, _>>()
-        .context("failed to read WAV samples")?
-    }
-    hound::SampleFormat::Float => reader
-      .samples::<f32>()
-      .collect::<std::result::Result<_, _>>()
-      .context("failed to read WAV samples")?,
-  };
-  Ok((samples, spec.sample_rate))
+}
+// (win-x64 / linux-x64 同构的 cfg 版本,Step 1 的值填入;其余平台 compile_error! 不必——
+//  Tauri 目标就这三个,给一个 #[cfg(not(...))] 的兜底返回 mac 值即可避免编译分叉?不:
+//  兜底用 unreachable 是错的,直接三个 cfg 函数 + 无兜底,CI 三平台恰好覆盖。)
+
+pub fn total_download_bytes() -> u64 {
+  MODEL_ASSETS.iter().map(|a| a.size).sum::<u64>() + llama_zip_asset().size
 }
 
+pub fn local_asr_dir() -> Result<PathBuf> {
+  Ok(crate::settings::app_data_dir()?.join("local-asr"))
+}
+
+pub fn bin_dir(base: &Path) -> PathBuf {
+  base.join("bin").join(LLAMA_BUILD)
+}
+
+pub fn cli_path(base: &Path) -> PathBuf {
+  let name = if cfg!(target_os = "windows") { "llama-mtmd-cli.exe" } else { "llama-mtmd-cli" };
+  bin_dir(base).join(name)
+}
+
+/// Cheap readiness: every GGUF at its exact size, plus the extracted CLI
+/// present (executable on unix). sha256 is verified once at download time.
+pub fn assets_ready_at(dir: &Path) -> bool {
+  let models_ok = MODEL_ASSETS.iter().all(|a| {
+    fs::metadata(dir.join(a.rel_path)).map(|m| m.len() == a.size).unwrap_or(false)
+  });
+  let cli = cli_path(dir);
+  let cli_ok = fs::metadata(&cli).map(|m| m.is_file()).unwrap_or(false)
+    && is_executable(&cli);
+  models_ok && cli_ok
+}
+
+pub fn assets_ready() -> bool {
+  local_asr_dir().map(|d| assets_ready_at(&d)).unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+  use std::os::unix::fs::PermissionsExt;
+  fs::metadata(path).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+  true
+}
+```
+
+> Step 3 的 `llama_zip_asset` 写法:const fn 不了就用返回 `&'static Asset` 的静态项(`static MAC_ZIP: Asset = ...; #[cfg] pub fn llama_zip_asset() -> &'static Asset { &MAC_ZIP }`),三平台三个 `static` + 三个同名 cfg 函数。
+
+tests(同文件):
+
+```rust
 #[cfg(test)]
 mod tests {
   use super::*;
 
-  fn write_wav_pcm16(path: &Path, sample_rate: u32, samples: &[i16]) {
-    let spec = hound::WavSpec {
-      channels: 1,
-      sample_rate,
-      bits_per_sample: 16,
-      sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(path, spec).unwrap();
-    for s in samples {
-      writer.write_sample(*s).unwrap();
-    }
-    writer.finalize().unwrap();
-  }
-
   #[test]
-  fn manifest_covers_the_six_model_files() {
-    assert_eq!(MODEL_FILES.len(), 6);
-    // ~983 MB download; a wildly-off total means a size constant is wrong.
+  fn manifest_is_filled_and_totals_are_sane() {
+    assert_eq!(MODEL_ASSETS.len(), 2);
+    for a in MODEL_ASSETS.iter().chain(std::iter::once(llama_zip_asset())) {
+      assert_eq!(a.sha256.len(), 64, "{} sha256 must be real", a.rel_path);
+      assert!(a.size > 0, "{} size must be real", a.rel_path);
+      assert!(!a.urls.is_empty());
+    }
     let total = total_download_bytes();
-    assert!(total > 950_000_000 && total < 1_050_000_000, "total = {total}");
-    for f in MODEL_FILES {
-      assert_eq!(f.sha256.len(), 64, "{} sha256 must be filled in", f.rel_path);
-    }
+    // ~1.02GB models + a 10-80MB zip
+    assert!(total > 1_020_000_000 && total < 1_150_000_000, "total = {total}");
+    assert_ne!(LLAMA_BUILD, "<FILL-STEP-1>");
   }
 
   #[test]
-  fn model_ready_requires_every_file_at_exact_size() {
+  fn assets_ready_requires_models_at_exact_size_and_an_executable_cli() {
     let temp = tempfile::TempDir::new().unwrap();
     let dir = temp.path();
-    assert!(!model_ready_at(dir));
-    // Right names, sizes via sparse set_len (fast, no real GB written).
-    for f in MODEL_FILES {
-      let path = dir.join(f.rel_path);
-      fs::create_dir_all(path.parent().unwrap()).unwrap();
-      let file = fs::File::create(&path).unwrap();
-      file.set_len(f.size).unwrap();
+    assert!(!assets_ready_at(dir));
+    for a in MODEL_ASSETS {
+      let p = dir.join(a.rel_path);
+      fs::create_dir_all(p.parent().unwrap()).unwrap();
+      fs::File::create(&p).unwrap().set_len(a.size).unwrap(); // sparse, fast
     }
-    assert!(model_ready_at(dir));
-    // Truncate one file -> not ready.
-    let victim = dir.join(MODEL_FILES[0].rel_path);
-    fs::File::create(&victim).unwrap().set_len(1).unwrap();
-    assert!(!model_ready_at(dir));
-  }
-
-  #[test]
-  fn wav_roundtrips_16k_mono_pcm16() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let path = temp.path().join("a.wav");
-    write_wav_pcm16(&path, 16000, &[0, 16384, -16384, 32767]);
-    let bytes = fs::read(&path).unwrap();
-    let (samples, rate) = wav_to_samples(&bytes).unwrap();
-    assert_eq!(rate, 16000);
-    assert_eq!(samples.len(), 4);
-    assert!((samples[1] - 0.5).abs() < 0.001);
-    assert!((samples[2] + 0.5).abs() < 0.001);
-  }
-
-  #[test]
-  fn wav_rejects_stereo_and_garbage() {
-    let spec = hound::WavSpec {
-      channels: 2,
-      sample_rate: 16000,
-      bits_per_sample: 16,
-      sample_format: hound::SampleFormat::Int,
-    };
-    let temp = tempfile::TempDir::new().unwrap();
-    let path = temp.path().join("stereo.wav");
-    let mut writer = hound::WavWriter::create(&path, spec).unwrap();
-    writer.write_sample(0i16).unwrap();
-    writer.write_sample(0i16).unwrap();
-    writer.finalize().unwrap();
-    assert!(wav_to_samples(&fs::read(&path).unwrap()).is_err());
-    assert!(wav_to_samples(b"not a wav").is_err());
+    assert!(!assets_ready_at(dir), "still missing the cli binary");
+    let cli = cli_path(dir);
+    fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    fs::write(&cli, b"#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      // Not executable yet -> not ready on unix.
+      assert!(!assets_ready_at(dir));
+      fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert!(assets_ready_at(dir));
+    // Truncate one model -> not ready.
+    fs::File::create(dir.join(MODEL_ASSETS[0].rel_path)).unwrap().set_len(1).unwrap();
+    assert!(!assets_ready_at(dir));
   }
 }
 ```
 
-`lib.rs` 模块声明区(`mod hotkey;` 后)加一行:`mod local_asr;`
+`lib.rs` 模块声明区加 `mod local_asr;`。
 
-- [ ] **Step 3: 跑测试确认失败点**
+Run: `cargo test local_asr 2>&1 | tail -8` → `manifest_is_filled...` FAIL(占位符)——刻意:测试逼着填真值。
 
-Run: `cd src-tauri && cargo test local_asr 2>&1 | tail -20`
-Expected: `manifest_covers_the_six_model_files` FAIL(sha256 是 `<FILL-STEP-1>` 占位、tokenizer size 是 0)——这是故意的:测试守住"常量必须填真值"。
+- [ ] **Step 4: 填入 Step 1 的真值,重跑至绿**
 
-- [ ] **Step 4: 填入 Step 1 抄来的真实 size/sha256,重跑**
+Run: `cargo test local_asr` → 全 PASS;`cargo test 2>&1 | tail -3` → 全绿(42+2)。
 
-Run: `cargo test local_asr`
-Expected: 4 个测试全 PASS。
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/examples src-tauri/src/local_asr.rs src-tauri/src/lib.rs
+git commit -m "feat(local-asr): asset manifest + readiness; drop sherpa spike leftovers for the llama.cpp route"
+```
+
+---
+
+### Task 3: 子进程转写执行器
+
+**Files:**
+- Modify: `src-tauri/src/local_asr.rs`(追加 runner)
+- Test: 同文件 `#[cfg(test)]` + 一个 `#[ignore]` 真资产冒烟
+
+**Interfaces:**
+- Consumes: Task 2 的 `assets_ready_at/cli_path/local_asr_dir/MODEL_ASSETS`
+- Produces:
+  - `local_asr::transcribe_wav(wav_bytes: &[u8]) -> anyhow::Result<String>`(async;**取消安全靠 drop**:上层 `tokio::select!` 丢弃本 future 时,子进程被 `kill_on_drop` 杀死、临时文件被 guard 清理)
+  - `local_asr::parse_mtmd_output(stdout: &str) -> String`(纯函数)
+  - 错误哨兵:资产缺失时错误信息以 `LOCAL_MODEL_MISSING` 开头(Task 5 映射成用户可读提示)
+
+- [ ] **Step 1: 采一份真实 stdout 样本(写解析器和测试用)**
+
+前提:把 benchmark 留在 scratchpad 的 GGUF 和 Step-1 下载的 mac zip 手动摆进正式布局(这也是 Task 9 之前本机就绪的方式):
+
+```bash
+BASE="$HOME/Library/Application Support/com.tao.saytype/local-asr"
+mkdir -p "$BASE/models" "$BASE/bin/<TAG>"
+SCRATCH=/private/tmp/claude-501/-Users-tao-code-OpenClaw-Code-SayType/636cce3e-1ba1-4506-a3bd-633e7960a712/scratchpad
+cp "$SCRATCH/llamacpp-gguf/"*.gguf "$BASE/models/"
+python3 - <<'EOF'
+import zipfile, os, stat
+z = zipfile.ZipFile('/tmp/mac.zip')
+dst = os.path.expanduser('~/Library/Application Support/com.tao.saytype/local-asr/bin/<TAG>')
+for info in z.infolist():
+    if info.is_dir(): continue
+    name = os.path.basename(info.filename)
+    if not name: continue
+    with z.open(info) as src, open(os.path.join(dst, name), 'wb') as out:
+        out.write(src.read())
+    os.chmod(os.path.join(dst, name), 0o755)
+EOF
+# 真跑一把,把 stdout/stderr 分开留档:
+"$BASE/bin/<TAG>/llama-mtmd-cli" -m "$BASE/models/Qwen3-ASR-0.6B-Q8_0.gguf" \
+  --mmproj "$BASE/models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf" \
+  --audio <某个 16k mono wav> -p "a" -c 2048 >/tmp/mtmd.out 2>/tmp/mtmd.err
+cat -A /tmp/mtmd.out | head -20   # 看清前缀/换行/是否有别的噪音
+```
+把**逐字节样本**(含静音输入的一份:`language None<asr_text>` 形态)记进报告——Step 2 的单测直接用它们。若拍平解压后 cli 因 dylib 路径起不来(rpath 问题),记录 `otool -L` 输出并改用"保留 zip 原目录层级解压"的方案(同样记录,Task 4 跟随)。
+
+- [ ] **Step 2: 写失败测试**(解析器,样本用 Step 1 实录的逐字节文本替换下面的示意)
+
+```rust
+  #[test]
+  fn parse_extracts_text_after_the_asr_marker() {
+    let sample = "language Chinese<asr_text>你好，欢迎使用听写工具。\n"; // ← 换成 Step-1 实录
+    assert_eq!(parse_mtmd_output(sample), "你好，欢迎使用听写工具。");
+  }
+
+  #[test]
+  fn parse_silence_yields_empty() {
+    let sample = "language None<asr_text>\n"; // ← 换成 Step-1 实录
+    assert_eq!(parse_mtmd_output(sample), "");
+  }
+
+  #[test]
+  fn parse_without_marker_falls_back_to_trimmed_whole() {
+    assert_eq!(parse_mtmd_output("  plain text out  \n"), "plain text out");
+    assert_eq!(parse_mtmd_output(""), "");
+  }
+```
+
+Run: `cargo test local_asr::tests::parse 2>&1 | tail -5` → FAIL(未定义)。
+
+- [ ] **Step 3: 实现 runner**
+
+```rust
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Hard ceiling on one decode. Metal does ~60s audio in ~3s; even a 13-min
+/// clip (the 25MB WAV cap) at CPU speeds fits comfortably under this.
+const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(180);
+/// MUST be passed explicitly: the model metadata declares ctx 65536 and the
+/// CLI default ("0" = from model) preallocates a 7 GiB KV cache (measured).
+const CTX_SIZE: &str = "2048";
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Removes the temp WAV on drop — including when the whole transcribe future
+/// is dropped by the caller's tokio::select! on cancellation.
+struct TempFile(PathBuf);
+impl Drop for TempFile {
+  fn drop(&mut self) {
+    let _ = fs::remove_file(&self.0);
+  }
+}
+
+/// Extract the transcription from llama-mtmd-cli stdout. The ASR chat
+/// template emits `language <lang><asr_text>TEXT`; silence comes back as
+/// `language None<asr_text>` with empty text. If the marker is ever absent
+/// (format drift on a llama upgrade), fall back to the trimmed whole output
+/// so dictations degrade instead of vanishing.
+pub fn parse_mtmd_output(stdout: &str) -> String {
+  match stdout.rfind("<asr_text>") {
+    Some(idx) => stdout[idx + "<asr_text>".len()..].trim().to_string(),
+    None => stdout.trim().to_string(),
+  }
+}
+
+/// Run one transcription in a llama-mtmd-cli subprocess. Cancellation-safe
+/// by construction: dropping this future kills the child (kill_on_drop) and
+/// removes the temp file (TempFile guard).
+pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
+  let base = local_asr_dir()?;
+  if !assets_ready_at(&base) {
+    anyhow::bail!("LOCAL_MODEL_MISSING: local model assets are missing or incomplete");
+  }
+
+  let tmp_path = std::env::temp_dir().join(format!(
+    "saytype-asr-{}-{}.wav",
+    std::process::id(),
+    TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+  ));
+  fs::write(&tmp_path, wav_bytes)
+    .with_context(|| format!("failed to write temp audio {}", tmp_path.display()))?;
+  let _tmp = TempFile(tmp_path.clone());
+
+  let started = std::time::Instant::now();
+  let child = tokio::process::Command::new(cli_path(&base))
+    .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
+    .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
+    .arg("--audio").arg(&tmp_path)
+    .arg("-p").arg("a")
+    .arg("-c").arg(CTX_SIZE)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .context("failed to start llama-mtmd-cli")?;
+
+  let output = tokio::time::timeout(TRANSCRIBE_TIMEOUT, child.wait_with_output())
+    .await
+    .map_err(|_| anyhow::anyhow!("local ASR timed out after {}s", TRANSCRIBE_TIMEOUT.as_secs()))?
+    .context("failed to run llama-mtmd-cli")?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    anyhow::bail!("llama-mtmd-cli failed ({}): {last}", output.status);
+  }
+
+  let text = parse_mtmd_output(&String::from_utf8_lossy(&output.stdout));
+  // Counts only — no transcribed text in logs.
+  log::info!(
+    "local ASR: decoded {} KB wav in {:.2}s ({} chars)",
+    wav_bytes.len() / 1024,
+    started.elapsed().as_secs_f32(),
+    text.chars().count()
+  );
+  Ok(text)
+}
+```
+
+Run: `cargo test local_asr 2>&1 | tail -8` → parse 三测 PASS。
+
+- [ ] **Step 4: 真资产冒烟(#[ignore],CI 不跑)**
+
+```rust
+  /// Needs the real assets laid out (Task 3 Step 1). Run manually:
+  ///   cargo test real_subprocess_smoke -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn real_subprocess_smoke() {
+    assert!(assets_ready(), "lay out the assets first (plan Task 3 Step 1)");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    // 0.5s of silence WAV (44-byte header + zeros), built inline.
+    let mut wav = Vec::new();
+    let data_len = 16000u32; // 0.5s * 16000Hz * 2 bytes
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());          // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes());          // mono
+    wav.extend_from_slice(&16000u32.to_le_bytes());      // rate
+    wav.extend_from_slice(&32000u32.to_le_bytes());      // byte rate
+    wav.extend_from_slice(&2u16.to_le_bytes());          // block align
+    wav.extend_from_slice(&16u16.to_le_bytes());         // bits
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 0);
+    let text = rt.block_on(transcribe_wav(&wav)).expect("subprocess ok");
+    assert_eq!(text, "", "silence must yield empty text");
+    // Temp file cleaned up:
+    let leftovers = fs::read_dir(std::env::temp_dir()).unwrap()
+      .filter_map(|e| e.ok())
+      .filter(|e| e.file_name().to_string_lossy().starts_with("saytype-asr-"))
+      .count();
+    assert_eq!(leftovers, 0, "temp wav files must be removed");
+  }
+```
+
+Run: `cargo test real_subprocess_smoke -- --ignored --nocapture` → PASS(本机)。
 
 - [ ] **Step 5: 全量测试 + Commit**
 
-Run: `cargo test 2>&1 | tail -3` → 全绿。
-
 ```bash
-git add src-tauri/src/local_asr.rs src-tauri/src/lib.rs
-git commit -m "feat(local-asr): model manifest, readiness check, WAV decode"
+cargo test 2>&1 | tail -3   # 全绿
+git add src-tauri/src/local_asr.rs
+git commit -m "feat(local-asr): per-transcription llama-mtmd-cli subprocess runner (kill-on-drop cancel, temp-file guard)"
 ```
 
 ---
 
-### Task 3: `local_asr.rs` 之二 — ASR worker 线程(加载/转写/闲时卸载)+ AppState 接线
-
-**设计:** 一条专属 `std::thread` 独占持有 recognizer,`mpsc` 收消息:`Preload` / `Transcribe{samples, reply}` / `Unload`;`recv_timeout(60s)` 作为闲置心跳,10 分钟没活就 drop 掉模型(释放 ~1GB+)。队列天然串行化并发转写,也天然解决"预加载还没完成就来了转写"(FIFO:Preload 先处理完,Transcribe 排在后面)。引擎构造用注入的 loader 闭包,单测不需要真模型。
+### Task 4: 资产下载器 + 4 个 IPC 命令 + 进度事件
 
 **Files:**
-- Modify: `src-tauri/src/local_asr.rs`(追加 worker 部分)
-- Modify: `src-tauri/src/state.rs`
-- Test: 同文件 `#[cfg(test)]`
-
-**Interfaces:**
-- Consumes: Task 2 的 `model_dir()/model_ready()`
-- Produces:
-  - `#[derive(Clone)] pub struct AsrHandle`;`AsrHandle::preload(&self)`、`unload(&self)`、`transcribe_blocking(&self, samples: Vec<f32>, sample_rate: u32) -> Result<String, String>`(阻塞,调用方须包 `spawn_blocking`)
-  - `local_asr::spawn_worker() -> AsrHandle`
-  - `AppState.local_asr: AsrHandle`、`AppState.local_model_download: Mutex<Option<CancellationToken>>`
-- 错误哨兵字符串:模型缺失时 loader 返回 `"LOCAL_MODEL_MISSING"` 开头的错误(Task 5 映射成用户可读提示)。
-
-- [ ] **Step 1: 写失败测试**(追加到 `local_asr.rs` tests 模块)
-
-```rust
-  use std::sync::atomic::{AtomicUsize, Ordering};
-  use std::sync::Arc;
-  use std::time::Duration;
-
-  /// Engine drop tracker: the closure captures it; when the worker unloads
-  /// (drops the engine), drop_count increments.
-  struct DropTracker(Arc<AtomicUsize>);
-  impl Drop for DropTracker {
-    fn drop(&mut self) {
-      self.0.fetch_add(1, Ordering::SeqCst);
-    }
-  }
-
-  fn fake_worker(
-    loads: Arc<AtomicUsize>,
-    drops: Arc<AtomicUsize>,
-    idle_unload: Duration,
-  ) -> AsrHandle {
-    spawn_worker_with(
-      Box::new(move |_| {
-        loads.fetch_add(1, Ordering::SeqCst);
-        let tracker = DropTracker(drops.clone());
-        Ok(Box::new(move |samples: Vec<f32>, _rate: u32| {
-          let _ = &tracker; // owned by the engine closure -> dropped on unload
-          Ok(format!("ok:{}", samples.len()))
-        }))
-      }),
-      idle_unload,
-      Duration::from_millis(20), // idle poll
-    )
-  }
-
-  #[test]
-  fn transcribe_lazy_loads_once_and_reuses_the_engine() {
-    let loads = Arc::new(AtomicUsize::new(0));
-    let drops = Arc::new(AtomicUsize::new(0));
-    let handle = fake_worker(loads.clone(), drops.clone(), Duration::from_secs(600));
-    assert_eq!(handle.transcribe_blocking(vec![0.0; 3], 16000).unwrap(), "ok:3");
-    assert_eq!(handle.transcribe_blocking(vec![0.0; 5], 16000).unwrap(), "ok:5");
-    assert_eq!(loads.load(Ordering::SeqCst), 1);
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
-  }
-
-  #[test]
-  fn preload_loads_eagerly() {
-    let loads = Arc::new(AtomicUsize::new(0));
-    let drops = Arc::new(AtomicUsize::new(0));
-    let handle = fake_worker(loads.clone(), drops, Duration::from_secs(600));
-    handle.preload();
-    // preload is async (message); transcribe queues behind it.
-    assert!(handle.transcribe_blocking(vec![], 16000).is_ok());
-    assert_eq!(loads.load(Ordering::SeqCst), 1);
-  }
-
-  #[test]
-  fn idle_unloads_the_engine_and_reloads_on_next_use() {
-    let loads = Arc::new(AtomicUsize::new(0));
-    let drops = Arc::new(AtomicUsize::new(0));
-    let handle = fake_worker(loads.clone(), drops.clone(), Duration::from_millis(50));
-    handle.transcribe_blocking(vec![], 16000).unwrap();
-    // Wait past idle_unload + a few polls.
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(drops.load(Ordering::SeqCst), 1, "engine should be dropped after idle");
-    handle.transcribe_blocking(vec![], 16000).unwrap();
-    assert_eq!(loads.load(Ordering::SeqCst), 2, "next use reloads");
-  }
-
-  #[test]
-  fn explicit_unload_drops_the_engine() {
-    let loads = Arc::new(AtomicUsize::new(0));
-    let drops = Arc::new(AtomicUsize::new(0));
-    let handle = fake_worker(loads, drops.clone(), Duration::from_secs(600));
-    handle.transcribe_blocking(vec![], 16000).unwrap();
-    handle.unload();
-    // Unload is a message; serialize behind it with another call.
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-  }
-
-  #[test]
-  fn loader_failure_propagates_and_next_call_retries() {
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let attempts2 = attempts.clone();
-    let handle = spawn_worker_with(
-      Box::new(move |_| {
-        if attempts2.fetch_add(1, Ordering::SeqCst) == 0 {
-          Err("LOCAL_MODEL_MISSING: no files".into())
-        } else {
-          Ok(Box::new(|_s: Vec<f32>, _r: u32| Ok("recovered".into())))
-        }
-      }),
-      Duration::from_secs(600),
-      Duration::from_millis(20),
-    );
-    let err = handle.transcribe_blocking(vec![], 16000).unwrap_err();
-    assert!(err.starts_with("LOCAL_MODEL_MISSING"));
-    assert_eq!(handle.transcribe_blocking(vec![], 16000).unwrap(), "recovered");
-  }
-```
-
-Run: `cargo test local_asr 2>&1 | tail -20` → FAIL(`spawn_worker_with`/`AsrHandle` 未定义)。
-
-- [ ] **Step 2: 实现 worker**(`local_asr.rs`,manifest 部分之后)
-
-```rust
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
-
-/// How long a loaded model may sit unused before the worker drops it. The
-/// model holds well over 1 GB resident — a tray app must not keep that
-/// forever. Reload is seconds and is hidden by the record-start preload.
-const IDLE_UNLOAD: Duration = Duration::from_secs(10 * 60);
-const IDLE_POLL: Duration = Duration::from_secs(60);
-const NUM_THREADS: i32 = 2;
-
-/// A loaded engine: feed (samples, sample_rate), get text.
-type Engine = Box<dyn FnMut(Vec<f32>, u32) -> Result<String, String> + Send>;
-/// Builds an engine (loads the model). Injected so worker logic is testable
-/// without the real ~1GB model. The u32 arg is unused (reserved: num threads).
-type Loader = Box<dyn FnMut(u32) -> Result<Engine, String> + Send>;
-
-enum AsrMsg {
-  Preload,
-  Transcribe { samples: Vec<f32>, sample_rate: u32, reply: mpsc::Sender<Result<String, String>> },
-  Unload,
-}
-
-#[derive(Clone)]
-pub struct AsrHandle {
-  tx: mpsc::Sender<AsrMsg>,
-}
-
-impl AsrHandle {
-  pub fn preload(&self) {
-    let _ = self.tx.send(AsrMsg::Preload);
-  }
-
-  pub fn unload(&self) {
-    let _ = self.tx.send(AsrMsg::Unload);
-  }
-
-  /// Blocking — callers on the async runtime must wrap in spawn_blocking.
-  pub fn transcribe_blocking(&self, samples: Vec<f32>, sample_rate: u32) -> Result<String, String> {
-    let (reply_tx, reply_rx) = mpsc::channel();
-    self
-      .tx
-      .send(AsrMsg::Transcribe { samples, sample_rate, reply: reply_tx })
-      .map_err(|_| "local ASR worker is not running".to_string())?;
-    reply_rx.recv().map_err(|_| "local ASR worker dropped the request".to_string())?
-  }
-}
-
-pub fn spawn_worker() -> AsrHandle {
-  spawn_worker_with(Box::new(load_sherpa_engine), IDLE_UNLOAD, IDLE_POLL)
-}
-
-fn spawn_worker_with(mut loader: Loader, idle_unload: Duration, idle_poll: Duration) -> AsrHandle {
-  let (tx, rx) = mpsc::channel::<AsrMsg>();
-  std::thread::Builder::new()
-    .name("local-asr".into())
-    .spawn(move || {
-      let mut engine: Option<Engine> = None;
-      let mut last_used = Instant::now();
-      loop {
-        match rx.recv_timeout(idle_poll) {
-          Ok(AsrMsg::Preload) => {
-            if engine.is_none() {
-              match loader(NUM_THREADS as u32) {
-                Ok(built) => {
-                  engine = Some(built);
-                  last_used = Instant::now();
-                }
-                Err(err) => log::warn!("local ASR preload failed: {err}"),
-              }
-            }
-          }
-          Ok(AsrMsg::Transcribe { samples, sample_rate, reply }) => {
-            if engine.is_none() {
-              match loader(NUM_THREADS as u32) {
-                Ok(built) => engine = Some(built),
-                Err(err) => {
-                  let _ = reply.send(Err(err));
-                  continue;
-                }
-              }
-            }
-            let result = engine.as_mut().expect("engine loaded above")(samples, sample_rate);
-            last_used = Instant::now();
-            let _ = reply.send(result);
-          }
-          Ok(AsrMsg::Unload) => {
-            if engine.take().is_some() {
-              log::info!("local ASR: model unloaded (explicit)");
-            }
-          }
-          Err(mpsc::RecvTimeoutError::Timeout) => {
-            if engine.is_some() && last_used.elapsed() >= idle_unload {
-              engine = None;
-              log::info!("local ASR: model unloaded after {}s idle", idle_unload.as_secs());
-            }
-          }
-          Err(mpsc::RecvTimeoutError::Disconnected) => return,
-        }
-      }
-    })
-    .expect("failed to spawn local-asr worker thread");
-  AsrHandle { tx }
-}
-
-/// The real loader: builds a sherpa-onnx OfflineRecognizer from the on-disk
-/// model. Shape confirmed by the Task-1 spike — if the spike recorded any API
-/// deviation, mirror it here.
-fn load_sherpa_engine(num_threads: u32) -> Result<Engine, String> {
-  let dir = model_dir().map_err(|e| e.to_string())?;
-  if !model_ready_at(&dir) {
-    return Err("LOCAL_MODEL_MISSING: local model files are missing or incomplete".into());
-  }
-  let mut config = sherpa_onnx::OfflineRecognizerConfig::default();
-  config.model_config.qwen3_asr = sherpa_onnx::OfflineQwen3ASRModelConfig {
-    conv_frontend: Some(dir.join("conv_frontend.onnx").to_string_lossy().into_owned()),
-    encoder: Some(dir.join("encoder.int8.onnx").to_string_lossy().into_owned()),
-    decoder: Some(dir.join("decoder.int8.onnx").to_string_lossy().into_owned()),
-    tokenizer: Some(dir.join("tokenizer").to_string_lossy().into_owned()),
-    max_total_len: 2048,
-    max_new_tokens: 512, // spike-validated for 60-90s dense Chinese dictation
-    ..Default::default()
-  };
-  config.model_config.tokens = Some(String::new());
-  config.model_config.num_threads = num_threads as i32;
-  config.model_config.provider = Some("cpu".into());
-
-  let started = Instant::now();
-  let recognizer = sherpa_onnx::OfflineRecognizer::create(&config)
-    .ok_or_else(|| "failed to load the local Qwen3-ASR model".to_string())?;
-  log::info!("local ASR: model loaded in {:.1}s", started.elapsed().as_secs_f32());
-
-  Ok(Box::new(move |samples: Vec<f32>, sample_rate: u32| {
-    let started = Instant::now();
-    let audio_secs = samples.len() as f32 / sample_rate.max(1) as f32;
-    let stream = recognizer.create_stream();
-    stream.accept_waveform(sample_rate as i32, &samples);
-    recognizer.decode(&stream);
-    let result = stream
-      .get_result()
-      .ok_or_else(|| "local ASR returned no result".to_string())?;
-    // Counts only — no transcribed text in logs.
-    log::info!(
-      "local ASR: decoded {audio_secs:.1}s audio in {:.2}s ({} chars)",
-      started.elapsed().as_secs_f32(),
-      result.text.chars().count()
-    );
-    Ok(result.text.trim().to_string())
-  }))
-}
-```
-
-> `max_new_tokens: 512` 按 Task 1 Step 4 的定稿值调整。
-
-- [ ] **Step 3: 跑测试**
-
-Run: `cargo test local_asr 2>&1 | tail -15` → 新增 5 个测试全 PASS。
-
-- [ ] **Step 4: AppState 接线**
-
-`src-tauri/src/state.rs`:
-
-```rust
-use crate::hotkey::HotkeyHandle;
-use crate::local_asr;
-use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
-use std::sync::Mutex;
-use std::time::Duration;
-use tokio_util::sync::CancellationToken;
-
-pub struct AppState {
-  pub hotkey: Mutex<Option<HotkeyHandle>>,
-  pub active_transcriptions: Mutex<HashMap<u64, CancellationToken>>,
-  pub next_transcription_id: AtomicU64,
-  pub accessibility: Mutex<Option<bool>>,
-  /// Shared HTTP client for transcription requests. Reused across calls so we
-  /// keep connection/TLS pooling instead of re-handshaking on every utterance,
-  /// and carries the request timeouts so a hung network can't wedge the UI.
-  pub http_client: reqwest::Client,
-  /// Handle to the local-ASR worker thread (lazy model load; idle unload).
-  /// The thread itself is spawned here but holds no model until used.
-  pub local_asr: local_asr::AsrHandle,
-  /// Cancellation token of the in-flight model download, if any (single-flight).
-  pub local_model_download: Mutex<Option<CancellationToken>>,
-}
-
-impl Default for AppState {
-  fn default() -> Self {
-    Self {
-      hotkey: Mutex::new(None),
-      active_transcriptions: Mutex::new(HashMap::new()),
-      next_transcription_id: AtomicU64::new(0),
-      accessibility: Mutex::new(None),
-      http_client: reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .connect_timeout(Duration::from_secs(15))
-        .build()
-        .expect("failed to build transcription HTTP client"),
-      local_asr: local_asr::spawn_worker(),
-      local_model_download: Mutex::new(None),
-    }
-  }
-}
-```
-
-- [ ] **Step 5: 真模型冒烟测试(#[ignore],CI 不跑)**(追加到 tests)
-
-```rust
-  /// Needs the real model on disk (Task 1 Step 2) — run manually:
-  ///   cargo test real_model_smoke -- --ignored --nocapture
-  #[test]
-  #[ignore]
-  fn real_model_smoke() {
-    assert!(model_ready(), "download the model first (see plan Task 1 Step 2)");
-    let handle = spawn_worker();
-    // 0.5s of silence: must not crash; empty-ish output is fine.
-    let result = handle.transcribe_blocking(vec![0.0; 8000], 16000);
-    assert!(result.is_ok(), "{result:?}");
-  }
-```
-
-Run: `cargo test real_model_smoke -- --ignored --nocapture` → PASS(本机有模型时)。
-
-- [ ] **Step 6: 全量测试 + Commit**
-
-Run: `cargo test 2>&1 | tail -3` → 全绿。
-
-```bash
-git add src-tauri/src/local_asr.rs src-tauri/src/state.rs
-git commit -m "feat(local-asr): dedicated worker thread with lazy load and 10min idle unload"
-```
-
----
-
-### Task 4: 模型下载器 + 4 个 IPC 命令 + 进度事件
-
-**Files:**
-- Modify: `src-tauri/src/local_asr.rs`(追加 download 部分)
+- Modify: `src-tauri/src/local_asr.rs`(download/extract/status/delete)
+- Modify: `src-tauri/src/state.rs`(加 `local_model_download` 槽)
 - Modify: `src-tauri/src/commands.rs`(4 个新命令)
-- Modify: `src-tauri/src/lib.rs:146-174`(invoke_handler 注册)
-- Modify: `src/views/ipc-bridge.js:15-43`(tauriCommands)
+- Modify: `src-tauri/src/lib.rs:146-174`(注册)
+- Modify: `src/views/ipc-bridge.js:15-43`(映射)
 
 **Interfaces:**
-- Consumes: Task 2 `MODEL_FILES/model_dir/model_ready_at/total_download_bytes`;Task 3 `AppState.local_model_download`、`AsrHandle::unload`
+- Consumes: Task 2 清单;Task 3 无依赖(下载先于转写可用)
 - Produces:
-  - `local_asr::ModelStatus { state: String, downloaded_bytes: u64, total_bytes: u64 }`(serde camelCase;state ∈ `"ready" | "downloading" | "partial" | "absent"`)
+  - `local_asr::ModelStatus { state, downloaded_bytes, total_bytes }`(serde camelCase;state ∈ `"ready"|"downloading"|"partial"|"absent"`)
   - `local_asr::model_status(downloading: bool) -> ModelStatus`
-  - `local_asr::download_model(app: AppHandle, cancel: CancellationToken) -> Result<(), String>`(Err `"DOWNLOAD_CANCELLED"` 表取消)
-  - `local_asr::delete_model() -> Result<(), String>`
+  - `local_asr::download_model(app, cancel) -> Result<(), String>`(Err `"DOWNLOAD_CANCELLED"` 表取消;完成含 zip 解压+置 +x)
+  - `local_asr::delete_model() -> Result<(), String>`(整个 local-asr 目录)
+  - `AppState.local_model_download: Mutex<Option<CancellationToken>>`
   - 命令:`download_local_model` / `cancel_local_model_download` / `get_local_model_status` / `delete_local_model`
-  - 事件 `local-model-download-progress`,payload `{ state, downloadedBytes, totalBytes, message? }`,state ∈ `downloading | ready | cancelled | error`
+  - 事件 `local-model-download-progress`,payload `{ state, downloadedBytes, totalBytes, message? }`,state ∈ `downloading|ready|cancelled|error`
 
-- [ ] **Step 1: 写失败测试**(status 状态机 + URL 拼接,追加到 tests)
+- [ ] **Step 1: 写失败测试**
 
 ```rust
   #[test]
@@ -751,42 +503,45 @@ git commit -m "feat(local-asr): dedicated worker thread with lazy load and 10min
     assert_eq!(s.total_bytes, total_download_bytes());
     assert_eq!(s.downloaded_bytes, 0);
 
-    // One finished file + one .part -> partial, bytes add up.
-    let f0 = &MODEL_FILES[0];
-    let p = dir.join(f0.rel_path);
+    // One finished GGUF + one .part -> partial, bytes add up.
+    let a0 = &MODEL_ASSETS[0];
+    let p = dir.join(a0.rel_path);
     fs::create_dir_all(p.parent().unwrap()).unwrap();
-    fs::File::create(&p).unwrap().set_len(f0.size).unwrap();
-    let part = dir.join(format!("{}.part", MODEL_FILES[1].rel_path));
+    fs::File::create(&p).unwrap().set_len(a0.size).unwrap();
+    let part = dir.join(format!("{}.part", MODEL_ASSETS[1].rel_path));
     fs::create_dir_all(part.parent().unwrap()).unwrap();
     fs::File::create(&part).unwrap().set_len(1000).unwrap();
     let s = model_status_at(dir, false);
     assert_eq!(s.state, "partial");
-    assert_eq!(s.downloaded_bytes, f0.size + 1000);
+    assert_eq!(s.downloaded_bytes, a0.size + 1000);
 
-    // downloading flag wins over partial.
     assert_eq!(model_status_at(dir, true).state, "downloading");
 
-    // All files at full size -> ready.
-    for f in MODEL_FILES {
-      let p = dir.join(f.rel_path);
+    // Everything in place (incl. executable cli) -> ready. The zip itself is
+    // deleted after extraction, so "ready" ignores it; its bytes count as
+    // downloaded when the cli exists.
+    for a in MODEL_ASSETS {
+      let p = dir.join(a.rel_path);
       fs::create_dir_all(p.parent().unwrap()).unwrap();
-      fs::File::create(&p).unwrap().set_len(f.size).unwrap();
+      fs::File::create(&p).unwrap().set_len(a.size).unwrap();
     }
-    assert_eq!(model_status_at(dir, false).state, "ready");
-  }
-
-  #[test]
-  fn download_urls_join_source_and_rel_path() {
-    let urls = file_urls(&MODEL_FILES[3]);
-    assert_eq!(urls.len(), SOURCES.len());
-    assert!(urls[0].starts_with("https://modelscope.cn/") && urls[0].ends_with("tokenizer/merges.txt"));
-    assert!(urls[1].starts_with("https://huggingface.co/") && urls[1].ends_with("tokenizer/merges.txt"));
+    let cli = cli_path(dir);
+    fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    fs::write(&cli, b"x").unwrap();
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let s = model_status_at(dir, false);
+    assert_eq!(s.state, "ready");
+    assert_eq!(s.downloaded_bytes, s.total_bytes);
   }
 ```
 
-Run: `cargo test local_asr 2>&1 | tail -10` → FAIL(`model_status_at`/`file_urls`/`SOURCES` 未定义)。
+Run: `cargo test model_status 2>&1 | tail -5` → FAIL(`model_status_at` 未定义)。
 
-- [ ] **Step 2: 实现下载器**(`local_asr.rs` 追加)
+- [ ] **Step 2: 实现 status / 下载 / 解压 / 删除**
 
 ```rust
 use serde::Serialize;
@@ -794,21 +549,8 @@ use sha2::Digest;
 use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 
-/// ModelScope first: byte-identical to the official package and reachable
-/// from China; HF (csukuangfj2) as fallback. hf-mirror.com 308s back to HF
-/// for this repo, so it is NOT a usable mirror (verified 2026-07-12).
-const SOURCES: &[&str] = &[
-  "https://modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx/resolve/master/model_0.6B/",
-  "https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/",
-];
-
-/// Emit a progress event at most every this many bytes (avoid event spam:
-/// ~983MB / 8MB ≈ 120 events for the whole download).
+/// Emit a progress event at most every this many bytes.
 const PROGRESS_EMIT_STEP: u64 = 8 * 1024 * 1024;
-
-fn file_urls(file: &ModelFile) -> Vec<String> {
-  SOURCES.iter().map(|base| format!("{base}{}", file.rel_path)).collect()
-}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -819,7 +561,7 @@ pub struct ModelStatus {
 }
 
 pub fn model_status(downloading: bool) -> ModelStatus {
-  match model_dir() {
+  match local_asr_dir() {
     Ok(dir) => model_status_at(&dir, downloading),
     Err(_) => ModelStatus {
       state: "absent".into(),
@@ -832,16 +574,30 @@ pub fn model_status(downloading: bool) -> ModelStatus {
 fn model_status_at(dir: &Path, downloading: bool) -> ModelStatus {
   let mut downloaded = 0u64;
   let mut complete = true;
-  for f in MODEL_FILES {
-    let finished = fs::metadata(dir.join(f.rel_path)).map(|m| m.len()).unwrap_or(0);
-    if finished == f.size {
-      downloaded += f.size;
-      continue;
+  let zip = llama_zip_asset();
+  // Model files count by exact size; the zip counts as fully downloaded once
+  // the extracted CLI exists (the archive is removed after extraction).
+  for a in MODEL_ASSETS {
+    let got = fs::metadata(dir.join(a.rel_path)).map(|m| m.len()).unwrap_or(0);
+    if got == a.size {
+      downloaded += a.size;
+    } else {
+      complete = false;
+      downloaded += got.min(a.size);
+      if let Ok(m) = fs::metadata(dir.join(format!("{}.part", a.rel_path))) {
+        downloaded += m.len().min(a.size);
+      }
     }
+  }
+  let cli = cli_path(dir);
+  if fs::metadata(&cli).map(|m| m.is_file()).unwrap_or(false) && is_executable(&cli) {
+    downloaded += zip.size;
+  } else {
     complete = false;
-    downloaded += finished.min(f.size);
-    if let Ok(m) = fs::metadata(dir.join(format!("{}.part", f.rel_path))) {
-      downloaded += m.len().min(f.size);
+    if let Ok(m) = fs::metadata(dir.join(format!("{}.part", zip.rel_path))) {
+      downloaded += m.len().min(zip.size);
+    } else if let Ok(m) = fs::metadata(dir.join(zip.rel_path)) {
+      downloaded += m.len().min(zip.size);
     }
   }
   let state = if downloading {
@@ -868,66 +624,98 @@ fn emit_progress(app: &tauri::AppHandle, state: &str, downloaded: u64, message: 
   );
 }
 
-/// Download every missing model file (resumable via HTTP Range on a .part
-/// sibling), verify sha256, then atomically rename into place. Progress goes
-/// out as `local-model-download-progress` events; the terminal event
-/// (ready/cancelled/error) is emitted by the COMMAND, not here.
+/// Download all missing assets (resumable), verify sha256, extract the llama
+/// zip, mark the CLI executable. Terminal events are emitted by the COMMAND.
 pub async fn download_model(app: tauri::AppHandle, cancel: CancellationToken) -> Result<(), String> {
-  let dir = model_dir().map_err(|e| e.to_string())?;
+  let dir = local_asr_dir().map_err(|e| e.to_string())?;
   let client = reqwest::Client::builder()
     .connect_timeout(std::time::Duration::from_secs(15))
-    // No overall timeout: a ~756MB file on a slow link legitimately takes long.
     .build()
     .map_err(|e| e.to_string())?;
 
-  // Bytes of files already complete before this run (for absolute progress).
-  let mut done_bytes: u64 = MODEL_FILES
-    .iter()
-    .filter(|f| fs::metadata(dir.join(f.rel_path)).map(|m| m.len() == f.size).unwrap_or(false))
-    .map(|f| f.size)
-    .sum();
-
-  for file in MODEL_FILES {
-    let final_path = dir.join(file.rel_path);
-    if fs::metadata(&final_path).map(|m| m.len() == file.size).unwrap_or(false) {
-      continue; // already downloaded
+  let mut done: u64 = 0;
+  for a in MODEL_ASSETS {
+    if fs::metadata(dir.join(a.rel_path)).map(|m| m.len() == a.size).unwrap_or(false) {
+      done += a.size;
+      continue;
     }
-    download_one(&app, &client, &dir, file, &cancel, done_bytes).await?;
-    done_bytes += file.size;
-    emit_progress(&app, "downloading", done_bytes, None);
+    download_asset(&app, &client, &dir, a, &cancel, done).await?;
+    done += a.size;
+    emit_progress(&app, "downloading", done, None);
+  }
+
+  let zip = llama_zip_asset();
+  if !(fs::metadata(cli_path(&dir)).map(|m| m.is_file()).unwrap_or(false) && is_executable(&cli_path(&dir))) {
+    let zip_final = dir.join(zip.rel_path);
+    if !fs::metadata(&zip_final).map(|m| m.len() == zip.size).unwrap_or(false) {
+      download_asset(&app, &client, &dir, zip, &cancel, done).await?;
+    }
+    let dir2 = dir.clone();
+    tokio::task::spawn_blocking(move || extract_llama_zip(&dir2))
+      .await
+      .map_err(|e| e.to_string())??;
+    let _ = fs::remove_file(&zip_final); // archive no longer needed
   }
   Ok(())
 }
 
-async fn download_one(
+/// Extract every regular file in the archive, flattened to its basename, into
+/// bin/<LLAMA_BUILD>/, and mark all of them executable on unix (the CLI needs
+/// it; the bundled dylibs don't care). Flattening keeps us independent of the
+/// zip's top-level folder naming across llama.cpp releases — adjust ONLY if
+/// the Task-3 Step-1 rpath check demanded preserved structure.
+fn extract_llama_zip(base: &Path) -> Result<(), String> {
+  let zip_path = base.join(llama_zip_asset().rel_path);
+  let out_dir = bin_dir(base);
+  fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+  let file = fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+  let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+  for i in 0..archive.len() {
+    let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+    if entry.is_dir() {
+      continue;
+    }
+    let Some(name) = Path::new(entry.name()).file_name().map(|n| n.to_owned()) else { continue };
+    let out_path = out_dir.join(name);
+    let mut out = fs::File::create(&out_path).map_err(|e| e.to_string())?;
+    std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      fs::set_permissions(&out_path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+  }
+  if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
+    return Err("archive did not contain llama-mtmd-cli".into());
+  }
+  Ok(())
+}
+
+async fn download_asset(
   app: &tauri::AppHandle,
   client: &reqwest::Client,
   dir: &Path,
-  file: &ModelFile,
+  asset: &Asset,
   cancel: &CancellationToken,
   done_bytes: u64,
 ) -> Result<(), String> {
-  use std::io::Write;
-
-  let part_path = dir.join(format!("{}.part", file.rel_path));
+  let part_path = dir.join(format!("{}.part", asset.rel_path));
   if let Some(parent) = part_path.parent() {
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
   }
 
   let mut last_err = String::new();
-  for url in file_urls(file) {
+  for url in asset.urls {
     if cancel.is_cancelled() {
       return Err("DOWNLOAD_CANCELLED".into());
     }
     let offset = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
-    // A .part larger than the target is corrupt — restart it.
-    let offset = if offset > file.size { 0 } else { offset };
-    match stream_to_part(app, client, &url, &part_path, offset, file, cancel, done_bytes).await {
+    let offset = if offset > asset.size { 0 } else { offset };
+    match stream_to_part(app, client, url, &part_path, offset, asset, cancel, done_bytes).await {
       Ok(()) => {
-        // Size + sha256 gate before the file becomes "real".
         let got = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
-        if got != file.size {
-          last_err = format!("{}: size mismatch {got} != {}", file.rel_path, file.size);
+        if got != asset.size {
+          last_err = format!("{}: size mismatch {got} != {}", asset.rel_path, asset.size);
           let _ = fs::remove_file(&part_path);
           continue;
         }
@@ -940,23 +728,23 @@ async fn download_one(
         })
         .await
         .map_err(|e| e.to_string())??;
-        if hash != file.sha256 {
-          last_err = format!("{}: sha256 mismatch", file.rel_path);
+        if hash != asset.sha256 {
+          last_err = format!("{}: sha256 mismatch", asset.rel_path);
           let _ = fs::remove_file(&part_path);
           continue;
         }
-        fs::rename(&part_path, dir.join(file.rel_path)).map_err(|e| e.to_string())?;
+        fs::rename(&part_path, dir.join(asset.rel_path)).map_err(|e| e.to_string())?;
         return Ok(());
       }
       Err(err) if err == "DOWNLOAD_CANCELLED" => return Err(err),
       Err(err) => {
         // Keep the .part — the next source (byte-identical) resumes it.
         last_err = format!("{url}: {err}");
-        log::warn!("model download source failed: {last_err}");
+        log::warn!("asset download source failed: {last_err}");
       }
     }
   }
-  Err(format!("failed to download {}: {last_err}", file.rel_path))
+  Err(format!("failed to download {}: {last_err}", asset.rel_path))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -966,7 +754,7 @@ async fn stream_to_part(
   url: &str,
   part_path: &Path,
   offset: u64,
-  file: &ModelFile,
+  asset: &Asset,
   cancel: &CancellationToken,
   done_bytes: u64,
 ) -> Result<(), String> {
@@ -981,7 +769,6 @@ async fn stream_to_part(
   if !status.is_success() {
     return Err(format!("HTTP {status}"));
   }
-  // 206 = server honored Range (append); anything else = full body (truncate).
   let append = offset > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
   let mut out = fs::OpenOptions::new()
     .create(true)
@@ -1004,17 +791,17 @@ async fn stream_to_part(
     written += chunk.len() as u64;
     if written - last_emit >= PROGRESS_EMIT_STEP {
       last_emit = written;
-      emit_progress(app, "downloading", done_bytes + written.min(file.size), None);
+      emit_progress(app, "downloading", done_bytes + written.min(asset.size), None);
     }
   }
   out.flush().map_err(|e| e.to_string())?;
   Ok(())
 }
 
-/// Remove the model from disk (Settings "delete model"). Callers must unload
-/// the worker first so ~1GB of weights don't linger in RAM for a deleted model.
+/// Settings "delete model": remove the whole local-asr dir (models + bin).
+/// No engine unload needed — nothing is resident between transcriptions.
 pub fn delete_model() -> Result<(), String> {
-  let dir = model_dir().map_err(|e| e.to_string())?;
+  let dir = local_asr_dir().map_err(|e| e.to_string())?;
   match fs::remove_dir_all(&dir) {
     Ok(()) => Ok(()),
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1023,14 +810,24 @@ pub fn delete_model() -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 3: 跑 Step 1 测试**
+Run: `cargo test local_asr 2>&1 | tail -8` → 全 PASS。
 
-Run: `cargo test local_asr 2>&1 | tail -10` → 全 PASS。
+- [ ] **Step 3: AppState 槽位**
 
-- [ ] **Step 4: 命令层**(`commands.rs` 追加,`get_dictionary` 附近)
+`src-tauri/src/state.rs` 的 struct 加一个字段(其余不动):
 
 ```rust
-// --- Local ASR model management (settings window) ---
+  /// Cancellation token of the in-flight local-model download, if any
+  /// (single-flight guard for download_local_model).
+  pub local_model_download: Mutex<Option<CancellationToken>>,
+```
+
+`Default` impl 里对应加 `local_model_download: Mutex::new(None),`。
+
+- [ ] **Step 4: 命令层**(`commands.rs` 追加,`save_dictionary` 之后)
+
+```rust
+// --- Local ASR asset management (settings window) ---
 
 #[tauri::command]
 pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
@@ -1047,41 +844,26 @@ pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) ->
   let result = crate::local_asr::download_model(app.clone(), cancel).await;
   *state.local_model_download.lock().unwrap() = None;
 
+  let status = crate::local_asr::model_status(false);
   match result {
     Ok(()) => {
-      let status = crate::local_asr::model_status(false);
       let _ = app.emit(
         "local-model-download-progress",
-        json!({
-          "state": "ready",
-          "downloadedBytes": status.downloaded_bytes,
-          "totalBytes": status.total_bytes,
-        }),
+        json!({ "state": "ready", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
       );
       Ok(true)
     }
     Err(err) if err == "DOWNLOAD_CANCELLED" => {
-      let status = crate::local_asr::model_status(false);
       let _ = app.emit(
         "local-model-download-progress",
-        json!({
-          "state": "cancelled",
-          "downloadedBytes": status.downloaded_bytes,
-          "totalBytes": status.total_bytes,
-        }),
+        json!({ "state": "cancelled", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
       );
       Ok(false)
     }
     Err(err) => {
-      let status = crate::local_asr::model_status(false);
       let _ = app.emit(
         "local-model-download-progress",
-        json!({
-          "state": "error",
-          "downloadedBytes": status.downloaded_bytes,
-          "totalBytes": status.total_bytes,
-          "message": err,
-        }),
+        json!({ "state": "error", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes, "message": err }),
       );
       Err(err)
     }
@@ -1110,17 +892,14 @@ pub fn delete_local_model(state: State<'_, AppState>) -> Result<bool, String> {
   if state.local_model_download.lock().unwrap().is_some() {
     return Err("Cancel the running download first".into());
   }
-  // Drop the loaded engine before deleting files, or ~1GB of weights would
-  // linger in RAM serving a model the user just deleted.
-  state.local_asr.unload();
   crate::local_asr::delete_model()?;
   Ok(true)
 }
 ```
 
-- [ ] **Step 5: 注册(三处同步的另两处)**
+- [ ] **Step 5: 三处同步的另两处**
 
-`lib.rs` `invoke_handler!` 列表(`commands::save_onboarding_api_key,` 之后)追加:
+`lib.rs` `invoke_handler!`(`commands::save_onboarding_api_key,` 后)追加:
 
 ```rust
       commands::download_local_model,
@@ -1129,7 +908,7 @@ pub fn delete_local_model(state: State<'_, AppState>) -> Result<bool, String> {
       commands::delete_local_model,
 ```
 
-`ipc-bridge.js` `tauriCommands`(`"save-onboarding-api-key"` 行后)追加(无参数命令,不用动 `tauriArgs`):
+`ipc-bridge.js` `tauriCommands`(`"save-onboarding-api-key"` 行后)追加(全部无参,不动 `tauriArgs`):
 
 ```js
     "download-local-model": "download_local_model",
@@ -1138,16 +917,12 @@ pub fn delete_local_model(state: State<'_, AppState>) -> Result<bool, String> {
     "delete-local-model": "delete_local_model",
 ```
 
-- [ ] **Step 6: 编译 + 全量测试 + 真下载冒烟**
-
-Run: `cargo test 2>&1 | tail -3` → 全绿;`cargo build` → 通过。
-真下载路径(Range 续传/镜像回退)留给 Task 10 E2E 在 UI 里验证(先删本地模型再下,中途取消再继续)。
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: 全量测试 + Commit**
 
 ```bash
-git add src-tauri/src/local_asr.rs src-tauri/src/commands.rs src-tauri/src/lib.rs src/views/ipc-bridge.js
-git commit -m "feat(local-asr): resumable two-mirror model downloader + IPC commands"
+cargo test 2>&1 | tail -3 && cargo build 2>&1 | tail -3
+git add src-tauri/src/local_asr.rs src-tauri/src/state.rs src-tauri/src/commands.rs src-tauri/src/lib.rs src/views/ipc-bridge.js
+git commit -m "feat(local-asr): resumable asset downloader (GGUFs + pinned llama.cpp zip) + IPC commands"
 ```
 
 ---
@@ -1155,18 +930,18 @@ git commit -m "feat(local-asr): resumable two-mirror model downloader + IPC comm
 ### Task 5: 转写路由 — local 分支、翻译回退云端、has_api_key 语义
 
 **Files:**
-- Modify: `src-tauri/src/commands.rs`(transcribe_audio、perform_transcription_request、新 resolve 函数)
-- Modify: `src-tauri/src/settings.rs`(selected_api_key、SettingsPayload、save_settings 配套)
-- Test: 两文件的 `#[cfg(test)]`
+- Modify: `src-tauri/src/commands.rs`
+- Modify: `src-tauri/src/settings.rs`
+- Test: 两文件 `#[cfg(test)]`
 
 **Interfaces:**
-- Consumes: Task 3 `AppState.local_asr`、`local_asr::wav_to_samples`、哨兵 `LOCAL_MODEL_MISSING`
+- Consumes: Task 3 `local_asr::transcribe_wav`(async,drop 即取消)、哨兵 `LOCAL_MODEL_MISSING`;Task 2 `assets_ready`
 - Produces:
   - `commands::TranscriptionRoute { Local, Cloud { provider: &'static str, api_key: String } }`
   - `commands::resolve_transcription_route(config: &AppConfig, translate_mode: bool) -> Result<TranscriptionRoute, String>`
-  - `settings::SettingsPayload::from_config_with(config: &AppConfig, local_model_ready: bool) -> Self`(原 `from_config` 变薄壳)
+  - `settings::SettingsPayload::from_config_with(config, local_model_ready: bool) -> Self`(`from_config` 变薄壳)
   - `settings::local_provider_selectable(provider: &str, model_ready: bool) -> Result<(), String>`
-  - `perform_transcription_request` 新签名:`(client, config, provider: &str, api_key, audio_buffer, translate_mode, mime_type)`(provider 不再从 config 推导)
+  - `perform_transcription_request` 新签名:`(client, config, provider: &str, api_key, audio_buffer, translate_mode, mime_type)`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1242,14 +1017,13 @@ git commit -m "feat(local-asr): resumable two-mirror model downloader + IPC comm
     config.provider = "local".into();
     assert!(SettingsPayload::from_config_with(&config, true).has_api_key);
     assert!(!SettingsPayload::from_config_with(&config, false).has_api_key);
-    // Cloud providers keep the key-based semantics regardless of the flag.
     config.provider = "groq".into();
     config.api_key_groq = "gsk".into();
     assert!(SettingsPayload::from_config_with(&config, false).has_api_key);
   }
 
   #[test]
-  fn local_provider_selectable_requires_a_downloaded_model() {
+  fn local_provider_selectable_requires_downloaded_assets() {
     assert!(local_provider_selectable("local", true).is_ok());
     assert!(local_provider_selectable("groq", false).is_ok());
     let err = local_provider_selectable("local", false).unwrap_err();
@@ -1278,13 +1052,13 @@ pub fn selected_api_key(config: &AppConfig) -> String {
 ```rust
 impl SettingsPayload {
   pub fn from_config(config: &AppConfig) -> Self {
-    Self::from_config_with(config, crate::local_asr::model_ready())
+    Self::from_config_with(config, crate::local_asr::assets_ready())
   }
 
-  /// `local_model_ready` injected for tests (model_ready() reads the real
+  /// `local_model_ready` injected for tests (assets_ready() reads the real
   /// app data dir). For provider=="local", has_api_key means "the selected
-  /// provider is usable" — i.e. the model is on disk — so the readiness UI
-  /// works unchanged.
+  /// provider is usable" — assets downloaded — so the readiness UI works
+  /// unchanged.
   pub fn from_config_with(config: &AppConfig, local_model_ready: bool) -> Self {
     Self {
       has_api_key: if config.provider == crate::local_asr::LOCAL_PROVIDER {
@@ -1298,11 +1072,11 @@ impl SettingsPayload {
 }
 ```
 
-新增校验函数(`normalize_record_shortcut` 附近):
+新增(`normalize_record_shortcut` 附近):
 
 ```rust
 /// Server-side guard behind the settings UI: provider "local" may only be
-/// saved once the model is fully downloaded (the UI also enforces this, but
+/// saved once the assets are fully downloaded (the UI also enforces this, but
 /// a stale window must not be able to persist an unusable config).
 pub fn local_provider_selectable(provider: &str, model_ready: bool) -> Result<(), String> {
   if provider == crate::local_asr::LOCAL_PROVIDER && !model_ready {
@@ -1314,7 +1088,7 @@ pub fn local_provider_selectable(provider: &str, model_ready: bool) -> Result<()
 
 - [ ] **Step 3: commands.rs 实现**
 
-路由类型 + 函数(`build_transcription_prompt` 附近):
+路由(`build_transcription_prompt` 附近):
 
 ```rust
 #[derive(Debug)]
@@ -1353,35 +1127,22 @@ pub fn resolve_transcription_route(
   Ok(TranscriptionRoute::Cloud { provider, api_key })
 }
 
-/// Local decode: parse the (frontend-guaranteed) WAV and hand PCM to the
-/// worker thread. Runs inside the caller's tokio::select! so cancel works
-/// (the worker finishes in the background; the result is discarded).
-async fn perform_local_transcription(
-  handle: crate::local_asr::AsrHandle,
-  audio_buffer: Vec<u8>,
-  mime_type: &str,
-) -> Result<String> {
+/// Local decode: hand the (frontend-guaranteed) WAV to the subprocess runner.
+/// Lives inside the caller's tokio::select! — dropping this future kills the
+/// child process (kill_on_drop), so cancel truly aborts the decode.
+async fn perform_local_transcription(audio_buffer: Vec<u8>, mime_type: &str) -> Result<String> {
   if !mime_type.contains("wav") {
     return Err(anyhow::anyhow!(
       "local transcription expects WAV audio, got {mime_type} (frontend must re-encode)"
     ));
   }
-  let (samples, sample_rate) = crate::local_asr::wav_to_samples(&audio_buffer)?;
-  log::info!(
-    "transcribe: local qwen3, {:.1}s audio",
-    samples.len() as f32 / sample_rate.max(1) as f32
-  );
-  let text = tokio::task::spawn_blocking(move || handle.transcribe_blocking(samples, sample_rate))
-    .await
-    .context("local ASR task join failed")?
-    .map_err(|err| {
-      if err.starts_with("LOCAL_MODEL_MISSING") {
-        anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
-      } else {
-        anyhow::anyhow!(err)
-      }
-    })?;
-  Ok(text)
+  crate::local_asr::transcribe_wav(&audio_buffer).await.map_err(|err| {
+    if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
+      anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
+    } else {
+      err
+    }
+  })
 }
 ```
 
@@ -1405,14 +1166,11 @@ async fn perform_local_transcription(
 `tokio::select!` 块替换为:
 
 ```rust
-  let asr_handle = state.local_asr.clone();
   let result = tokio::select! {
     _ = cancellation.cancelled() => Err(anyhow::anyhow!("TRANSCRIPTION_CANCELLED")),
     result = async {
       match &route {
-        TranscriptionRoute::Local => {
-          perform_local_transcription(asr_handle, audio_buffer, &mime).await
-        }
+        TranscriptionRoute::Local => perform_local_transcription(audio_buffer, &mime).await,
         TranscriptionRoute::Cloud { provider, api_key } => {
           perform_transcription_request(
             &state.http_client,
@@ -1449,7 +1207,7 @@ async fn perform_transcription_request(
 `save_settings` 中,`config.api_key = settings::selected_api_key(&config);` 替换为:
 
 ```rust
-  settings::local_provider_selectable(&config.provider, crate::local_asr::model_ready())
+  settings::local_provider_selectable(&config.provider, crate::local_asr::assets_ready())
     .map_err(stringify_error)?;
   if config.provider == crate::local_asr::LOCAL_PROVIDER {
     // The form's key fields are hidden for the local provider; keep the stored
@@ -1460,68 +1218,17 @@ async fn perform_transcription_request(
   }
 ```
 
-- [ ] **Step 4: 跑测试**
-
-Run: `cargo test 2>&1 | tail -5` → 全绿(含既有 settings/commands 测试——`selected_api_key` 的 local 早退不影响它们)。
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: 跑测试 + Commit**
 
 ```bash
+cargo test 2>&1 | tail -5   # 全绿,含既有 settings/commands 测试
 git add src-tauri/src/commands.rs src-tauri/src/settings.rs
-git commit -m "feat(local-asr): route transcription local/cloud; translate falls back to cloud; local readiness drives hasApiKey"
+git commit -m "feat(local-asr): route transcription local/cloud; translate falls back to cloud; assets drive hasApiKey"
 ```
 
 ---
 
-### Task 6: 录音开始时预加载模型
-
-**Files:**
-- Modify: `src-tauri/src/local_asr.rs`(`maybe_preload`)
-- Modify: `src-tauri/src/hotkey.rs:594-603`(dispatch_action)
-
-**Interfaces:**
-- Produces: `local_asr::maybe_preload(app: &AppHandle)`(非阻塞,可从任意线程调)
-
-- [ ] **Step 1: 实现**(`local_asr.rs` 追加)
-
-```rust
-/// Fired on hotkey record-start: while the user is speaking, warm the model
-/// so the transcription that follows pays ~zero load latency. Runs off-thread
-/// — the hotkey dispatch loop must never block on config I/O or model load.
-pub fn maybe_preload(app: &tauri::AppHandle) {
-  use tauri::Manager;
-  let handle = app.state::<crate::state::AppState>().local_asr.clone();
-  std::thread::spawn(move || {
-    let Ok(config) = crate::settings::read_config() else { return };
-    if config.provider == LOCAL_PROVIDER && model_ready() {
-      handle.preload();
-    }
-  });
-}
-```
-
-`hotkey.rs` `dispatch_action` 的 `Action::Start` 分支,`let _ = app.emit("start-recording", translate_mode);` 之前加:
-
-```rust
-      // Warm the local model while the user speaks (no-op for cloud providers).
-      crate::local_asr::maybe_preload(app);
-```
-
-- [ ] **Step 2: 编译 + 全量测试**
-
-Run: `cargo test 2>&1 | tail -3` → 全绿;`cargo build` → 通过。
-(薄胶水,不单测;行为由 Task 10 E2E 验证:按下快捷键后日志出现 `local ASR: model loaded in …`,转写零加载等待。)
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src-tauri/src/local_asr.rs src-tauri/src/hotkey.rs
-git commit -m "feat(local-asr): preload the model on record start"
-```
-
----
-
-### Task 7: 前端音频通路 — local 模式恒发 WAV + 模型徽章
+### Task 6: 前端音频通路 — local 模式恒发 WAV + 模型徽章
 
 **Files:**
 - Modify: `src/views/vad-gate.js`
@@ -1589,7 +1296,7 @@ git commit -m "feat(local-asr): preload the model on record start"
 行 16-24 的常量区追加/修改:
 
 ```js
-const LOCAL_MODEL_ID = "qwen3-asr-0.6b-int8";
+const LOCAL_MODEL_ID = "qwen3-asr-0.6b-q8_0";
 const MODEL_LABEL = {
   "gpt-4o-transcribe": "OpenAI GPT-4o",
   "gpt-4o-mini-transcribe": "OpenAI GPT-4o mini",
@@ -1673,31 +1380,22 @@ VAD 块(行 916-939)改为:
       }
 ```
 
-- [ ] **Step 4: Node 测试 + 浏览器冒烟**
-
-Run: `node src/views/vad-decision.test.mjs` → 既有 14 个测试全 PASS(纯函数未动)。
-浏览器冒烟(照 CLAUDE.md 的 static-serve 法):`python3 -m http.server 1430 -d src/views` 开 `input-prompt.html`,console 里:
-```js
-const r = await fetch("vendor/vad/..");  // 略——直接验证新 API 形态:
-typeof SayTypeVadGate.encodeFullWav === "function"  // true
-```
-再用 `new Blob([...])` 造一段真录音(或跳过,留给 Task 10 真机)。
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Node 测试 + Commit**
 
 ```bash
+node src/views/vad-decision.test.mjs   # 既有 14 测全 PASS(纯函数未动)
 git add src/views/vad-gate.js src/views/input-prompt.js
 git commit -m "feat(local-asr): always upload 16k mono WAV in local mode; Qwen3 model badge"
 ```
 
 ---
 
-### Task 8: 设置 UI(本地模型面板 + 下载进度)+ i18n + readiness 文案
+### Task 7: 设置 UI(本地模型面板 + 下载进度)+ i18n + readiness 文案
 
 **Files:**
 - Modify: `src/views/settings.html:248-289`
 - Modify: `src/views/settings.js`
-- Modify: `src/views/main.js:462-470`(readiness pill 文案)
+- Modify: `src/views/main.js:462-470`
 - Modify: `src/views/i18n.js`(en + zh)
 
 **Interfaces:**
@@ -1705,7 +1403,7 @@ git commit -m "feat(local-asr): always upload 16k mono WAV in local mode; Qwen3 
 
 - [ ] **Step 1: settings.html**
 
-`providerSelect` 加选项(brand 名不进 i18n,与 Groq/OpenAI 一致):
+`providerSelect` 加选项:
 
 ```html
                 <option value="groq">Groq</option>
@@ -1735,7 +1433,7 @@ Model Selection 的 setting-item 之后追加:
 
 ```js
   local: [
-    { value: "qwen3-asr-0.6b-int8", labelKey: "settings.model.options.qwen3AsrLocal", recommended: false },
+    { value: "qwen3-asr-0.6b-q8_0", labelKey: "settings.model.options.qwen3AsrLocal", recommended: false },
   ],
 ```
 
@@ -1826,11 +1524,7 @@ async function handleLocalModelAction() {
     }
     // Optimistic repaint, then kick the (long-running) download; progress
     // events keep the panel live. Errors surface via the "error" event too.
-    renderLocalModelPanel({
-      state: "downloading",
-      downloadedBytes: 0,
-      totalBytes: 1,
-    });
+    renderLocalModelPanel({ state: "downloading", downloadedBytes: 0, totalBytes: 1 });
     void refreshLocalModelStatus();
     await ipc.invoke("download-local-model");
   } catch (error) {
@@ -1862,12 +1556,13 @@ function setupLocalModelSync() {
     if (payload.state === "error") {
       alert(translate("settings.localModel.downloadFailed", { reason: payload.message || "" }));
     }
-    renderLocalModelPanel({
-      state: payload.state === "downloading" ? "downloading" : null,
-      downloadedBytes: payload.downloadedBytes || 0,
-      totalBytes: payload.totalBytes || 0,
-    });
-    if (payload.state !== "downloading") {
+    if (payload.state === "downloading") {
+      renderLocalModelPanel({
+        state: "downloading",
+        downloadedBytes: payload.downloadedBytes || 0,
+        totalBytes: payload.totalBytes || 0,
+      });
+    } else {
       // ready/cancelled/error: re-derive the real on-disk state.
       void refreshLocalModelStatus();
     }
@@ -1914,7 +1609,7 @@ function handleProviderChange(event) {
 
 - [ ] **Step 4: main.js readiness pill**
 
-行 466-469 的 API key pill 改为:
+行 466-469 的 API key pill 改为(以文件实际调用形态为准,仅换 label 表达式):
 
 ```js
   const isLocal = cachedSettings?.provider === "local";
@@ -1930,8 +1625,6 @@ function handleProviderChange(event) {
     })
   );
 ```
-
-(以文件实际结构为准——第 468 行现为单行 `buildPill({...})` 调用,保持其调用形态,仅换 label 表达式。)
 
 - [ ] **Step 5: i18n.js(en 与 zh 两处都加)**
 
@@ -1993,87 +1686,81 @@ zh 对应(`translations.zh` 相同路径):
         localModel: "本地模型",
 ```
 
-> i18n 的 `t(key, vars)` 支持 `{var}` 占位(`inputPrompt.hint` 已在用)。
-
-- [ ] **Step 6: 验证**
-
-Run: `node src/views/vad-decision.test.mjs` → PASS。
-静态冒烟:`python3 -m http.server 1430 -d src/views` 开 `settings.html`——IPC 超时后渲染为未授权态属预期(见 CLAUDE.md 验证 gotcha);检查 provider 下拉有第三项、选中 local 时 key 字段隐藏且 `#localModelItem` 显示(console 里手动 `renderLocalModelPanel({state:"absent",downloadedBytes:0,totalBytes:983000000})` 驱动)。
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: 验证 + Commit**
 
 ```bash
+node src/views/vad-decision.test.mjs   # PASS
+# 静态冒烟(CLAUDE.md 验证 gotcha):
+python3 -m http.server 1430 -d src/views &
+# 浏览器开 settings.html:provider 下拉有第三项;选 local 时 key 字段隐藏、#localModelItem 显示;
+# console 手动 renderLocalModelPanel({state:"absent",downloadedBytes:0,totalBytes:1050000000}) 驱动各状态。
 git add src/views/settings.html src/views/settings.js src/views/main.js src/views/i18n.js
-git commit -m "feat(local-asr): settings panel for model download/progress/delete + i18n"
+git commit -m "feat(local-asr): settings panel for asset download/progress/delete + i18n"
 ```
 
 ---
 
-### Task 9: 文档同步 + CI 核查
+### Task 8: 文档同步 + CI 核查
 
 **Files:**
-- Modify: `CLAUDE.md`(架构小节 + 新增"Local transcription"小节)
-- Modify: `.github/workflows/ci.yml`(仅在核查发现需要时)
+- Modify: `CLAUDE.md`
 
 - [ ] **Step 1: CLAUDE.md**
 
-架构小节 `commands.rs` 条目的 IPC 三处同步提醒不变;`platform/` 条目后加:
+架构小节 `platform/` 条目后加:
 
 ```markdown
 - `local_asr.rs` — the local transcription backend (provider `"local"`): Qwen3-ASR-0.6B
-  int8 via the official `sherpa-onnx` crate (in-process, CPU). Owns the model manifest
-  (6 files, ~955 MB under `<app-data>/models/qwen3-asr-0.6b-int8/`), the resumable
-  two-mirror downloader (ModelScope primary, HF `csukuangfj2` fallback; sha256-gated),
-  and a dedicated worker thread that lazy-loads the model, transcribes, and unloads
-  after 10 min idle (the record-start hotkey path calls `maybe_preload` so loading
-  overlaps with speaking). Translate mode never runs locally — it falls back to a
-  configured cloud key (Groq preferred). The frontend always uploads 16 kHz mono WAV
-  in local mode (`vad-gate.js` forceWav / encodeFullWav). `SettingsPayload.has_api_key`
-  means "model downloaded" when provider is local.
-  Build note: `sherpa-onnx-sys` (default `static` feature) downloads prebuilt static
-  libs from GitHub at build time — no cmake, but network needed on first build; set
-  `SHERPA_ONNX_ARCHIVE_DIR` to build offline. Known risk: the Windows static lib is
-  MT Release and may conflict with Rust's default /MD CRT — if the Windows CI leg
-  reds, switch that target to the `shared` feature and bundle the DLLs.
+  Q8_0 GGUF run by a **per-transcription `llama-mtmd-cli` subprocess** (pinned llama.cpp
+  release, `LLAMA_BUILD`); the process exits after each decode, so idle memory is
+  unchanged and cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs +
+  per-platform llama.cpp zip, ~1GB under `<app-data>/local-asr/`), the resumable
+  sha256-gated downloader, and the stdout parser (`language <lang><asr_text>` prefix).
+  **Invocation invariants:** `-c 2048` is mandatory (the model metadata's ctx 65536
+  otherwise preallocates a 7GiB KV cache) and `-p "a"` is mandatory (empty prompt hangs
+  in interactive mode). Translate mode never runs locally — it falls back to a
+  configured cloud key (Groq preferred). The frontend always uploads 16 kHz mono WAV in
+  local mode (`vad-gate.js` forceWav/encodeFullWav) because mtmd's miniaudio decoder
+  doesn't read AAC/m4a. `SettingsPayload.has_api_key` means "assets downloaded" when
+  provider is local. The language setting and dictionary do not apply to the local
+  provider (auto-detect only; documented v1 limits). Engine benchmarks and the
+  sherpa-onnx retreat path live in docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
 ```
 
-- [ ] **Step 2: CI 核查**
+- [ ] **Step 2: CI 核查 + Commit**
 
-Run: `git push` 前先本地 `cargo test` 全绿;push 后看 ci.yml 三条腿:
-- macOS/Linux:预期直接绿(build.rs 联网下载静态库,runner 可出网)。
-- Windows:若链接期报 CRT 冲突(LNK2038 / MT vs MD),按 CLAUDE.md 里写的退路处理——本任务只**记录**,修复另开工作(Windows 属"未真机验证"档,不阻塞)。
-
-- [ ] **Step 3: Commit**
+CI 预期零改动(llama.cpp 是运行时下载工件,不参与编译)。push 后看三条腿绿灯(移除 sherpa 后构建应更快)。
 
 ```bash
 git add CLAUDE.md
-git commit -m "docs: document the local Qwen3-ASR backend and its build/runtime model"
+git commit -m "docs: document the llama.cpp-subprocess local ASR backend"
+git push
 ```
 
 ---
 
-### Task 10: 真机端到端验证(手动清单)
+### Task 9: 真机端到端验证(手动清单)
 
-**前提:** `npm run build:mac:install` 装最新构建(签名 env 存在则权限保持,见 CLAUDE.md);或 `npm run dev`。**先把 Task 1 spike 手动放的模型目录删掉**,从零走下载流程:`rm -rf ~/Library/Application\ Support/com.tao.saytype/models`。
+**前提:** `npm run build:mac:install` 装最新构建;**先清掉手动摆的资产走全新下载**:`rm -rf ~/Library/Application\ Support/com.tao.saytype/local-asr`(注意 spike 时代的 `models/qwen3-asr-0.6b-int8` ONNX 目录也顺手删了,已无用)。
 
-- [ ] 1. 设置 → Models:provider 下拉出现"Local · Qwen3-ASR";选中后 key 字段消失、本地模型面板显示"未下载(约 0.98 GB)";**此时点保存被拦**(提示先下载)。
-- [ ] 2. 点"下载模型":进度条走动、字节数增长;**中途点"取消下载"** → 面板变"下载中断 — 可从断点继续";点"继续下载" → 从断点续(观察字节数不清零);下载完成 → "已就绪"。日志无报错(`~/Library/Logs/com.tao.saytype/SayType.log` 或 dev stdout)。
-- [ ] 3. 保存(provider=local)成功;主窗 readiness 卡显示"本地模型"pill 为绿(切窗口焦点触发刷新)。
-- [ ] 4. 中文听写(短句):按住 Ctrl+Shift 说一句 → 小窗徽章显示 **Qwen3 · Local** → 松开 → 文字插入目标应用。看日志:`local ASR: model loaded in …`(应在录音期间就出现——预加载生效)、`transcribe: local qwen3, …s audio`。
-- [ ] 5. 长独白(60–90s):无截尾(对照 spike 定稿的 max_new_tokens)。
-- [ ] 6. 质量对比:同样内容分别在 local 与 Groq turbo 下各说一遍,对比准确率/标点(主观满意即可——spike 已量化过)。
-- [ ] 7. 取消路径:录音后立刻 Esc 取消转写 → 小窗显示"已取消",无插入。
-- [ ] 8. 内存曲线:Activity Monitor 观察——转写后 SayType 内存 ~1.2GB+;**闲置 10 分钟后回落**(日志 `local ASR: model unloaded after 600s idle`)。
-- [ ] 9. 翻译模式(Shift+Alt):配了 Groq key 时走云端翻译照常;把两个云 key 都清掉再试 → 明确报错"Translation needs a cloud API key…"。
-- [ ] 10. 删除模型:设置 → 删除(确认框)→ 面板回"未下载";provider 仍是 local 时听写 → 报"Local model files are missing — download…";设置里保存被拦。切回 Groq 一切照旧。
-- [ ] 11. 回归:云端 provider(Groq/OpenAI)的听写、翻译、词典、历史、插入失败复制按钮全部照旧。
-- [ ] 12. 全部通过后,与用户确认是否要把 TODO.md 里补一条"本地 ASR 后续"(dictionary/context biasing、1.7B 选项、Qwen 自有幻觉观察)。
+- [ ] 1. 设置 → Models:provider 下拉出现"Local · Qwen3-ASR";选中后 key 字段消失、面板显示"未下载(约 1.05 GB)";此时点保存被拦(提示先下载)。
+- [ ] 2. 点"下载模型":进度条走动;**中途取消** → "下载中断 — 可从断点继续";**继续下载** → 字节数不清零(断点续传生效);完成 → "已就绪"(zip 已解压、归档已删)。日志无报错。
+- [ ] 3. 保存(provider=local)成功;主窗 readiness 显示"本地模型"pill 绿。
+- [ ] 4. 中文听写(短句):小窗徽章 **Qwen3 · Local** → 文字插入目标应用。日志:`local ASR: decoded … KB wav in …s (… chars)`。体感等待 ~1–2s。
+- [ ] 5. 长独白(60–90s):完整无截断,等待 ~3–6s(Metal RTF ~0.05–0.1)。
+- [ ] 6. **内存与进程卫生**:转写中 `ps aux | grep mtmd` 能看到子进程;转写完立即消失;Activity Monitor 里 SayType 本体内存与未用本地模型时相同;`ls /tmp/saytype-asr-*` 无残留临时 WAV。
+- [ ] 7. **转写中取消**(录音后立刻 Esc):小窗"已取消",`grep mtmd` 无残留进程(kill_on_drop 生效)。
+- [ ] 8. 翻译模式(Shift+Alt):有 Groq key 时走云端照常;清掉两个云 key 再试 → 明确报错"Translation needs a cloud API key…"。
+- [ ] 9. 删除模型:确认框 → 面板回"未下载";provider 仍 local 时听写 → 报"Local model files are missing…";保存被拦;切回 Groq 一切照旧。
+- [ ] 10. 回归:云端 provider 听写、翻译、词典、历史、插入失败复制按钮全部照旧。
+- [ ] 11. (可选)机器忙时转写:开个大编译再听写,确认速度不明显劣化(Metal 不吃 CPU 争抢)。
+- [ ] 12. 全部通过后与用户对一遍:质量真实体感(同音字/幻觉观察)、是否把"本地 ASR 后续"(dictionary biasing、1.7B、量化对比)补进 TODO.md。
 
 ---
 
-## Self-Review 结论(写完计划后自查)
+## Self-Review 结论(rev2 写完后自查)
 
-- **Spec 覆盖:** 设计 §1 settings(T5/T8)、§2 local_asr 四职责(T2/T3/T4)、§3 转写路径(T5/T7)、§4 下载 UX(T4/T8)、§5 边界(翻译 T5、dictionary 不支持=无代码即正确、徽章 T7、SEED 不发=local 分支不构造 prompt,天然满足)、§6 错误处理(T4 sha256/续传、T5 缺模型映射、无静默回退)、§7 测试(各任务 + T1 spike + T10 E2E)、§8 CI(T9)。**无缺口。**
-- **占位符:** Task 2 的 `<FILL-STEP-1>`/`0 /*FILL*/` 是**刻意的实现步骤**(Step 1 提供精确获取命令,Step 3 的测试强制填真值才能变绿),非计划缺口。
-- **类型一致性:** `AsrHandle::transcribe_blocking(Vec<f32>, u32) -> Result<String, String>` 在 T3 定义、T5 消费一致;`ModelStatus` camelCase 序列化与 T8 前端字段(`downloadedBytes/totalBytes/state`)一致;`resolve_transcription_route` 返回类型 T5 内自洽;事件名 `local-model-download-progress` 三处(T4 发、T8 收、接口块)一致;`maybe_preload` T6 定义即消费。
-- **已知不确定点(不阻塞,均有兜底):** sherpa crate 1.13.4 具体方法名以 spike 编译为准(T1 Step 3 显式要求记录形态、T3 按其修正);ModelScope tokenizer 子路径(T1 Step 2 探测);Windows CRT 冲突(T9 记录 + 退路)。
+- **Spec 覆盖(对照 rev 2026-07-13)**:§1 settings(T5/T7)、§2 三职责(T2 清单/T4 下载/T3 子进程)、§3 路由+WAV 前置(T5/T6)、§4 下载 UX(T4/T7)、§5 边界(翻译 T5、dictionary/语言不支持=无代码即正确、徽章 T6、SEED 不发)、§6 错误(sha256/续传 T4、缺资产映射 T5、无静默回退)、§7 测试(各任务+T3 冒烟+T9 E2E、sherpa 清理=T2)、§8 CI 归零(T8 验证)。无缺口。
+- **占位符**:T2 的 `<FILL-STEP-1>` 是刻意步骤设计(Step 1 给精确获取命令,测试逼填真值);T3 的 stdout 样本明确要求用 Step 1 实录替换。非缺口。
+- **类型一致性**:`transcribe_wav(&[u8]) -> Result<String>` T3 定义 T5 消费;`ModelStatus` camelCase 与 T7 前端字段一致;事件名/命令名 T4 定义 T7 消费一致;`assets_ready` 贯穿 T2/T5;取消语义(drop=kill)在 T3 定义、T5 的 select! 正确利用。
+- **已知不确定点(有兜底)**:llama zip 内部布局与 rpath(T3 Step 1 实测,拍平不行就保层级);win/linux 资产变体名(T2 Step 1 从 release API 取真名);ModelScope 是否镜像 GGUF(探测,可选)。
