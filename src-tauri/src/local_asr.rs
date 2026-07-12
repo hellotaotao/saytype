@@ -6,6 +6,9 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 pub const LOCAL_PROVIDER: &str = "local";
 pub const LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
@@ -23,8 +26,6 @@ pub struct Asset {
   pub size: u64,
   pub sha256: &'static str,
 }
-
-const HF_BASE: &str = "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/";
 
 pub const MODEL_ASSETS: &[Asset] = &[
   Asset {
@@ -139,6 +140,90 @@ fn is_executable(_path: &Path) -> bool {
   true
 }
 
+/// Hard ceiling on one decode. Metal does ~60s audio in ~3s; even a 13-min
+/// clip (the 25MB WAV cap) at CPU speeds fits comfortably under this.
+const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(180);
+/// MUST be passed explicitly: the model metadata declares ctx 65536 and the
+/// CLI default ("0" = from model) preallocates a 7 GiB KV cache (measured).
+const CTX_SIZE: &str = "2048";
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Removes the temp WAV on drop -- including when the whole transcribe future
+/// is dropped by the caller's tokio::select! on cancellation.
+struct TempFile(PathBuf);
+impl Drop for TempFile {
+  fn drop(&mut self) {
+    let _ = fs::remove_file(&self.0);
+  }
+}
+
+/// Extract the transcription from llama-mtmd-cli stdout. The ASR chat
+/// template emits `language <lang><asr_text>TEXT`; silence comes back as
+/// `language None<asr_text>` with empty text. If the marker is ever absent
+/// (format drift on a llama upgrade), fall back to the trimmed whole output
+/// so dictations degrade instead of vanishing.
+pub fn parse_mtmd_output(stdout: &str) -> String {
+  match stdout.rfind("<asr_text>") {
+    Some(idx) => stdout[idx + "<asr_text>".len()..].trim().to_string(),
+    None => stdout.trim().to_string(),
+  }
+}
+
+/// Run one transcription in a llama-mtmd-cli subprocess. Cancellation-safe
+/// by construction: dropping this future kills the child (kill_on_drop) and
+/// removes the temp file (TempFile guard).
+pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
+  let base = local_asr_dir()?;
+  if !assets_ready_at(&base) {
+    anyhow::bail!("LOCAL_MODEL_MISSING: local model assets are missing or incomplete");
+  }
+
+  let tmp_path = std::env::temp_dir().join(format!(
+    "saytype-asr-{}-{}.wav",
+    std::process::id(),
+    TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+  ));
+  fs::write(&tmp_path, wav_bytes)
+    .with_context(|| format!("failed to write temp audio {}", tmp_path.display()))?;
+  let _tmp = TempFile(tmp_path.clone());
+
+  let started = std::time::Instant::now();
+  let child = tokio::process::Command::new(cli_path(&base))
+    .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
+    .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
+    .arg("--audio").arg(&tmp_path)
+    .arg("-p").arg("a")
+    .arg("-c").arg(CTX_SIZE)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .context("failed to start llama-mtmd-cli")?;
+
+  let output = tokio::time::timeout(TRANSCRIBE_TIMEOUT, child.wait_with_output())
+    .await
+    .map_err(|_| anyhow::anyhow!("local ASR timed out after {}s", TRANSCRIBE_TIMEOUT.as_secs()))?
+    .context("failed to run llama-mtmd-cli")?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    anyhow::bail!("llama-mtmd-cli failed ({}): {last}", output.status);
+  }
+
+  let text = parse_mtmd_output(&String::from_utf8_lossy(&output.stdout));
+  // Counts only -- no transcribed text in logs.
+  log::info!(
+    "local ASR: decoded {} KB wav in {:.2}s ({} chars)",
+    wav_bytes.len() / 1024,
+    started.elapsed().as_secs_f32(),
+    text.chars().count()
+  );
+  Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -182,5 +267,63 @@ mod tests {
     // Truncate one model -> not ready.
     fs::File::create(dir.join(MODEL_ASSETS[0].rel_path)).unwrap().set_len(1).unwrap();
     assert!(!assets_ready_at(dir));
+  }
+
+  // Byte-exact stdout captured 2026-07-13 from a real llama-mtmd-cli run
+  // (Task 3 Step 1): bin/b9960/llama-mtmd-cli -m models/Qwen3-ASR-0.6B-Q8_0.gguf
+  // --mmproj models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf --audio <wav> -p "a" -c 2048.
+  #[test]
+  fn parse_extracts_text_after_the_asr_marker() {
+    let sample = "\nlanguage Chinese<asr_text>然后这次是我输入了命令之后啊，讲一次哈。我觉得Unity。\n\n\n";
+    assert_eq!(parse_mtmd_output(sample), "然后这次是我输入了命令之后啊，讲一次哈。我觉得Unity。");
+  }
+
+  #[test]
+  fn parse_silence_yields_empty() {
+    let sample = "\nlanguage None<asr_text>\n\n\n";
+    assert_eq!(parse_mtmd_output(sample), "");
+  }
+
+  #[test]
+  fn parse_without_marker_falls_back_to_trimmed_whole() {
+    assert_eq!(parse_mtmd_output("  plain text out  \n"), "plain text out");
+    assert_eq!(parse_mtmd_output(""), "");
+  }
+
+  /// Needs the real assets laid out (Task 3 Step 1). Run manually:
+  ///   cargo test real_subprocess_smoke -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn real_subprocess_smoke() {
+    assert!(assets_ready(), "lay out the assets first (plan Task 3 Step 1)");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    // 5s of silence WAV (44-byte header + zeros), built inline. Duration
+    // matters here: measured 2026-07-13, pure-digital-zero clips <=2s make
+    // the model hallucinate a filler "嗯。" instead of returning empty text
+    // (0.5s/1s/2s all hallucinate; 5s/10s decode cleanly to ""). 5s clears
+    // that threshold with margin.
+    let mut wav = Vec::new();
+    let data_len = 160_000u32; // 5s * 16000Hz * 2 bytes
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());          // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes());          // mono
+    wav.extend_from_slice(&16000u32.to_le_bytes());      // rate
+    wav.extend_from_slice(&32000u32.to_le_bytes());      // byte rate
+    wav.extend_from_slice(&2u16.to_le_bytes());          // block align
+    wav.extend_from_slice(&16u16.to_le_bytes());         // bits
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 0);
+    let text = rt.block_on(transcribe_wav(&wav)).expect("subprocess ok");
+    assert_eq!(text, "", "silence must yield empty text");
+    // Temp file cleaned up:
+    let leftovers = fs::read_dir(std::env::temp_dir()).unwrap()
+      .filter_map(|e| e.ok())
+      .filter(|e| e.file_name().to_string_lossy().starts_with("saytype-asr-"))
+      .count();
+    assert_eq!(leftovers, 0, "temp wav files must be removed");
   }
 }
