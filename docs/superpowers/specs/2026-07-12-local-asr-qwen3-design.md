@@ -18,7 +18,7 @@
 
 | 候选 | 结论 |
 |---|---|
-| **sherpa-onnx**(官方 Rust 绑定,静态链接,官方 int8 模型包) | ✅ **选它**:进程内、无进程管理、macOS/Win/Linux 官方全覆盖、与"第三 provider 分支"架构天然吻合 |
+| **sherpa-onnx**(官方 Rust 绑定,静态链接,官方 int8 模型包) | ✅ **选它**:进程内、无进程管理、macOS/Win/Linux 官方全覆盖、与"第三 provider 分支"架构天然吻合。定案用官方 crate `sherpa-onnx = "1.13.4"`(与原生版本同步周更;社区 `sherpa-rs` 已于 2026-06 归档弃维护、无 Qwen3 支持) |
 | llama.cpp sidecar(官方 `ggml-org/Qwen3-ASR-0.6B-GGUF`,llama-server 本地 HTTP) | 备选/撤退路线:Q4 下载更小、Mac 有 Metal,但进程生命周期 + 三平台 sidecar 打包,对短听写片段是过剩的 |
 | antirez/qwen-asr(纯 C + BLAS) | ❌ BF16-only 静态内存 2.77 GiB、无 Windows |
 | second-state/qwen3_asr_rs(纯 Rust) | ❌ 底层 libtorch/MLX,动态库巨大不利打包 |
@@ -47,8 +47,11 @@ per-OS;本地推理是**平台无关的纯计算**,sherpa-onnx 自己完成了�
 职责四件:
 
 1. **模型文件管理**:app data dir 下 `models/qwen3-asr-0.6b-int8/`,sha256 完整性校验。
-2. **下载**:reqwest 流式下载 + 进度事件 + **断点续传**(HTTP Range);
-   主源 GitHub releases(k2-fsa),备用 ModelScope 镜像(国内友好)。
+   模型 6 个文件共约 955 MB(decoder.int8.onnx 721 MiB + encoder.int8.onnx 174 MiB +
+   conv_frontend.onnx 42 MiB + tokenizer 三文件)。
+2. **下载**:reqwest 流式下载 + 进度事件 + **断点续传**(HTTP Range);**逐文件下载**
+   (免 tar.bz2 解压依赖)。**主源 ModelScope**(国内直连实测 200,文件与官方包逐字节
+   相同),备用 HuggingFace `csukuangfj2`(hf-mirror 对该仓库 308 回跳 HF,不可用)。
 3. **Recognizer 生命周期**(本设计最值钱的一条):
    - **录音开始时预加载**——模型加载需 1–3s,用户说话的时间足够热身,转写时零等待;
    - **闲置 10 分钟自动卸载**——常驻托盘 app 平时不占那 ~1GB;
@@ -71,7 +74,7 @@ per-OS;本地推理是**平台无关的纯计算**,sherpa-onnx 自己完成了�
 
 provider 区新增"本地 Qwen3-ASR(0.6B)"项 + 状态行:
 
-- **未下载**:按钮"下载模型(约 700MB)"(确切体积 plan 阶段核实后写死进 UI 文案);
+- **未下载**:按钮"下载模型(约 1 GB)"(实际磁盘占用 955 MB);
 - **下载中**:进度条 + 取消;
 - **已就绪**:显示磁盘占用 + "删除模型"。
 
@@ -112,15 +115,34 @@ provider 区新增"本地 Qwen3-ASR(0.6B)"项 + 状态行:
 
 ### 8. CI / 构建影响
 
-- `sherpa-onnx-sys` 需要 cmake:三平台 CI 腿都要装(GitHub runner 自带,预期零改动,
-  验证为准)。
-- 二进制体积 +20–40MB(静态链接 sherpa + onnxruntime)。
-- Windows/Linux:代码同样编译,照常出安装包;真机验证状态与现状一致(未验)。
+- **不需要 cmake**(原设计假设有误):`sherpa-onnx-sys` 的 build.rs 默认 `static`
+  feature,构建时自动从 GitHub release 下载对应平台的**预编译静态库**并静态链接
+  (macOS arm64/x64、Windows x64、Linux x64/aarch64 全有)。CI 腿零改动,但构建
+  有网络依赖;`SHERPA_ONNX_ARCHIVE_DIR` 可指向本地压缩包离线构建。
+- 二进制体积增加(macOS 静态库压缩包 19.5 MB;链接后增量待实测)。
+- ⚠️ Windows 已知风险:sherpa 的 win 静态库是 **MT Release**,与 Rust MSVC 默认
+  /MD CRT 可能链接冲突;若 CI 红,退路是 Windows 腿改 `shared` feature + 资源打包
+  dll。Windows 本就是"编译通过但未真机验证"档,不阻塞本特性。
+- Linux:代码同样编译,照常出安装包;真机验证状态与现状一致(未验)。
 
-## Plan 阶段待核实的细节(不阻塞设计)
+## 已核实的细节(2026-07-12 调研定案,原"待核实"清单)
 
-1. Rust crate 选型:官方 bindings(k2-fsa 仓库内)vs 社区 `sherpa-rs`,
-   以"静态链接是否顺滑 + Qwen3 配置是否完整"为准。
-2. int8 模型包确切体积与 sha256(写进下载 UI 文案与校验逻辑)。
-3. ModelScope 镜像的确切 URL(k2-fsa 是否官方同步,否则考虑 HF 镜像站兜底)。
-4. sherpa OfflineRecognizer 是否线程安全 / 是否需要独占 Mutex(影响并发防护写法)。
+1. **crate**:官方 `sherpa-onnx = "1.13.4"`(crates.io,k2-fsa 维护,周更);
+   `sherpa-rs` 已归档,排除。config 字段:`model_config.qwen3_asr =
+   OfflineQwen3ASRModelConfig { conv_frontend, encoder, decoder, tokenizer(目录), … }`。
+2. **模型体积**:下载共约 983 MB(6 文件,decoder 755,914,231 B / encoder
+   182,491,662 B / conv_frontend 44,148,281 B + tokenizer 三小文件);sha256 逐文件
+   校验(HF LFS 元数据可取)。UI 文案"约 1 GB"。
+3. **镜像**:ModelScope `zengshuishui/Qwen3-ASR-onnx`(`model_0.6B/` 下,与官方包
+   逐字节相同)为主源;HF `csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`
+   备用。官方 GitHub tar.bz2(838 MB)不用(要解压依赖且单文件断点续传更难)。
+4. **线程安全**:`OfflineRecognizer`/`OfflineStream` 均 `unsafe impl Send + Sync`
+   ("thread-safe for single-object usage")。**recognizer 创建一次跨转写复用**
+   (创建即加载全部权重,秒级);**每次转写新建 stream**,`accept_waveform` 每流
+   最多一次、整段一次性喂入;采样率不符时 sherpa 内部自动重采样。
+5. **性能参考**:int8 0.6B CPU RTF ≈ 0.08–0.15(官方文档/PR 基准);内存无官方
+   数字,权重 955 MB,常驻估 1.2–1.8 GB(mmap 对加载延迟无改善,PR #3484)。
+   Apple Silicon 实测数字留给 spike。
+6. **生成长度风险(spike 必验)**:默认 `max_new_tokens=128` 对一分钟级密集中文
+   听写可能截尾;计划显式设 `max_total_len: 2048, max_new_tokens: 512`,spike 用
+   60–90s 长句验证无截断后定稿。
