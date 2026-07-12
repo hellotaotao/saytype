@@ -15,6 +15,11 @@ use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 
 pub const LOCAL_PROVIDER: &str = "local";
+/// Model id stored in config.model for the local provider. Rust never reads
+/// it back (routing keys off provider=="local"); the frontend mirrors this
+/// literal in settings.js (modelOptions.local) and input-prompt.js
+/// (LOCAL_MODEL_ID) — keep all three in sync.
+#[allow(dead_code)]
 pub const LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
 /// Pinned llama.cpp release. Must stay ≥ b9173 (Qwen3-ASR repetition fix,
 /// ggml-org/llama.cpp#22357). Upgrading requires re-verifying CLI flags,
@@ -144,8 +149,10 @@ fn is_executable(_path: &Path) -> bool {
   true
 }
 
-/// Hard ceiling on one decode. Metal does ~60s audio in ~3s; even a 13-min
-/// clip (the 25MB WAV cap) at CPU speeds fits comfortably under this.
+/// Hard ceiling on one decode. Metal does ~60s audio in ~3s; on CPU-only
+/// platforms (Windows/Linux, RTF ~0.3) a maximal 25MB-WAV clip (~13 min)
+/// could exceed this — acceptable for now, those platforms are not yet
+/// real-machine verified. Revisit if long-form CPU dictation becomes real.
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(180);
 /// MUST be passed explicitly: the model metadata declares ctx 65536 and the
 /// CLI default ("0" = from model) preallocates a 7 GiB KV cache (measured).
@@ -188,9 +195,9 @@ pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
     std::process::id(),
     TMP_SEQ.fetch_add(1, Ordering::Relaxed)
   ));
+  let _tmp = TempFile(tmp_path.clone());
   fs::write(&tmp_path, wav_bytes)
     .with_context(|| format!("failed to write temp audio {}", tmp_path.display()))?;
-  let _tmp = TempFile(tmp_path.clone());
 
   let started = std::time::Instant::now();
   let child = tokio::process::Command::new(cli_path(&base))
@@ -415,8 +422,17 @@ async fn download_asset(
       return Err("DOWNLOAD_CANCELLED".into());
     }
     let offset = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+    // A .part larger than the target is corrupt — restart it. One exactly at
+    // the target size may be a finished stream that died before verification
+    // (sha256 of ~800MB takes seconds) — skip straight to verification and
+    // salvage it instead of asking the server for `bytes=<size>-` (HTTP 416).
     let offset = if offset > asset.size { 0 } else { offset };
-    match stream_to_part(app, client, url, &part_path, offset, asset, cancel, done_bytes).await {
+    let stream_result = if offset == asset.size {
+      Ok(())
+    } else {
+      stream_to_part(app, client, url, &part_path, offset, asset, cancel, done_bytes).await
+    };
+    match stream_result {
       Ok(()) => {
         let got = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
         if got != asset.size {
