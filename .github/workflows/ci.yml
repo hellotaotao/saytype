@@ -80,7 +80,9 @@ jobs:
       # tests (settings/history/hotkey parsing/scrub) run on real hosts here.
       # macOS-only tests (platform::macos) are cfg'd out on the other legs.
       - name: Run Node tests
-        run: node src/views/vad-decision.test.mjs
+        run: |
+          node src/views/vad-decision.test.mjs
+          node scripts/release-notes-lib.test.mjs
 
       - name: Run Rust tests
         run: cargo test

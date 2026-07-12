@@ -16,6 +16,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + tags: release-notes generation diffs against the previous tag
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -86,3 +89,22 @@ jobs:
           # 想完全自动发布就把它改成 false。
           releaseDraft: true
           prerelease: false
+
+      - name: Generate release notes
+        # Fills the draft release body with AI-generated bilingual notes covering
+        # <previous v* tag>..<this tag>. Same philosophy as Apple signing above:
+        # missing secret or any failure -> warning, the release itself never breaks.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::No ANTHROPIC_API_KEY secret — release keeps the default body."
+            exit 0
+          fi
+          if node scripts/generate-release-notes.mjs "${GITHUB_REF_NAME}" > notes.md; then
+            gh release edit "${GITHUB_REF_NAME}" --notes-file notes.md
+            echo "Release notes updated for ${GITHUB_REF_NAME}."
+          else
+            echo "::warning::Release-notes generation failed — release keeps the default body."
+          fi

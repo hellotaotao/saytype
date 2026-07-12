@@ -56,6 +56,16 @@ minutes, whereas local signing is instant (local builds skip it).
 > emitted). Adding the six secrets below later enables signing + notarization
 > automatically — no workflow changes needed.
 
+> **Release notes are AI-generated in CI** (also optional). After the build, the
+> workflow runs `scripts/generate-release-notes.mjs` — commits from the previous
+> `v*` tag to the current one → Claude API (`claude-sonnet-5`) → bilingual
+> (EN + 中文) user-facing notes written into the draft release via `gh release
+> edit`. Requires the `ANTHROPIC_API_KEY` secret; if it's absent or the call
+> fails, the step warns and the release keeps the default body — never blocks.
+> Debug locally with `node scripts/generate-release-notes.mjs <tag> --dry-run`
+> (prints the prompt, no API call). Design:
+> `docs/superpowers/specs/2026-07-12-ai-release-notes-design.md`.
+
 Notarization = Apple scans the signed app and returns a ticket that gets
 **stapled into the bundle**, so Gatekeeper lets *other* Macs run it without the
 "unidentified developer" warning. Prereqs: Hardened Runtime (already on) **and a
