@@ -85,7 +85,15 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
   config.onboarding_completed = existing.onboarding_completed;
   config.translate_shortcut = TRANSLATE_SHORTCUT.into();
   config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
-  config.api_key = settings::selected_api_key(&config);
+  settings::local_provider_selectable(&config.provider, crate::local_asr::assets_ready())
+    .map_err(stringify_error)?;
+  if config.provider == crate::local_asr::LOCAL_PROVIDER {
+    // The form's key fields are hidden for the local provider; keep the stored
+    // legacy key instead of clobbering it with the (empty) local selection.
+    config.api_key = existing.api_key.clone();
+  } else {
+    config.api_key = settings::selected_api_key(&config);
+  }
 
   settings::write_config(&config).map_err(stringify_error)?;
   // Only re-apply the login item when auto-launch actually changed. Re-running
@@ -248,10 +256,7 @@ pub async fn transcribe_audio(
   }
 
   let config = settings::read_config().map_err(stringify_error)?;
-  let api_key = settings::selected_api_key(&config);
-  if api_key.trim().is_empty() {
-    return Err("API key not configured".into());
-  }
+  let route = resolve_transcription_route(&config, translate_mode)?;
 
   let request_id = state.next_transcription_id.fetch_add(1, Ordering::Relaxed) + 1;
   let cancellation = CancellationToken::new();
@@ -268,14 +273,22 @@ pub async fn transcribe_audio(
 
   let result = tokio::select! {
     _ = cancellation.cancelled() => Err(anyhow::anyhow!("TRANSCRIPTION_CANCELLED")),
-    result = perform_transcription_request(
-      &state.http_client,
-      &config,
-      &api_key,
-      audio_buffer,
-      translate_mode,
-      mime,
-    ) => result,
+    result = async {
+      match &route {
+        TranscriptionRoute::Local => perform_local_transcription(audio_buffer, &mime).await,
+        TranscriptionRoute::Cloud { provider, api_key } => {
+          perform_transcription_request(
+            &state.http_client,
+            &config,
+            provider,
+            api_key,
+            audio_buffer,
+            translate_mode,
+            mime.clone(),
+          ).await
+        }
+      }
+    } => result,
   };
 
   state.active_transcriptions.lock().unwrap().remove(&request_id);
@@ -735,15 +748,69 @@ fn build_transcription_prompt(model: &str, language: &str, dictionary: &str) -> 
   }
 }
 
+#[derive(Debug)]
+pub enum TranscriptionRoute {
+  Local,
+  Cloud { provider: &'static str, api_key: String },
+}
+
+/// Decide where this transcription goes. Local provider transcribes locally;
+/// translate mode is the exception — Qwen3-ASR only transcribes, so translation
+/// falls back to whichever cloud key is configured (Groq preferred: cheaper,
+/// and its whisper-large-v3 is the existing translate default).
+pub fn resolve_transcription_route(
+  config: &AppConfig,
+  translate_mode: bool,
+) -> Result<TranscriptionRoute, String> {
+  if config.provider == crate::local_asr::LOCAL_PROVIDER {
+    if !translate_mode {
+      return Ok(TranscriptionRoute::Local);
+    }
+    if !config.api_key_groq.trim().is_empty() {
+      return Ok(TranscriptionRoute::Cloud { provider: "groq", api_key: config.api_key_groq.trim().into() });
+    }
+    if !config.api_key_openai.trim().is_empty() {
+      return Ok(TranscriptionRoute::Cloud { provider: "openai", api_key: config.api_key_openai.trim().into() });
+    }
+    return Err(
+      "Translation needs a cloud API key (the local model only transcribes). Add a Groq or OpenAI key in Settings.".into(),
+    );
+  }
+  let provider = if config.provider == "groq" { "groq" } else { "openai" };
+  let api_key = settings::selected_api_key(config);
+  if api_key.trim().is_empty() {
+    return Err("API key not configured".into());
+  }
+  Ok(TranscriptionRoute::Cloud { provider, api_key })
+}
+
+/// Local decode: hand the (frontend-guaranteed) WAV to the subprocess runner.
+/// Lives inside the caller's tokio::select! — dropping this future kills the
+/// child process (kill_on_drop), so cancel truly aborts the decode.
+async fn perform_local_transcription(audio_buffer: Vec<u8>, mime_type: &str) -> Result<String> {
+  if !mime_type.contains("wav") {
+    return Err(anyhow::anyhow!(
+      "local transcription expects WAV audio, got {mime_type} (frontend must re-encode)"
+    ));
+  }
+  crate::local_asr::transcribe_wav(&audio_buffer).await.map_err(|err| {
+    if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
+      anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
+    } else {
+      err
+    }
+  })
+}
+
 async fn perform_transcription_request(
   client: &reqwest::Client,
   config: &AppConfig,
+  provider: &str,
   api_key: &str,
   audio_buffer: Vec<u8>,
   translate_mode: bool,
   mime_type: String,
 ) -> Result<String> {
-  let provider = if config.provider == "groq" { "groq" } else { "openai" };
   let endpoint_root = if provider == "groq" {
     "https://api.groq.com/openai/v1"
   } else {
@@ -917,5 +984,57 @@ mod tests {
       assert_eq!(p, "Claude\nAzure");
       assert!(!p.contains(SEED_ZH) && !p.contains('。'));
     }
+  }
+
+  // --- Transcription routing: local vs cloud ---
+
+  fn config_with(provider: &str, groq: &str, openai: &str) -> AppConfig {
+    let mut c = AppConfig::default();
+    c.provider = provider.into();
+    c.api_key_groq = groq.into();
+    c.api_key_openai = openai.into();
+    c
+  }
+
+  #[test]
+  fn local_provider_routes_to_local_for_normal_dictation() {
+    let route = resolve_transcription_route(&config_with("local", "", ""), false).unwrap();
+    assert!(matches!(route, TranscriptionRoute::Local));
+  }
+
+  #[test]
+  fn local_translate_falls_back_to_a_cloud_key_groq_first() {
+    match resolve_transcription_route(&config_with("local", "gsk", "osk"), true).unwrap() {
+      TranscriptionRoute::Cloud { provider, api_key } => {
+        assert_eq!(provider, "groq");
+        assert_eq!(api_key, "gsk");
+      }
+      other => panic!("expected cloud, got {other:?}"),
+    }
+    match resolve_transcription_route(&config_with("local", "", "osk"), true).unwrap() {
+      TranscriptionRoute::Cloud { provider, api_key } => {
+        assert_eq!(provider, "openai");
+        assert_eq!(api_key, "osk");
+      }
+      other => panic!("expected cloud, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn local_translate_without_any_cloud_key_errors_clearly() {
+    let err = resolve_transcription_route(&config_with("local", "", ""), true).unwrap_err();
+    assert!(err.contains("cloud API key"), "{err}");
+  }
+
+  #[test]
+  fn cloud_providers_route_unchanged_and_require_a_key() {
+    match resolve_transcription_route(&config_with("groq", "gsk", ""), false).unwrap() {
+      TranscriptionRoute::Cloud { provider, api_key } => {
+        assert_eq!(provider, "groq");
+        assert_eq!(api_key, "gsk");
+      }
+      other => panic!("{other:?}"),
+    }
+    assert!(resolve_transcription_route(&config_with("openai", "", ""), false).is_err());
   }
 }

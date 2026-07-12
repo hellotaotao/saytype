@@ -129,8 +129,20 @@ pub struct SettingsPayload {
 
 impl SettingsPayload {
   pub fn from_config(config: &AppConfig) -> Self {
+    Self::from_config_with(config, crate::local_asr::assets_ready())
+  }
+
+  /// `local_model_ready` injected for tests (assets_ready() reads the real
+  /// app data dir). For provider=="local", has_api_key means "the selected
+  /// provider is usable" — assets downloaded — so the readiness UI works
+  /// unchanged.
+  pub fn from_config_with(config: &AppConfig, local_model_ready: bool) -> Self {
     Self {
-      has_api_key: !selected_api_key(config).trim().is_empty(),
+      has_api_key: if config.provider == crate::local_asr::LOCAL_PROVIDER {
+        local_model_ready
+      } else {
+        !selected_api_key(config).trim().is_empty()
+      },
       shortcut: config.shortcut.clone(),
       translate_shortcut: config.translate_shortcut.clone(),
       language: config.language.clone(),
@@ -224,6 +236,11 @@ pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
 }
 
 pub fn selected_api_key(config: &AppConfig) -> String {
+  if config.provider == crate::local_asr::LOCAL_PROVIDER {
+    // The local backend needs no key; never surface a cloud key as "selected"
+    // (translate-mode fallback reads api_key_groq/api_key_openai directly).
+    return String::new();
+  }
   if config.provider == "openai" {
     if !config.api_key_openai.trim().is_empty() {
       return config.api_key_openai.clone();
@@ -233,6 +250,16 @@ pub fn selected_api_key(config: &AppConfig) -> String {
   }
 
   config.api_key.clone()
+}
+
+/// Server-side guard behind the settings UI: provider "local" may only be
+/// saved once the assets are fully downloaded (the UI also enforces this, but
+/// a stale window must not be able to persist an unusable config).
+pub fn local_provider_selectable(provider: &str, model_ready: bool) -> Result<(), String> {
+  if provider == crate::local_asr::LOCAL_PROVIDER && !model_ready {
+    return Err("Local model is not downloaded yet — download it in Settings → Models first.".into());
+  }
+  Ok(())
 }
 
 pub fn normalize_record_shortcut(value: &str) -> String {
@@ -400,5 +427,33 @@ mod tests {
     // Legacy shared key acts as the fallback for the selected provider.
     config.api_key = "legacy".into();
     assert!(SettingsPayload::from_config(&config).has_api_key);
+  }
+
+  #[test]
+  fn selected_api_key_is_empty_for_local_provider() {
+    let mut config = AppConfig::default();
+    config.provider = "local".into();
+    config.api_key_groq = "gsk".into();
+    config.api_key = "legacy".into();
+    assert_eq!(selected_api_key(&config), "");
+  }
+
+  #[test]
+  fn settings_payload_local_provider_reports_model_readiness_as_has_api_key() {
+    let mut config = AppConfig::default();
+    config.provider = "local".into();
+    assert!(SettingsPayload::from_config_with(&config, true).has_api_key);
+    assert!(!SettingsPayload::from_config_with(&config, false).has_api_key);
+    config.provider = "groq".into();
+    config.api_key_groq = "gsk".into();
+    assert!(SettingsPayload::from_config_with(&config, false).has_api_key);
+  }
+
+  #[test]
+  fn local_provider_selectable_requires_downloaded_assets() {
+    assert!(local_provider_selectable("local", true).is_ok());
+    assert!(local_provider_selectable("groq", false).is_ok());
+    let err = local_provider_selectable("local", false).unwrap_err();
+    assert!(err.to_lowercase().contains("download"), "{err}");
   }
 }
