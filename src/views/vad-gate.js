@@ -76,7 +76,10 @@
   // Analyze one recording: speech verdict + (when worthwhile) a head/tail
   // trimmed 16 kHz mono WAV. `wav` is null when trimming was skipped — too
   // little silence to matter — and the caller sends the original recording.
-  async function analyze(blob) {
+  // opts.forceWav: the local ASR backend needs PCM WAV regardless of whether
+  // trimming saves anything — encode even when the trim is skipped.
+  async function analyze(blob, opts) {
+    const forceWav = !!(opts && opts.forceWav);
     const vad = await getVad();
     const pcm = await blobToPcm16k(blob);
     const durationMs = (pcm.length / TARGET_RATE) * 1000;
@@ -97,6 +100,8 @@
         const endSample = Math.min(pcm.length, Math.ceil((range.endMs / 1000) * TARGET_RATE));
         wav = window.SayTypeVad.encodeWavPcm16(pcm.subarray(startSample, endSample), TARGET_RATE);
         trimmedMs = Math.round(durationMs - (range.endMs - range.startMs));
+      } else if (forceWav) {
+        wav = window.SayTypeVad.encodeWavPcm16(pcm, TARGET_RATE);
       }
     }
     return { speech: verdict.speech, totalSpeechMs: verdict.totalSpeechMs, durationMs, wav, trimmedMs };
@@ -115,5 +120,13 @@
     }
   }
 
-  window.SayTypeVadGate = { analyze, warmup };
+  // Local-backend fallback: WAV without the VAD. Plain WebAudio decode +
+  // resample (blobToPcm16k) doesn't depend on Silero/ort, so even when the
+  // VAD path fails the local engine can still get its PCM.
+  async function encodeFullWav(blob) {
+    const pcm = await blobToPcm16k(blob);
+    return window.SayTypeVad.encodeWavPcm16(pcm, TARGET_RATE);
+  }
+
+  window.SayTypeVadGate = { analyze, warmup, encodeFullWav };
 })();

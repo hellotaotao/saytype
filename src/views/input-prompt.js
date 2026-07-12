@@ -15,12 +15,14 @@ const DEBUG_MICROPHONE_CLEANUP = false;
 // override and the empty-model default). Keep in sync with the Rust side.
 const RECORD_DEFAULT_MODEL = { openai: "gpt-4o-mini-transcribe", groq: "whisper-large-v3-turbo" };
 const TRANSLATE_MODEL = { openai: "whisper-1", groq: "whisper-large-v3" };
+const LOCAL_MODEL_ID = "qwen3-asr-0.6b-q8_0";
 const MODEL_LABEL = {
   "gpt-4o-transcribe": "OpenAI GPT-4o",
   "gpt-4o-mini-transcribe": "OpenAI GPT-4o mini",
   "whisper-1": "OpenAI Whisper",
   "whisper-large-v3": "Groq Whisper v3",
   "whisper-large-v3-turbo": "Groq Whisper v3 Turbo",
+  [LOCAL_MODEL_ID]: "Qwen3 · Local",
 };
 // Audio capture constraints, shared by the launch prime and every recording.
 const AUDIO_CONSTRAINTS = {
@@ -327,6 +329,11 @@ class VoiceInputPrompt {
   resolveActiveModel() {
     if (this.currentProvider == null) {
       return null; // settings not loaded yet
+    }
+    if (this.currentProvider === "local") {
+      // Translate mode falls back to a cloud Whisper (commands.rs picks the
+      // provider by key presence — the exact one isn't known here).
+      return this.translateMode ? "Cloud Whisper" : MODEL_LABEL[LOCAL_MODEL_ID];
     }
     const provider = this.currentProvider === "groq" ? "groq" : "openai";
     let model;
@@ -915,9 +922,13 @@ class VoiceInputPrompt {
       // mangle a real dictation.
       let uploadBuffer = null;
       let uploadMime = mimeType || "audio/webm";
+      // Local backend (non-translate) can only decode WAV — force PCM output
+      // from the VAD path, and fall back to a plain decode+encode if the VAD
+      // itself fails. Translate mode goes to a cloud API, which takes any format.
+      const useLocalWav = this.currentProvider === "local" && !translateMode;
       try {
         if (window.SayTypeVadGate) {
-          const verdict = await window.SayTypeVadGate.analyze(audioBlob);
+          const verdict = await window.SayTypeVadGate.analyze(audioBlob, { forceWav: useLocalWav });
           if (!verdict.speech) {
             this.removePendingInsertion(sessionId);
             if (allowUi) {
@@ -929,13 +940,26 @@ class VoiceInputPrompt {
           if (verdict.wav) {
             uploadBuffer = verdict.wav;
             uploadMime = "audio/wav";
-            console.log(
-              `VAD trim: cut ${verdict.trimmedMs}ms of head/tail silence from a ${Math.round(verdict.durationMs)}ms clip`
-            );
+            if (verdict.trimmedMs > 0) {
+              console.log(
+                `VAD trim: cut ${verdict.trimmedMs}ms of head/tail silence from a ${Math.round(verdict.durationMs)}ms clip`
+              );
+            }
           }
         }
       } catch (vadError) {
         console.warn("VAD gate failed; proceeding to transcription:", vadError);
+      }
+      if (useLocalWav && !uploadBuffer) {
+        // VAD path failed (or produced no WAV): encode without it. If even
+        // this fails, fall through with the original bytes — the backend
+        // rejects them with an explicit "expects WAV" error (no silent drop).
+        try {
+          uploadBuffer = await window.SayTypeVadGate.encodeFullWav(audioBlob);
+          uploadMime = "audio/wav";
+        } catch (wavError) {
+          console.warn("full-WAV fallback failed; sending original bytes:", wavError);
+        }
       }
 
       // Send the raw bytes as a Uint8Array so the IPC bridge ships them as the
