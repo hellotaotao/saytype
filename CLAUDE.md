@@ -149,6 +149,21 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   `enigo` (SendInput on Windows, XTEST/libxdo on Linux/X11), permission checks report
   "not required"; clipboard write and autostart are still stubs. See
   `docs/superpowers/specs/2026-07-01-cross-platform-support-design.md`.
+- `local_asr.rs` — the local transcription backend (provider `"local"`): Qwen3-ASR-0.6B
+  Q8_0 GGUF run by a **per-transcription `llama-mtmd-cli` subprocess** (pinned llama.cpp
+  release, `LLAMA_BUILD`); the process exits after each decode, so idle memory is
+  unchanged and cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs +
+  per-platform llama.cpp zip, ~1GB under `<app-data>/local-asr/`), the resumable
+  sha256-gated downloader, and the stdout parser (`language <lang><asr_text>` prefix).
+  **Invocation invariants:** `-c 2048` is mandatory (the model metadata's ctx 65536
+  otherwise preallocates a 7GiB KV cache) and `-p "a"` is mandatory (empty prompt hangs
+  in interactive mode). Translate mode never runs locally — it falls back to a
+  configured cloud key (Groq preferred). The frontend always uploads 16 kHz mono WAV in
+  local mode (`vad-gate.js` forceWav/encodeFullWav) because mtmd's miniaudio decoder
+  doesn't read AAC/m4a. `SettingsPayload.has_api_key` means "assets downloaded" when
+  provider is local. The language setting and dictionary do not apply to the local
+  provider (auto-detect only; documented v1 limits). Engine benchmarks and the
+  sherpa-onnx retreat path live in docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
 - `hotkey.rs` — global hold-to-record. On macOS uses a CGEventTap (only when Accessibility is
   trusted); elsewhere falls back to `rdev::listen`. Parses the modifier-only shortcut
   (default `Ctrl+Shift`) and emits start/stop/cancel recording events.
