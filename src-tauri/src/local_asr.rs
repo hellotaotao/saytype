@@ -77,6 +77,23 @@ pub fn llama_zip_asset() -> &'static Asset {
   &MAC_ZIP
 }
 
+// Intel-Mac slice of the universal binary. Never built by ci.yml (which is
+// aarch64-only for macOS) — only the release's universal-apple-darwin build
+// compiles this arch, so this gap first surfaced at the v1.4.0 release.
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+static MAC_ZIP: Asset = Asset {
+  rel_path: "llama-macos-x64.tar.gz",
+  urls: &[
+    "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-macos-x64.tar.gz",
+  ],
+  size: 11_007_527,
+  sha256: "d42000ae003fd61d7db50997af0e80f421524e30b534856c66573d064a478c1d",
+};
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub fn llama_zip_asset() -> &'static Asset {
+  &MAC_ZIP
+}
+
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 static WIN_ZIP: Asset = Asset {
   rel_path: "llama-win-x64.zip",
