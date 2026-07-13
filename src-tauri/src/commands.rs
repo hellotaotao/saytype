@@ -913,6 +913,23 @@ fn accessibility_status(prompt: bool) -> AccessibilityStatus {
   }
 }
 
+#[tauri::command]
+pub async fn check_for_updates(app: AppHandle) -> Result<crate::updater::UpdateStatus, String> {
+  log::info!("command:check_for_updates");
+  Ok(crate::updater::check_and_download(&app).await)
+}
+
+#[tauri::command]
+pub fn get_update_status(app: AppHandle) -> crate::updater::UpdateStatus {
+  crate::updater::current_status(&app)
+}
+
+#[tauri::command]
+pub fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
+  log::info!("command:install_update_and_restart");
+  crate::updater::install_pending_and_restart(&app)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

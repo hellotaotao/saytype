@@ -44,6 +44,9 @@
     "cancel-local-model-download": "cancel_local_model_download",
     "get-local-model-status": "get_local_model_status",
     "delete-local-model": "delete_local_model",
+    "check-for-updates": "check_for_updates",
+    "get-update-status": "get_update_status",
+    "install-update-and-restart": "install_update_and_restart",
   };
 
   const tauriArgs = {
