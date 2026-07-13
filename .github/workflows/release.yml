@@ -1,7 +1,8 @@
 name: Release
 
-# 推送形如 v1.0.90 的 tag 时触发:构建 macOS 通用二进制 DMG,
-# 用 Developer ID 签名并公证,然后创建 GitHub Release(草稿)并上传 DMG。
+# 推送形如 v1.0.90 的 tag 时触发:三平台矩阵构建(macOS 通用二进制 DMG 签名+公证,
+# Windows NSIS/MSI,Linux AppImage/deb/rpm),生成 minisign 签名的更新产物与合并的
+# latest.json,创建 GitHub Release(草稿)。手动 Publish 后自动更新端点才会看到新版。
 on:
   push:
     tags:
@@ -9,16 +10,30 @@ on:
 
 jobs:
   release:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            build-args: --target universal-apple-darwin --config src-tauri/tauri.release.conf.json
+          - os: windows-latest
+            label: Windows
+            rust-targets: x86_64-pc-windows-msvc
+            build-args: --target x86_64-pc-windows-msvc --config src-tauri/tauri.release.conf.json
+          - os: ubuntu-22.04
+            label: Linux
+            rust-targets: x86_64-unknown-linux-gnu
+            build-args: --target x86_64-unknown-linux-gnu --config src-tauri/tauri.release.conf.json
+    name: Release (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write # 允许 tauri-action 创建 Release 并上传产物
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # Full history + tags: release-notes generation diffs against the previous tag
-          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -28,18 +43,36 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          # 通用二进制需要两个 target(Intel + Apple Silicon)
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.rust-targets }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
 
+      # Tauri 2 Linux build prerequisites — same list as ci.yml (see there for
+      # the per-package rationale).
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxtst-dev \
+            build-essential \
+            curl wget file libssl-dev pkg-config
+
       - name: Install JS tooling (@tauri-apps/cli)
         run: npm ci
 
       - name: Configure Apple signing
+        if: matrix.os == 'macos-latest'
         # Signing/notarization only happen when a certificate secret is present.
         # We inject the APPLE_* vars into the environment ONLY in that case, so
         # that when the secrets are absent tauri-cli sees no APPLE_* vars at all
@@ -70,30 +103,53 @@ jobs:
             echo "::warning::No APPLE_CERTIFICATE secret configured — producing an UNSIGNED, not notarized build. Add the Apple signing secrets to enable signing/notarization."
           fi
 
-      - name: Build, sign, notarize & publish release
+      - name: Build, sign & publish release
         uses: tauri-apps/tauri-action@v0
-        # APPLE_* signing/notarization vars are intentionally NOT declared here.
-        # They are injected into the environment by the "Configure Apple signing"
-        # step above only when the secrets exist; otherwise tauri-cli sees no
-        # APPLE_* vars and builds an unsigned app (so the pipeline still passes).
+        # APPLE_* vars come from the "Configure Apple signing" step (macOS leg
+        # only, and only when the secrets exist). TAURI_SIGNING_* signs the
+        # updater artifacts (minisign) on every leg — required because
+        # tauri.release.conf.json sets createUpdaterArtifacts.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # 构建通用二进制;版本号由提交中的 Cargo.toml / tauri.conf.json 决定
-          args: --target universal-apple-darwin
+          # 版本号由提交中的 Cargo.toml / tauri.conf.json 决定
+          args: ${{ matrix.build-args }}
           # 用触发的 tag 作为 Release 的 tag 与标题
           tagName: ${{ github.ref_name }}
           releaseName: "SayType ${{ github.ref_name }}"
-          releaseBody: "下载下方的 .dmg 安装。"
-          # 先建草稿,确认无误后在 Release 页面手动点 Publish;
-          # 想完全自动发布就把它改成 false。
+          releaseBody: "下载对应平台的安装包。"
+          # 先建草稿,确认无误后在 Release 页面手动点 Publish —— 这同时是
+          # 自动更新的发布闸门(latest.json 只有 Publish 后才对客户端可见)。
           releaseDraft: true
           prerelease: false
+          # 生成并合并 latest.json(自动更新清单);Windows 以 NSIS .exe 为准。
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+  release-notes:
+    # Fills the draft release body with AI-generated bilingual notes covering
+    # <previous v* tag>..<this tag>. Missing secret or any failure -> warning,
+    # the release itself never breaks. Runs once, after all matrix legs, so the
+    # notes edit never races an asset upload.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history + tags: release-notes generation diffs against the previous tag
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
 
       - name: Generate release notes
-        # Fills the draft release body with AI-generated bilingual notes covering
-        # <previous v* tag>..<this tag>. Same philosophy as Apple signing above:
-        # missing secret or any failure -> warning, the release itself never breaks.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
