@@ -11,6 +11,7 @@ A voice input method built with **Tauri** that lets you dictate text in any appl
 - **AI Transcription**: Uses Groq's or OpenAI's Whisper API for speech-to-text
 - **Auto-typing**: Inserts transcribed text into the active application (macOS; Windows/Linux experimental, untested)
 - **Background Operation**: Runs silently in the system tray
+- **Automatic Updates**: New releases download in the background; restart from the tray when you're ready
 - **Customizable Settings**: Configure API key/provider, microphone, and language
 
 ## Requirements
@@ -87,6 +88,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 - **AI 转写**:使用 Groq 或 OpenAI 的 Whisper API 进行语音转文字
 - **自动输入**:将转写结果插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 - **后台运行**:静默驻留在系统托盘
+- **自动更新**:新版本后台自动下载,你随时从托盘重启完成升级
 - **可自定义设置**:配置 API key / 服务商、麦克风和语言
 
 ## 环境要求

@@ -42,9 +42,14 @@ Notarized release builds additionally set `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEA
 
 Releases are built, signed, **and notarized** entirely in CI — see
 [`.github/workflows/release.yml`](.github/workflows/release.yml). Pushing a `v*`
-tag (e.g. `v1.0.108`) runs `tauri-apps/tauri-action`, which builds a universal
-DMG, signs it with Developer ID, submits it to Apple's notary service, staples
-the ticket, and opens a **draft** GitHub Release with the DMG attached.
+tag (e.g. `v1.0.108`) runs a **3-platform matrix** of `tauri-apps/tauri-action`:
+macOS builds a universal DMG, signs it with Developer ID, submits it to Apple's
+notary service and staples the ticket; Windows (NSIS/MSI) and Linux
+(AppImage/deb/rpm) build unsigned installers (both platforms remain unverified
+on real machines). Every leg also emits **minisign-signed auto-update artifacts**
+plus a merged `latest.json` manifest (via `tauri.release.conf.json`'s
+`createUpdaterArtifacts` — kept out of the main config so local builds never
+need the updater key). Everything lands on a **draft** GitHub Release.
 Notarization is intentionally CI-only: it uploads the build to Apple and waits
 minutes, whereas local signing is instant (local builds skip it).
 
@@ -85,7 +90,7 @@ rejected by the notary service.
 
 ### GitHub repo secrets (Settings → Secrets and variables → Actions)
 
-These six names are exactly what `release.yml` consumes:
+These names are exactly what `release.yml` consumes:
 
 | Secret | Value |
 |---|---|
@@ -95,6 +100,8 @@ These six names are exactly what `release.yml` consumes:
 | `APPLE_ID` | your Apple ID (`hellotaotao@gmail.com`) |
 | `APPLE_PASSWORD` | the app-specific password from step 2 |
 | `APPLE_TEAM_ID` | `CU3VTR9MRH` |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.tauri/saytype-updater.key` (updater minisign key; **back up — lost key = installed clients can never auto-update again**) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater key password (also in local `scripts/sign.env`) |
 
 `tauri-action` imports the cert into a temporary keychain and signs; because the
 `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` trio is also present it then
@@ -114,7 +121,11 @@ git tag vX.Y.Z && git push origin main --tags
 ```
 
 Then review the draft Release on GitHub and click Publish (or set
-`releaseDraft: false` to auto-publish).
+`releaseDraft: false` to auto-publish). **Publishing is also the auto-update
+rollout gate**: installed clients (v1.3.6+) poll
+`releases/latest/download/latest.json` on startup + daily, auto-download in the
+background, and offer "Restart to update" in the tray + settings — the endpoint
+only serves *published* releases, so a draft is invisible to clients.
 
 ### Verify a notarized build
 
@@ -164,6 +175,17 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   provider is local. The language setting and dictionary do not apply to the local
   provider (auto-detect only; documented v1 limits). Engine benchmarks and the
   sherpa-onnx retreat path live in docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
+- `updater.rs` — auto-update: daily background check of the GitHub Releases
+  `latest.json` (startup + every 24 h; skipped entirely in debug builds), silent
+  download, single `update-status` event channel
+  (idle | checking | downloading | ready | upToDate | error); install + restart
+  only on user action (tray "Restart to update to vX.Y.Z" entry / settings-page
+  button). Updates are minisign-verified against the pubkey in
+  `tauri.conf.json`; `createUpdaterArtifacts` lives only in
+  `tauri.release.conf.json` (CI) and `tauri.updater-e2e.conf.json` (localhost
+  e2e harness — see docs/superpowers/plans/2026-07-13-auto-update.md Task 8) so
+  local builds never require the key. Design:
+  docs/superpowers/specs/2026-07-13-auto-update-design.md.
 - `hotkey.rs` — global hold-to-record. On macOS uses a CGEventTap (only when Accessibility is
   trusted); elsewhere falls back to `rdev::listen`. Parses the modifier-only shortcut
   (default `Ctrl+Shift`) and emits start/stop/cancel recording events.
