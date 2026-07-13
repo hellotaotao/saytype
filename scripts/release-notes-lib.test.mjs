@@ -83,7 +83,8 @@ test("buildPrompt embeds tags and material, fixes the skeleton", () => {
   assert.match(user, /v1\.3\.3/);
   assert.match(user, /MATERIAL/);
   assert.match(system, /## 中文/);
-  assert.match(system, /Download the \.dmg below to install\. \/ 下载下方的 \.dmg 安装。/);
+  assert.match(system, /## Download \/ 下载/);
+  assert.match(system, /auto-updater/);
 });
 
 // ---- extractText ----

@@ -21,6 +21,16 @@ A voice input method built with **Tauri** that lets you dictate text in any appl
 - A valid Groq or OpenAI API key
 - Microphone access permission (and Accessibility permission on macOS)
 
+## Download
+
+Grab the latest installer from the [Releases page](https://github.com/hellotaotao/saytype/releases/latest):
+
+- **macOS** — the `.dmg`
+- **Windows** — the `_x64-setup.exe` (or `.msi`)
+- **Linux** — the `.AppImage` (portable), `.deb` (Debian/Ubuntu), or `.rpm` (Fedora/RHEL)
+
+Once installed, SayType keeps itself up to date. The other files on the Releases page (`*.sig`, `latest.json`, `*.app.tar.gz`) are used by the built-in auto-updater — you don't need to download them.
+
 ## Installation / Development
 
 ```bash
@@ -97,6 +107,16 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 - Rust 工具链(`rustup`)—— 构建 Tauri 应用所需
 - 有效的 Groq 或 OpenAI API key
 - 麦克风访问权限(macOS 上还需辅助功能权限)
+
+## 下载
+
+从 [Releases 页面](https://github.com/hellotaotao/saytype/releases/latest) 下载对应平台的安装包:
+
+- **macOS** — `.dmg`
+- **Windows** — `_x64-setup.exe`(或 `.msi`)
+- **Linux** — `.AppImage`(免安装)、`.deb`(Debian/Ubuntu)或 `.rpm`(Fedora/RHEL)
+
+安装后 SayType 会自动保持更新。Releases 页面上其余文件(`*.sig`、`latest.json`、`*.app.tar.gz`)是自动更新用的,无需下载。
 
 ## 安装 / 开发
 

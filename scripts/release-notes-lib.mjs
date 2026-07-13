@@ -64,8 +64,17 @@ Write the release notes as an honest, user-facing record of what changed:
 - Omit internal-only commits entirely: CI, docs, tests, refactors, code style, version bumps. If a commit mixes both, keep only the user-visible part.
 - Never invent or embellish — every claim must be supported by the commits. If genuinely nothing user-visible changed, say so in one line.
 - Structure: Markdown sections in English first — use "## What's new", "## Improvements", "## Fixes" as content dictates, omitting empty sections; bullet points, concise. Then a "## 中文" section containing a faithful Chinese translation of the same content.
-- End with exactly this line:
-Download the .dmg below to install. / 下载下方的 .dmg 安装。
+- End with exactly this block (verbatim, including the heading):
+## Download / 下载
+
+Pick the one installer for your platform:
+- **macOS** — the \`.dmg\`
+- **Windows** — the \`_x64-setup.exe\` (or \`.msi\`)
+- **Linux** — the \`.AppImage\` (portable), \`.deb\` (Debian/Ubuntu), or \`.rpm\` (Fedora/RHEL)
+
+The remaining files (\`*.sig\`, \`latest.json\`, \`*.app.tar.gz\`) are used by the built-in auto-updater — you don't need to download them.
+
+（各平台任选一个安装：macOS 下 \`.dmg\`，Windows 下 \`_x64-setup.exe\` 或 \`.msi\`，Linux 下 \`.AppImage\`/\`.deb\`/\`.rpm\`。带 \`.sig\`、\`latest.json\`、\`*.app.tar.gz\` 的是自动更新用的，无需下载。）
 
 Output the raw Markdown only — no code fences around the whole document, no preamble, no commentary.`;
 
