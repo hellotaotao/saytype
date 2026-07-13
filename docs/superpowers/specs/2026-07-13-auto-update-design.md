@@ -107,13 +107,17 @@ previous version's manifest.
 
 Follows the house architecture: all logic in Rust, frontend is display-only.
 
-- **Dependencies:** `tauri-plugin-updater`, `tauri-plugin-process` (relaunch).
+- **Dependencies:** `tauri-plugin-updater` only — restart is Rust-side
+  `AppHandle::restart()`, so `tauri-plugin-process` (which only exposes
+  restart to JS) is not needed.
 - **Auto check:** on `setup`, spawn an async task — first check ~30 s after
   startup, then every 24 h. Skipped entirely under `debug_assertions` (dev
   runs never self-update).
 - **Update found:** download immediately in the background; store the
   `Update` object + downloaded bytes in `AppState.pending_update`; emit an
-  `update-ready` event carrying the version.
+  `update-status` event (single channel for all states:
+  idle | checking | downloading | ready | upToDate | error; "ready" carries
+  the version).
 - **Install:** the `install_update_and_restart` command calls
   `update.install(bytes)`, then `app.restart()` on macOS/Linux; on Windows
   the NSIS installer takes over and relaunches itself.
@@ -122,7 +126,7 @@ Follows the house architecture: all logic in Rust, frontend is display-only.
   - `check_for_updates` — manual trigger, returns the outcome.
   - `install_update_and_restart`.
   - `get_update_status` — current state for the settings page.
-- **New events:** `update-ready` (and status updates consumed by settings).
+- **New events:** `update-status` (single status channel consumed by settings).
 
 ## UI (low-key by design)
 

@@ -132,6 +132,8 @@ pub fn run() {
       let hotkey_handle = hotkey::start_listener(&app.handle(), config.shortcut.clone());
       *app.state::<state::AppState>().hotkey.lock().unwrap() = Some(hotkey_handle);
 
+      updater::spawn_periodic_checks(app.handle().clone());
+
       if !config.start_minimized {
         if let Some(window) = app.get_webview_window("main") {
           let _ = window.show();
