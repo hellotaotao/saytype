@@ -107,7 +107,12 @@ pub fn reveal_app_in_finder() {
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
   use std::io::Write;
   use std::process::Stdio;
+  // pbcopy decodes its stdin using the process locale. A GUI/LaunchAgent-
+  // launched app inherits no LANG/LC_*, so pbcopy falls back to MacRoman and
+  // reads our UTF-8 bytes as Latin garbage — Chinese "我" (E6 88 91) lands on
+  // the pasteboard as "Êàë". Force a UTF-8 locale so multibyte text round-trips.
   let mut child = Command::new("pbcopy")
+    .env("LC_ALL", "en_US.UTF-8")
     .stdin(Stdio::piped())
     .spawn()
     .context("failed to spawn pbcopy")?;
@@ -359,6 +364,51 @@ mod tests {
   #[test]
   fn explicit_no_focus_blocks_insertion() {
     assert_eq!(classify_focus_query(0, false), FocusQuery::NothingFocused);
+  }
+
+  // Regression guard for the pbcopy MacRoman-mojibake bug (E6 88 91 -> "Êàë").
+  // Self-contained and deterministic regardless of the test runner's own
+  // locale: first prove a locale-stripped pbcopy (mimicking a GUI/LaunchAgent
+  // launch, which is how the real app runs) DOES mangle multibyte UTF-8, then
+  // prove copy_to_clipboard — which forces LC_ALL=en_US.UTF-8 internally —
+  // survives that same environment. Reads back via pbpaste forced to UTF-8
+  // output so the readback itself is locale-independent. Touches the global
+  // pasteboard, so it's the only test here that does.
+  fn pbpaste_utf8() -> String {
+    let out = Command::new("pbpaste")
+      .env("LC_ALL", "en_US.UTF-8")
+      .output()
+      .expect("pbpaste should run");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+  }
+
+  fn pbcopy_into(cmd: &mut Command, text: &str) {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::piped()).spawn().expect("spawn pbcopy");
+    child.stdin.as_mut().unwrap().write_all(text.as_bytes()).expect("write pbcopy");
+    assert!(child.wait().expect("wait pbcopy").success());
+  }
+
+  #[test]
+  fn clipboard_round_trips_utf8_chinese_not_macroman() {
+    let sample = "我你好，测试 Claude！";
+
+    // Baseline: strip the locale so pbcopy falls back to MacRoman, reproducing
+    // the exact condition SayType runs under. This MUST corrupt the text —
+    // if it doesn't, the guard below proves nothing on this machine.
+    let mut stripped = Command::new("pbcopy");
+    stripped
+      .env_remove("LANG")
+      .env_remove("LC_CTYPE")
+      .env_remove("__CF_USER_TEXT_ENCODING")
+      .env("LC_ALL", "C");
+    pbcopy_into(&mut stripped, sample);
+    assert_ne!(pbpaste_utf8(), sample, "expected the C locale to mangle UTF-8");
+
+    // Fixed path: copy_to_clipboard forces LC_ALL=en_US.UTF-8, so it survives.
+    copy_to_clipboard(sample).expect("pbcopy write should succeed");
+    assert_eq!(pbpaste_utf8(), sample, "clipboard mangled multibyte UTF-8");
   }
 
   #[test]
