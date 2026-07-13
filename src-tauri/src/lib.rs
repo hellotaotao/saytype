@@ -7,6 +7,7 @@ mod platform;
 mod settings;
 mod state;
 mod tray;
+mod updater;
 
 use tauri::{webview::PageLoadEvent, Manager, WindowEvent};
 

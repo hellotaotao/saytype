@@ -17,6 +17,10 @@ pub struct AppState {
   /// Cancellation token of the in-flight local-model download, if any
   /// (single-flight guard for download_local_model).
   pub local_model_download: Mutex<Option<CancellationToken>>,
+  /// Update downloaded and waiting for the user to restart (tray/settings).
+  pub pending_update: Mutex<Option<crate::updater::PendingUpdate>>,
+  /// Last known updater status, mirrored to the frontend as `update-status`.
+  pub update_status: Mutex<crate::updater::UpdateStatus>,
 }
 
 impl Default for AppState {
@@ -32,6 +36,8 @@ impl Default for AppState {
         .build()
         .expect("failed to build transcription HTTP client"),
       local_model_download: Mutex::new(None),
+      pending_update: Mutex::new(None),
+      update_status: Mutex::new(crate::updater::UpdateStatus::default()),
     }
   }
 }
