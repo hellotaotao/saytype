@@ -163,6 +163,8 @@ function toggleApiKeyVisibility(provider) {
 // --- Local model panel (provider "local") ---
 let localModelState = "absent"; // absent | partial | downloading | ready
 let localModelSyncBound = false;
+let updatesPanelBound = false;
+let currentAppVersion = "";
 
 function formatGB(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
@@ -275,6 +277,79 @@ function setupLocalModelSync() {
   });
 }
 
+function renderUpdateStatus(status) {
+  const statusEl = document.getElementById("updateStatus");
+  const checkBtn = document.getElementById("checkUpdatesBtn");
+  const installBtn = document.getElementById("installUpdateBtn");
+  if (!statusEl || !checkBtn || !installBtn) {
+    return;
+  }
+
+  const state = status?.state || "idle";
+  const version = status?.version || "";
+  checkBtn.disabled = state === "checking" || state === "downloading";
+  checkBtn.classList.toggle("hidden", state === "ready");
+  installBtn.classList.toggle("hidden", state !== "ready");
+
+  if (state === "checking") {
+    statusEl.textContent = translate("settings.updates.checking");
+  } else if (state === "downloading") {
+    statusEl.textContent = translate("settings.updates.downloading", { version });
+  } else if (state === "ready") {
+    statusEl.textContent = translate("settings.updates.ready", { version });
+  } else if (state === "error") {
+    statusEl.textContent = translate("settings.updates.error", { message: status?.message || "" });
+  } else if (state === "upToDate") {
+    statusEl.textContent = translate("settings.updates.upToDate", { version: currentAppVersion });
+  } else {
+    statusEl.textContent = currentAppVersion ? `v${currentAppVersion}` : "";
+  }
+}
+
+async function refreshUpdateStatus() {
+  try {
+    renderUpdateStatus(await ipc.invoke("get-update-status"));
+  } catch {
+    renderUpdateStatus({ state: "idle" });
+  }
+}
+
+async function setupUpdatesPanel() {
+  if (updatesPanelBound || !ipc) {
+    return;
+  }
+  updatesPanelBound = true;
+
+  ipc.on("update-status", (_event, payload) => {
+    if (payload) {
+      renderUpdateStatus(payload);
+    }
+  });
+
+  document.getElementById("checkUpdatesBtn")?.addEventListener("click", async () => {
+    try {
+      renderUpdateStatus(await ipc.invoke("check-for-updates"));
+    } catch (error) {
+      renderUpdateStatus({ state: "error", message: String(error) });
+    }
+  });
+
+  document.getElementById("installUpdateBtn")?.addEventListener("click", async () => {
+    try {
+      await ipc.invoke("install-update-and-restart");
+    } catch (error) {
+      renderUpdateStatus({ state: "error", message: String(error) });
+    }
+  });
+
+  try {
+    currentAppVersion = await ipc.invoke("get-app-version");
+  } catch {
+    currentAppVersion = "";
+  }
+  await refreshUpdateStatus();
+}
+
 function toggleKeyReveal(button) {
   const input = document.getElementById(button.getAttribute("data-target"));
   if (!input) {
@@ -321,6 +396,7 @@ function handleUiLanguageChange(event) {
   applyI18n(document);
   void checkMicrophonePermissionStatus();
   void checkAccessibilityStatus();
+  void refreshUpdateStatus();
 }
 
 function handleSidebarClick(event) {
@@ -757,6 +833,7 @@ async function bootstrapSettingsPage() {
     setupShortcutSync();
     setupThemeSync();
     setupLocalModelSync();
+    void setupUpdatesPanel();
     await loadSettings();
     if (document?.documentElement) {
       document.documentElement.setAttribute("data-settings-bootstrap-complete", "1");

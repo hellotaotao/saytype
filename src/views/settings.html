@@ -232,6 +232,24 @@
             </label>
           </div>
         </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-title" data-i18n="settings.updates.title">Software updates</div>
+            <div class="setting-description" data-i18n="settings.updates.description">
+              New versions download in the background; you choose when to restart.
+            </div>
+          </div>
+          <div class="setting-control">
+            <div id="updateStatus" class="permission-status"></div>
+            <button class="btn btn-secondary" id="checkUpdatesBtn" data-i18n="settings.updates.check">
+              Check for updates
+            </button>
+            <button class="btn btn-primary hidden" id="installUpdateBtn" data-i18n="settings.updates.restart">
+              Restart to update
+            </button>
+          </div>
+        </div>
       </div>
       </div>
 
