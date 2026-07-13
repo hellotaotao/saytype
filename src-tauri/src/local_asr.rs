@@ -171,9 +171,31 @@ fn is_executable(_path: &Path) -> bool {
 /// could exceed this — acceptable for now, those platforms are not yet
 /// real-machine verified. Revisit if long-form CPU dictation becomes real.
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(180);
-/// MUST be passed explicitly: the model metadata declares ctx 65536 and the
-/// CLI default ("0" = from model) preallocates a 7 GiB KV cache (measured).
-const CTX_SIZE: &str = "2048";
+/// Context size for one decode, sized to the clip. It MUST be passed
+/// explicitly: the model metadata declares ctx 65536 and the CLI default
+/// ("0" = from model) preallocates a ~7 GiB KV cache (measured). But a fixed
+/// small ctx overflows on long audio — llama.cpp preallocates the KV cache to
+/// the *full* ctx, and Qwen3-ASR streams the clip into it at ~15 tokens/s on
+/// top of the generated transcript. At the old fixed 2048 this failed past
+/// ~2 min: `failed to decode audio` once the audio alone overflowed (~2.7 min),
+/// or `failed to decode token` when the audio fit but audio+transcript didn't
+/// (~2.2 min, the common user-visible one). So we size ctx to the clip.
+///
+/// The frontend always uploads 16 kHz mono 16-bit WAV in local mode
+/// (vad-gate.js forceWav/encodeFullWav) = 32000 bytes/s, so seconds ≈
+/// (len-44)/32000. Budget ~20 tokens/s (audio ~15/s + transcript headroom) plus
+/// a 512 base, clamped to [FLOOR, CAP]. The 2048 FLOOR keeps short clips at the
+/// old memory; the 16384 CAP bounds a pathological clip (~2.9 GiB peak RSS,
+/// ~13 min of speech). Measured peak RSS ≈ 110 KiB/token: ctx 2048→1288 MiB,
+/// 8192→2020, 16384→2891, 32768→4659. Verified 135 s–300 s clips that failed at
+/// 2048 all decode cleanly under this formula.
+const CTX_FLOOR: u32 = 2048;
+const CTX_CAP: u32 = 16384;
+fn ctx_size_for_wav(wav_len: usize) -> u32 {
+  let seconds = wav_len.saturating_sub(44) as f64 / 32000.0;
+  let tokens = (seconds * 20.0) as u32 + 512;
+  tokens.clamp(CTX_FLOOR, CTX_CAP)
+}
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -222,7 +244,7 @@ pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
     .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
     .arg("--audio").arg(&tmp_path)
     .arg("-p").arg("a")
-    .arg("-c").arg(CTX_SIZE)
+    .arg("-c").arg(ctx_size_for_wav(wav_bytes.len()).to_string())
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
@@ -238,6 +260,16 @@ pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
   if !output.status.success() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    // After dynamic ctx sizing (see CTX_CAP), a decode failure almost always
+    // means the clip still exceeded the KV-cache cap. Translate the raw llama
+    // error ("failed to decode audio"/"failed to decode token") into something
+    // the user can act on instead of surfacing the CLI's internals.
+    if stderr.contains("failed to decode") {
+      let secs = wav_bytes.len().saturating_sub(44) / 32000;
+      anyhow::bail!(
+        "Recording is too long for the on-device model ({secs}s). Keep local dictation under ~13 minutes, or switch to a cloud provider in Settings for long recordings."
+      );
+    }
     anyhow::bail!("llama-mtmd-cli failed ({}): {last}", output.status);
   }
 
@@ -611,6 +643,24 @@ mod tests {
   fn parse_without_marker_falls_back_to_trimmed_whole() {
     assert_eq!(parse_mtmd_output("  plain text out  \n"), "plain text out");
     assert_eq!(parse_mtmd_output(""), "");
+  }
+
+  #[test]
+  fn ctx_scales_with_clip_length_within_bounds() {
+    // 16 kHz mono 16-bit WAV = 32000 bytes/s after a 44-byte header.
+    let wav = |secs: f64| 44 + (secs * 32000.0) as usize;
+    // Short clips stay at the floor (== the old fixed 2048), so their memory
+    // footprint is unchanged; empty/sub-header input must not underflow.
+    assert_eq!(ctx_size_for_wav(wav(1.0)), CTX_FLOOR);
+    assert_eq!(ctx_size_for_wav(wav(60.0)), CTX_FLOOR); // 60*20+512=1712 < floor
+    assert_eq!(ctx_size_for_wav(0), CTX_FLOOR);
+    assert_eq!(ctx_size_for_wav(10), CTX_FLOOR); // shorter than the WAV header
+    // ~135 s failed at the old fixed 2048; the formula lifts it clear (verified
+    // end-to-end: 135 s–300 s clips that failed at 2048 decode cleanly here).
+    assert_eq!(ctx_size_for_wav(wav(135.0)), 135 * 20 + 512);
+    assert!(ctx_size_for_wav(wav(135.0)) > CTX_FLOOR);
+    // A pathological clip clamps to the cap rather than ballooning the KV cache.
+    assert_eq!(ctx_size_for_wav(wav(900.0)), CTX_CAP); // 900*20+512 > cap
   }
 
   #[test]

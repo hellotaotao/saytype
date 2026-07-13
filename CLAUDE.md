@@ -166,8 +166,13 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   unchanged and cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs +
   per-platform llama.cpp zip, ~1GB under `<app-data>/local-asr/`), the resumable
   sha256-gated downloader, and the stdout parser (`language <lang><asr_text>` prefix).
-  **Invocation invariants:** `-c 2048` is mandatory (the model metadata's ctx 65536
-  otherwise preallocates a 7GiB KV cache) and `-p "a"` is mandatory (empty prompt hangs
+  **Invocation invariants:** an explicit `-c` is mandatory (the model metadata's ctx
+  65536 otherwise preallocates a 7GiB KV cache), sized **per-clip** by `ctx_size_for_wav`
+  (clamped to [2048, 16384]) — a *fixed* small ctx overflowed on long audio: llama.cpp
+  preallocates the KV cache to the full ctx and Qwen3-ASR streams the clip in at
+  ~15 tokens/s plus the transcript, so the old flat `-c 2048` failed past ~2 min
+  (`failed to decode audio`, or `failed to decode token` when audio fit but audio+text
+  didn't). `-p "a"` is mandatory (empty prompt hangs
   in interactive mode). Translate mode never runs locally — it falls back to a
   configured cloud key (Groq preferred). The frontend always uploads 16 kHz mono WAV in
   local mode (`vad-gate.js` forceWav/encodeFullWav) because mtmd's miniaudio decoder
