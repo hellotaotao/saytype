@@ -117,6 +117,11 @@ pub fn run() {
       };
       app.handle().plugin(log_plugin)?;
 
+      // Auto-update: checks GitHub Releases' latest.json and verifies packages
+      // against our minisign pubkey (docs/superpowers/specs/2026-07-13-auto-update-design.md).
+      #[cfg(desktop)]
+      app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+
       tray::create(&app.handle())?;
 
       let config = settings::read_config().unwrap_or_default();

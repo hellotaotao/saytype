@@ -94,5 +94,16 @@
         }
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFOUFGNjI3QTdFQjg0NwpSV1JIdUg1NllxL3BDenA2WExRcHJVOXMvSUF2cmwzMUZ2ZTB5NHZLTWJKMy9yMUtyenFncWtsNgo=",
+      "endpoints": [
+        "https://github.com/hellotaotao/saytype/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
