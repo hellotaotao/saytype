@@ -122,10 +122,50 @@ git tag vX.Y.Z && git push origin main --tags
 
 Then review the draft Release on GitHub and click Publish (or set
 `releaseDraft: false` to auto-publish). **Publishing is also the auto-update
-rollout gate**: installed clients (v1.3.6+) poll
-`releases/latest/download/latest.json` on startup + daily, auto-download in the
-background, and offer "Restart to update" in the tray + settings — the endpoint
-only serves *published* releases, so a draft is invisible to clients.
+rollout gate**: installed clients (v1.4.0+, the first updater-capable release)
+poll `releases/latest/download/latest.json` on startup + daily, auto-download in
+the background, and offer "Restart to update" in the tray + settings — the
+endpoint only serves *published* releases, so a draft is invisible to clients.
+
+### Distribution & downloads
+
+**Now:** GitHub Releases hosts the bytes and is the auto-update source (the
+updater endpoint `…/releases/latest/download/latest.json` is baked into
+`tauri.conf.json`). This is fine and reliable outside mainland China; inside
+China GitHub is slow/flaky, so auto-update there is best-effort (checks/downloads
+may time out — logged, never crashes). Deciding to build macOS as universal vs
+arm64-only is discussed in the 2026-07 chat history; still universal as of v1.4.0.
+
+**Planned (not built yet — for when the official website exists):** the site's
+Download button should point users at the latest installer *without* sending them
+to the cluttered GitHub Releases page. Keep the site a **pure static frontend —
+no backend, no ICP filing needed** (a foreign-hosted static site is reachable
+from China without 备案; only *mainland-hosted* sites require it, and only
+mainland hosting/CDN — which needs 备案 — actually fixes China speed, so defer
+that whole bundle until China is a real market). Implement the button with a few
+lines of client-side JS that query the GitHub API on page load and set the
+`href` to the newest DMG:
+
+```html
+<a id="dl-mac" href="https://github.com/hellotaotao/saytype/releases/latest">Download for macOS</a>
+<script>
+fetch('https://api.github.com/repos/hellotaotao/saytype/releases/latest')
+  .then(r => r.json())
+  .then(rel => {
+    const dmg = rel.assets.find(a => a.name.endsWith('.dmg'));
+    if (dmg) document.getElementById('dl-mac').href = dmg.browser_download_url;
+  })
+  .catch(() => {}); // falls back to the releases page if the API is unavailable
+</script>
+```
+
+GitHub's anonymous API limit (60/hr) is **per visitor IP**, so a download button
+never hits it. Alternative (zero JS, but adds a CI step + an extra release asset):
+upload a version-less copy like `SayType-macOS.dmg` each release and hardcode
+`…/releases/latest/download/SayType-macOS.dmg`. Prefer the JS approach — it keeps
+the site trivially static and doesn't re-clutter the releases page. Fronting the
+updater endpoint (not just the download link) behind an own domain is only worth
+it as part of the China bundle above; skip it otherwise.
 
 ### Verify a notarized build
 
