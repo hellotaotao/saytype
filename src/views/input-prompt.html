@@ -14,9 +14,11 @@
     <div class="left-section">
       <div class="microphone-icon material-icons">mic</div>
       <div class="content-section">
-        <div class="prompt-text" id="promptText">
-          Hold Ctrl + Shift to dictate, Shift + Alt for English
-        </div>
+        <!-- Populated by updateShortcutHint() on init (both the get-settings
+             success and failure paths). Hardcoded text here would flash the
+             default shortcut in English before JS takes over — and it can be
+             wrong twice: not the user's configured shortcut, not their locale. -->
+        <div class="prompt-text" id="promptText"></div>
         <div class="status-text" id="statusText"></div>
         <div class="model-badge" id="modelBadge"></div>
       </div>
