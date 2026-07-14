@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
@@ -213,6 +215,25 @@ pub fn cancel_transcription(state: State<'_, AppState>) -> Result<bool, String> 
   Ok(cancelled)
 }
 
+/// Removes its entry from `active_transcriptions` when dropped, so the
+/// bookkeeping survives every exit path — normal return, `?`, a panic inside
+/// the transcription future, or the command future being dropped. Without it a
+/// panicking request would leave its stale token in the map forever, making
+/// cancel_transcription report "cancelled something" on an idle app.
+struct ActiveTranscriptionGuard<'a> {
+  map: &'a Mutex<HashMap<u64, CancellationToken>>,
+  id: u64,
+}
+
+impl Drop for ActiveTranscriptionGuard<'_> {
+  fn drop(&mut self) {
+    // Skip cleanup on a poisoned lock rather than double-panic during unwind.
+    if let Ok(mut map) = self.map.lock() {
+      map.remove(&self.id);
+    }
+  }
+}
+
 #[tauri::command]
 pub async fn transcribe_audio(
   app: AppHandle,
@@ -265,6 +286,10 @@ pub async fn transcribe_audio(
     .lock()
     .unwrap()
     .insert(request_id, cancellation.clone());
+  let active_transcription = ActiveTranscriptionGuard {
+    map: &state.active_transcriptions,
+    id: request_id,
+  };
 
   // Dev-only: keep a copy of the exact bytes we send, so history can play the
   // recording back (for diagnosing first-word drop / quality). Never in release.
@@ -291,7 +316,7 @@ pub async fn transcribe_audio(
     } => result,
   };
 
-  state.active_transcriptions.lock().unwrap().remove(&request_id);
+  drop(active_transcription);
 
   match result {
     Ok(raw) => {
@@ -933,6 +958,43 @@ pub fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  // --- ActiveTranscriptionGuard: cleanup must survive every exit path ---
+
+  #[test]
+  fn transcription_guard_removes_its_entry_on_drop() {
+    let map = Mutex::new(HashMap::new());
+    map.lock().unwrap().insert(7, CancellationToken::new());
+    {
+      let _guard = ActiveTranscriptionGuard { map: &map, id: 7 };
+    }
+    assert!(map.lock().unwrap().is_empty());
+  }
+
+  #[test]
+  fn transcription_guard_removes_its_entry_during_panic_unwind() {
+    // The whole point of the guard: a panic inside the transcription future
+    // must not leave a stale token behind.
+    let map = Mutex::new(HashMap::new());
+    map.lock().unwrap().insert(7, CancellationToken::new());
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let _guard = ActiveTranscriptionGuard { map: &map, id: 7 };
+      panic!("simulated transcription panic");
+    }));
+    assert!(panicked.is_err());
+    assert!(map.lock().unwrap().is_empty());
+  }
+
+  #[test]
+  fn transcription_guard_only_removes_its_own_entry() {
+    let map = Mutex::new(HashMap::new());
+    map.lock().unwrap().insert(7, CancellationToken::new());
+    map.lock().unwrap().insert(8, CancellationToken::new());
+    drop(ActiveTranscriptionGuard { map: &map, id: 7 });
+    let remaining = map.lock().unwrap();
+    assert!(!remaining.contains_key(&7));
+    assert!(remaining.contains_key(&8));
+  }
 
   // --- Whisper + Chinese: the seed is injected, placed LAST ---
 
