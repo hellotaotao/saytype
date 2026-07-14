@@ -79,10 +79,11 @@ jobs:
       # automated check the Windows/Linux legs get — the cross-platform logic
       # tests (settings/history/hotkey parsing/scrub) run on real hosts here.
       # macOS-only tests (platform::macos) are cfg'd out on the other legs.
+      # Globs are expanded by node's test runner itself (not the shell), so the
+      # same line works on all three OS legs and every *.test.mjs in these dirs
+      # — including future ones — joins CI automatically.
       - name: Run Node tests
-        run: |
-          node src/views/vad-decision.test.mjs
-          node scripts/release-notes-lib.test.mjs
+        run: node --test "src/views/*.test.mjs" "scripts/*.test.mjs"
 
       - name: Run Rust tests
         run: cargo test
