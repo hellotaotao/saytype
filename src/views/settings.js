@@ -520,13 +520,28 @@ function bindEventHandlers() {
     }
   });
 
+  // This window is created once at startup (hidden) and only shown/hidden
+  // after, so the permission state rendered at bootstrap goes stale — e.g. an
+  // Accessibility grant made in the onboarding wizard used to show as red
+  // here until the manual check button was clicked. Refresh quietly whenever
+  // the window comes to front; the debounced gated recheck stays for the
+  // guided flow, where the TCC grant can land a beat after refocus.
   window.addEventListener("focus", () => {
+    void refreshAccessibilityQuietly();
     scheduleAccessibilityRecheck();
   });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
+      void refreshAccessibilityQuietly();
       scheduleAccessibilityRecheck();
     }
+  });
+
+  // Live sync while this window sits hidden: the backend broadcasts on every
+  // real Accessibility state change (wizard grant, main-window rechecks), so
+  // re-render straight away instead of waiting for the next show.
+  ipc.on("accessibility-permission-changed", () => {
+    void refreshAccessibilityQuietly();
   });
 
   document.querySelectorAll(".sidebar-item").forEach((item) => {
@@ -710,6 +725,21 @@ async function checkAccessibilityStatus() {
     console.error("Failed to check accessibility permission:", error);
     renderAccessibilityStatus(null);
     return null;
+  }
+}
+
+// Same full recheck (backend state sync + hotkey restart on grant), but
+// without the "rechecking…" placeholder write — safe to run on every focus /
+// broadcast without making the status line flicker. Errors keep whatever is
+// currently shown rather than degrading it to the error state.
+async function refreshAccessibilityQuietly() {
+  if (!ipc) {
+    return;
+  }
+  try {
+    renderAccessibilityStatus(await ipc.invoke("recheck-accessibility-permission"));
+  } catch (error) {
+    console.error("Failed to refresh accessibility permission:", error);
   }
 }
 
