@@ -144,19 +144,77 @@ pub fn save_onboarding_api_key(app: AppHandle, provider: String, api_key: String
     "openai" => config.api_key_openai = key,
     other => return Err(format!("Unknown provider: {other}")),
   }
-  if config.provider != provider {
-    config.provider = provider;
-    config.model = if config.provider == "groq" {
-      "whisper-large-v3-turbo".into()
-    } else {
-      "gpt-4o-mini-transcribe".into()
-    };
-  }
+  switch_provider(&mut config, &provider);
+  // Re-derive even when the provider didn't change: the key for the already
+  // selected provider may have just been (re)entered.
   config.api_key = settings::selected_api_key(&config);
 
   settings::write_config(&config).map_err(stringify_error)?;
   broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
   Ok(true)
+}
+
+/// The model a provider lands on when it's newly selected: its recommended
+/// default (same table the settings UI marks "recommended").
+fn default_model_for(provider: &str) -> &'static str {
+  match provider {
+    "groq" => "whisper-large-v3-turbo",
+    crate::local_asr::LOCAL_PROVIDER => "qwen3-asr-0.6b-q8_0",
+    _ => "gpt-4o-mini-transcribe",
+  }
+}
+
+/// Point `config` at `provider`, resetting the model to that provider's
+/// default. Everything else (keys, dictionary, shortcuts, onboarding flag)
+/// is preserved; the legacy `api_key` mirror is left alone for "local" (no
+/// key to mirror — clobbering it would lose the stored cloud key).
+fn switch_provider(config: &mut AppConfig, provider: &str) {
+  if config.provider == provider {
+    return;
+  }
+  config.provider = provider.to_string();
+  config.model = default_model_for(provider).into();
+  if provider != crate::local_asr::LOCAL_PROVIDER {
+    config.api_key = settings::selected_api_key(config);
+  }
+}
+
+/// Engine quick-switch core, shared by the tray submenu (direct call) and the
+/// `set_provider` command (home-page switcher / wizard). Guards "local" behind
+/// downloaded assets, persists, and broadcasts so every window's badges — and
+/// the tray checkmarks — update live.
+pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), String> {
+  if !matches!(provider, "groq" | "openai" | crate::local_asr::LOCAL_PROVIDER) {
+    return Err(format!("Unknown provider: {provider}"));
+  }
+  settings::local_provider_selectable(provider, crate::local_asr::assets_ready())?;
+  let mut config = settings::read_config().map_err(stringify_error)?;
+  switch_provider(&mut config, provider);
+  settings::write_config(&config).map_err(stringify_error)?;
+  broadcast_settings_updates(app, &config).map_err(stringify_error)?;
+  Ok(())
+}
+
+#[tauri::command]
+pub fn set_provider(app: AppHandle, provider: String) -> Result<bool, String> {
+  log::info!("command:set_provider provider={provider}");
+  apply_provider_change(&app, &provider)?;
+  Ok(true)
+}
+
+// Every "local isn't downloaded yet" guide (tray submenu, home switcher)
+// funnels here: bring up Settings and have it reveal the model download panel.
+#[tauri::command]
+pub fn open_local_model_panel(app: AppHandle) -> Result<(), String> {
+  log::info!("command:open_local_model_panel");
+  if let Some(window) = app.get_webview_window("settings") {
+    window.show().map_err(stringify_error)?;
+    window.set_focus().map_err(stringify_error)?;
+  }
+  app
+    .emit_to("settings", "open-local-model-panel", ())
+    .map_err(stringify_error)?;
+  Ok(())
 }
 
 #[tauri::command]
@@ -671,6 +729,10 @@ fn broadcast_settings_updates(app: &AppHandle, config: &AppConfig) -> Result<()>
     json!({ "language": config.ui_language }),
   )?;
   app.emit("ui-theme-updated", json!({ "theme": config.ui_theme }))?;
+  // The tray's Engine checkmarks mirror config.provider; every config write
+  // funnels through here, so this keeps them in sync with all three switch
+  // surfaces (settings form, tray, home switcher/wizard).
+  crate::tray::refresh_menu(app);
   Ok(())
 }
 
@@ -958,6 +1020,50 @@ pub fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  // --- Engine switch: model reset + config preservation ---
+
+  #[test]
+  fn switch_provider_resets_model_to_the_new_providers_default() {
+    let mut config = AppConfig::default(); // openai / gpt-4o-mini-transcribe
+    switch_provider(&mut config, "groq");
+    assert_eq!(config.provider, "groq");
+    assert_eq!(config.model, "whisper-large-v3-turbo");
+    switch_provider(&mut config, "local");
+    assert_eq!(config.model, "qwen3-asr-0.6b-q8_0");
+    switch_provider(&mut config, "openai");
+    assert_eq!(config.model, "gpt-4o-mini-transcribe");
+  }
+
+  #[test]
+  fn switch_provider_same_provider_keeps_custom_model() {
+    let mut config = AppConfig::default();
+    config.model = "whisper-1".into();
+    switch_provider(&mut config, "openai");
+    assert_eq!(config.model, "whisper-1");
+  }
+
+  #[test]
+  fn switch_provider_preserves_keys_and_dictionary() {
+    let mut config = AppConfig::default();
+    config.api_key_groq = "gsk_x".into();
+    config.api_key_openai = "sk_x".into();
+    config.api_key = "sk_x".into();
+    config.dictionary = "Claude".into();
+    config.onboarding_completed = true;
+
+    // → local: the legacy api_key mirror must survive (no key to mirror).
+    switch_provider(&mut config, "local");
+    assert_eq!(config.api_key, "sk_x");
+    assert_eq!(config.api_key_groq, "gsk_x");
+    assert_eq!(config.dictionary, "Claude");
+    assert!(config.onboarding_completed);
+
+    // → groq: the mirror follows the newly selected provider's key.
+    switch_provider(&mut config, "groq");
+    assert_eq!(config.api_key, "gsk_x");
+    assert_eq!(config.api_key_openai, "sk_x");
+  }
 
   // --- ActiveTranscriptionGuard: cleanup must survive every exit path ---
 

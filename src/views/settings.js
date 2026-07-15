@@ -162,6 +162,11 @@ function toggleApiKeyVisibility(provider) {
 
 // --- Local model panel (provider "local") ---
 let localModelState = "absent"; // absent | partial | downloading | ready
+// Whether the running download was started from THIS window. Gates the
+// "switch to local?" prompt on ready: a download driven by the onboarding
+// wizard (main window) auto-switches there — a hidden settings window must
+// not pop a second, competing dialog.
+let localModelDownloadStartedHere = false;
 let localModelSyncBound = false;
 let updatesPanelBound = false;
 let currentAppVersion = "";
@@ -227,16 +232,43 @@ async function refreshLocalModelStatus() {
 async function handleLocalModelAction() {
   try {
     if (localModelState === "downloading") {
+      localModelDownloadStartedHere = false;
       await ipc.invoke("cancel-local-model-download");
       return; // terminal event repaints the panel
     }
     // Optimistic repaint, then kick the (long-running) download; progress
     // events keep the panel live. Errors surface via the "error" event too.
+    localModelDownloadStartedHere = true;
     renderLocalModelPanel({ state: "downloading", downloadedBytes: 0, totalBytes: 1 });
     void refreshLocalModelStatus();
     await ipc.invoke("download-local-model");
   } catch (error) {
     console.error("Local model download failed:", error);
+  }
+}
+
+// Download finished in this window → offer (don't force) the switch to the
+// local engine; the backend save + broadcast keeps every window in sync.
+async function offerSwitchToLocal() {
+  if (currentSettings?.provider === "local") {
+    return;
+  }
+  if (!confirm(translate("settings.localModel.switchPrompt"))) {
+    return;
+  }
+  try {
+    await ipc.invoke("set-provider", "local");
+    currentSettings.provider = "local";
+    currentSettings.model = "qwen3-asr-0.6b-q8_0";
+    const providerSelect = document.getElementById("providerSelect");
+    setSelectValue(providerSelect, "local", "groq");
+    updateModelOptions("local");
+    setSelectValue(document.getElementById("modelSelect"), currentSettings.model, "");
+    toggleApiKeyVisibility("local");
+    void refreshLocalModelStatus();
+  } catch (error) {
+    console.error("Failed to switch to the local engine:", error);
+    alert(translate("settings.saveError"));
   }
 }
 
@@ -274,6 +306,22 @@ function setupLocalModelSync() {
       // ready/cancelled/error: re-derive the real on-disk state.
       void refreshLocalModelStatus();
     }
+    if (payload.state === "ready" && localModelDownloadStartedHere) {
+      localModelDownloadStartedHere = false;
+      void offerSwitchToLocal();
+    }
+  });
+
+  // Tray "Engine → Local" (or the home switcher) clicked before the assets
+  // exist: the backend opens this window and asks us to show the download
+  // panel, which lives behind the provider select's "local" option.
+  ipc.on("open-local-model-panel", () => {
+    const providerSelect = document.getElementById("providerSelect");
+    setSelectValue(providerSelect, "local", "groq");
+    updateModelOptions("local");
+    toggleApiKeyVisibility("local");
+    void refreshLocalModelStatus();
+    document.getElementById("localModelItem")?.scrollIntoView({ block: "center" });
   });
 }
 

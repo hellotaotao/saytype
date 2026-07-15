@@ -152,6 +152,52 @@ function bindEvents() {
       renderObKey();
     });
   });
+  document.getElementById("obLocalCard")?.addEventListener("click", () => {
+    const state = obLocalStatus?.state || "absent";
+    if (state === "downloading") {
+      return; // in flight — the wizard's escape hatch is "Skip this step"
+    }
+    if (state === "ready") {
+      if (cachedSettings?.provider !== "local") {
+        void obSelectLocal();
+      }
+      return;
+    }
+    void obStartLocalDownload();
+  });
+  document.getElementById("obCloudToggle")?.addEventListener("click", () => {
+    obCloudExpanded = !obCloudExpanded;
+    renderObLocal();
+  });
+
+  // Wizard-page-5 download progress. The settings window renders the same
+  // event on its own panel; here it only matters while the wizard is up.
+  ipc.on("local-model-download-progress", (_event, payload) => {
+    if (!payload) {
+      return;
+    }
+    if (payload.state === "downloading") {
+      obLocalStatus = {
+        state: "downloading",
+        downloadedBytes: payload.downloadedBytes || 0,
+        totalBytes: payload.totalBytes || 0,
+      };
+      if (onboardingVisible()) {
+        renderObLocal();
+      }
+      return;
+    }
+    if (payload.state === "error") {
+      obLocalError = payload.message || "";
+    }
+    if (payload.state === "ready" && obLocalStartedHere) {
+      // Clicking Download in the wizard already chose the local engine —
+      // completing the download selects it without a second confirmation.
+      obLocalStartedHere = false;
+      void obSelectLocal();
+    }
+    void obRefreshLocalStatus();
+  });
 
   ipc.on("activity-updated", async () => {
     await loadActivities();
@@ -234,6 +280,7 @@ async function refreshReadiness() {
   }
   if (onboardingVisible()) {
     renderObAx();
+    renderObLocal();
     renderObFooter();
     renderObFinal();
   }
@@ -442,6 +489,8 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
   head.appendChild(badge);
   card.appendChild(head);
 
+  card.appendChild(buildEngineSwitcher());
+
   const shortcuts = document.createElement("div");
   shortcuts.className = "readiness-shortcuts";
   [
@@ -490,6 +539,64 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
 
   if (!axOk) {
     card.appendChild(buildAxGuide());
+  }
+}
+
+// Engine quick-switch: one segmented control [Groq | OpenAI | Local] at the
+// top of the readiness card, mirroring config.provider (the tray's Engine
+// submenu is the same switch). "Local" carries a "recommended" tag on
+// local-capable hardware (Apple Silicon). Selecting local before its assets
+// are downloaded is rejected by the backend — we then open Settings on the
+// download panel instead of silently switching to an unusable engine.
+const ENGINE_OPTIONS = [
+  { value: "groq", label: "Groq" },
+  { value: "openai", label: "OpenAI" },
+  { value: "local", labelKey: "home.engineLocal" },
+];
+
+function buildEngineSwitcher() {
+  const seg = document.createElement("div");
+  seg.className = "engine-seg";
+  ENGINE_OPTIONS.forEach(({ value, label, labelKey }) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `engine-seg-btn${cachedSettings?.provider === value ? " active" : ""}`;
+    const text = document.createElement("span");
+    text.textContent = labelKey ? t(labelKey) : label;
+    btn.appendChild(text);
+    if (value === "local" && cachedSettings?.localCapable) {
+      const tag = document.createElement("span");
+      tag.className = "engine-tag";
+      tag.textContent = t("home.engineRecommended");
+      btn.appendChild(tag);
+    }
+    btn.addEventListener("click", () => {
+      void selectEngine(value);
+    });
+    seg.appendChild(btn);
+  });
+  return seg;
+}
+
+async function selectEngine(provider) {
+  if (cachedSettings?.provider === provider) {
+    return;
+  }
+  try {
+    await ipc.invoke("set-provider", provider);
+    // The shortcut-updated broadcast re-renders too; refresh eagerly so the
+    // highlight moves without waiting on the event round-trip.
+    await refreshReadiness();
+  } catch (error) {
+    if (provider === "local") {
+      // Assets not downloaded yet — hand over to the settings download panel.
+      ipc.invoke("open-local-model-panel").catch((panelError) => {
+        console.error("Failed to open local model panel:", panelError);
+      });
+      return;
+    }
+    console.error("Failed to switch engine:", error);
+    showNotification(String(error?.message || error), "warning");
   }
 }
 
@@ -593,6 +700,15 @@ let obKeyProvider = "groq";
 let obKeyStatus = "idle"; // "idle" | "saving" | "saved" | "error"
 let obKeyError = "";
 let obAdvanceTimer = null;
+// Page 5's local-engine path (only rendered when settings.localCapable):
+// download state mirrors get-local-model-status; obLocalStartedHere marks a
+// download the user started from THIS wizard — clicking Download already
+// expresses "use local", so its completion selects the engine without asking
+// again (the settings window prompts instead for downloads started there).
+let obLocalStatus = null; // { state, downloadedBytes, totalBytes } | null
+let obLocalStartedHere = false;
+let obLocalError = "";
+let obCloudExpanded = false;
 
 function onboardingVisible() {
   const overlay = document.getElementById("onboarding");
@@ -610,9 +726,17 @@ function showOnboarding(page = 1) {
   // Recommend Groq (free tier) unless the user already runs on OpenAI.
   obKeyProvider =
     cachedSettings?.hasApiKey && cachedSettings.provider === "openai" ? "openai" : "groq";
+  obLocalError = "";
+  obLocalStartedHere = false;
+  // Local-first: the cloud section starts folded on capable hardware, unless
+  // the user is already set up on a cloud engine (re-opened wizard from Help).
+  obCloudExpanded =
+    !cachedSettings?.localCapable ||
+    (!!cachedSettings?.hasApiKey && cachedSettings.provider !== "local");
   overlay.hidden = false;
   renderOnboarding();
   void obRefreshMicState();
+  void obRefreshLocalStatus();
 }
 
 async function finishOnboarding() {
@@ -690,9 +814,135 @@ function renderOnboarding() {
   renderObKeycaps();
   renderObMic();
   renderObAx();
+  renderObLocal();
   renderObKey();
   renderObFooter();
   renderObFinal();
+}
+
+/* ---- Page 5: local engine path (Apple Silicon local-first) ---- */
+
+function obFormatGB(bytes) {
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+async function obRefreshLocalStatus() {
+  if (!cachedSettings?.localCapable) {
+    return;
+  }
+  try {
+    obLocalStatus = await ipc.invoke("get-local-model-status");
+  } catch (error) {
+    console.error("Failed to fetch local model status:", error);
+  }
+  if (onboardingVisible()) {
+    renderObLocal();
+  }
+}
+
+// Pick the local engine (assets are ready). The backend save broadcasts
+// shortcut-updated → refreshReadiness updates cachedSettings/hasApiKey, which
+// is what satisfies page 5's gate.
+async function obSelectLocal() {
+  try {
+    await ipc.invoke("set-provider", "local");
+    await refreshReadiness();
+    if (onboardingVisible()) {
+      renderOnboarding();
+      obScheduleAdvance(5);
+    }
+  } catch (error) {
+    obLocalError = String(error?.message || error);
+    renderObLocal();
+  }
+}
+
+async function obStartLocalDownload() {
+  obLocalError = "";
+  obLocalStartedHere = true;
+  obLocalStatus = {
+    state: "downloading",
+    downloadedBytes: obLocalStatus?.downloadedBytes || 0,
+    totalBytes: obLocalStatus?.totalBytes || 0,
+  };
+  renderObLocal();
+  try {
+    await ipc.invoke("download-local-model");
+  } catch (error) {
+    obLocalStartedHere = false;
+    obLocalError = String(error?.message || error);
+    void obRefreshLocalStatus();
+  }
+}
+
+function renderObLocal() {
+  const card = document.getElementById("obLocalCard");
+  const toggle = document.getElementById("obCloudToggle");
+  const cloud = document.getElementById("obCloudSection");
+  if (!card || !toggle || !cloud) {
+    return;
+  }
+  const capable = !!cachedSettings?.localCapable;
+
+  // The page's framing changes with the hardware: engine choice (local-first)
+  // vs the classic "connect a cloud service" page.
+  const title = document.getElementById("obKeyTitle");
+  if (title) {
+    title.textContent = t(capable ? "onboarding.key.titleLocalFirst" : "onboarding.key.title");
+  }
+  const lead = document.getElementById("obKeyLead");
+  if (lead) {
+    lead.textContent = t(capable ? "onboarding.key.leadLocalFirst" : "onboarding.key.lead");
+  }
+
+  card.hidden = !capable;
+  toggle.hidden = !capable;
+  cloud.hidden = capable && !obCloudExpanded;
+  toggle.textContent = t(
+    obCloudExpanded ? "onboarding.key.cloudToggleHide" : "onboarding.key.cloudToggle"
+  );
+  if (!capable) {
+    return;
+  }
+
+  const state = obLocalStatus?.state || "absent";
+  const selected = state === "ready" && cachedSettings?.provider === "local";
+  card.classList.toggle("selected", selected);
+  card.classList.toggle("downloading", state === "downloading");
+
+  const icon = document.getElementById("obLocalIcon");
+  if (icon) {
+    icon.textContent = selected ? "check_circle" : "memory";
+  }
+  const progress = document.getElementById("obLocalProgress");
+  if (progress) {
+    progress.hidden = state !== "downloading";
+    const pct = obLocalStatus?.totalBytes
+      ? (obLocalStatus.downloadedBytes || 0) / obLocalStatus.totalBytes
+      : 0;
+    progress.value = Math.round(pct * 1000);
+  }
+  const desc = document.getElementById("obLocalDesc");
+  if (desc) {
+    if (obLocalError) {
+      desc.textContent = t("onboarding.key.localError", { reason: obLocalError });
+    } else if (selected) {
+      desc.textContent = t("onboarding.key.localSelected");
+    } else if (state === "ready") {
+      desc.textContent = t("onboarding.key.localReady");
+    } else if (state === "downloading") {
+      desc.textContent = t("onboarding.key.localDownloading", {
+        done: obFormatGB(obLocalStatus?.downloadedBytes || 0),
+        total: obFormatGB(obLocalStatus?.totalBytes || 0),
+      });
+    } else if (state === "partial") {
+      desc.textContent = t("onboarding.key.localResume");
+    } else {
+      desc.textContent = t("onboarding.key.localAbsent", {
+        total: obLocalStatus?.totalBytes ? obFormatGB(obLocalStatus.totalBytes) : "~1 GB",
+      });
+    }
+  }
 }
 
 // Whether a wizard page's job is done. Info pages (1/2/6) are always
@@ -755,7 +1005,7 @@ function renderObFinal() {
   const steps = [
     { page: 3, icon: "mic", label: t("readiness.microphone") },
     { page: 4, icon: "accessibility_new", label: t("readiness.accessibility") },
-    { page: 5, icon: "vpn_key", label: t("readiness.apiKey") },
+    { page: 5, icon: "graphic_eq", label: t("readiness.engine") },
   ];
   const ready = steps.every(({ page }) => obStepSatisfied(page));
 

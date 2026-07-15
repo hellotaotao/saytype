@@ -1,6 +1,14 @@
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
+
+/// The tray's engine entries: (menu id, label, provider value). Labels are
+/// English-only like the rest of the tray menu.
+const ENGINES: [(&str, &str, &str); 3] = [
+  ("engine-groq", "Groq (cloud)", "groq"),
+  ("engine-openai", "OpenAI (cloud)", "openai"),
+  ("engine-local", "Local · Qwen3", "local"),
+];
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
   let menu = build_menu(app, None)?;
@@ -22,6 +30,9 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
           log::error!("tray:install-update-failed error={error}");
         }
       }
+      "engine-groq" => switch_engine(app, "groq"),
+      "engine-openai" => switch_engine(app, "openai"),
+      "engine-local" => switch_engine(app, "local"),
       "quit" => app.exit(0),
       _ => {}
     })
@@ -76,23 +87,69 @@ fn build_menu(
   menu.append(&MenuItem::with_id(app, "show", "Show Main Window", true, None::<&str>)?)?;
   menu.append(&MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?)?;
   menu.append(&PredefinedMenuItem::separator(app)?)?;
+
+  // Engine quick-switch: checkmark mirrors config.provider. Kept fresh by
+  // refresh_menu(), which every settings write triggers.
+  let provider = crate::settings::read_config()
+    .map(|config| config.provider)
+    .unwrap_or_default();
+  let engine = Submenu::with_id(app, "engine", "Engine", true)?;
+  for (id, label, value) in ENGINES {
+    engine.append(&CheckMenuItem::with_id(
+      app,
+      id,
+      label,
+      true,
+      provider == value,
+      None::<&str>,
+    )?)?;
+  }
+  menu.append(&engine)?;
+  menu.append(&PredefinedMenuItem::separator(app)?)?;
+
   menu.append(&MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?)?;
   Ok(menu)
 }
 
-/// Swap in a tray menu carrying the "Restart to update to vX.Y.Z" entry.
-/// Called by the updater once a download is ready; idempotent.
-pub fn set_update_ready(app: &AppHandle, version: &str) {
+/// Handle an Engine submenu click. Selecting "local" before its assets are
+/// downloaded must not switch to an unusable backend: open Settings on the
+/// model download panel instead (settings.js listens for the event).
+fn switch_engine(app: &AppHandle, provider: &str) {
+  if provider == crate::local_asr::LOCAL_PROVIDER && !crate::local_asr::assets_ready() {
+    if let Err(error) = crate::commands::open_local_model_panel(app.clone()) {
+      log::error!("tray:open-local-model-panel error={error}");
+    }
+    refresh_menu(app); // undo the CheckMenuItem's optimistic toggle
+    return;
+  }
+  if let Err(error) = crate::commands::apply_provider_change(app, provider) {
+    log::error!("tray:engine-switch-failed provider={provider} error={error}");
+    refresh_menu(app);
+  }
+}
+
+/// Rebuild the tray menu from current state — provider checkmark and, when an
+/// update download is waiting, the "Restart to update to vX.Y.Z" entry (read
+/// from AppState.pending_update, which the updater stores before calling
+/// here). Idempotent; called on every settings write and by the updater.
+pub fn refresh_menu(app: &AppHandle) {
   let Some(tray) = app.tray_by_id("main-tray") else {
-    log::warn!("tray:set-update-ready no tray icon");
+    log::warn!("tray:refresh no tray icon");
     return;
   };
-  match build_menu(app, Some(version)) {
+  let update_version = app
+    .state::<crate::state::AppState>()
+    .pending_update
+    .lock()
+    .unwrap()
+    .as_ref()
+    .map(|pending| pending.update.version.clone());
+  match build_menu(app, update_version.as_deref()) {
     Ok(menu) => {
       if let Err(error) = tray.set_menu(Some(menu)) {
-        log::error!("tray:set-update-menu-failed error={error}");
+        log::error!("tray:set-menu-failed error={error}");
       }
     }
-    Err(error) => log::error!("tray:build-update-menu-failed error={error}"),
+    Err(error) => log::error!("tray:build-menu-failed error={error}"),
   }
 }

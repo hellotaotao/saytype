@@ -62,3 +62,10 @@ pub fn insert_text(text: &str) -> InsertResult {
 pub fn set_auto_launch(_enabled: bool) -> Result<()> {
   Ok(())
 }
+
+pub fn supports_local_first() -> bool {
+  // Local-first steering is limited to hardware where the local engine is
+  // verified fast (Apple Silicon); Windows/Linux stay cloud-first for now,
+  // with the local provider still selectable in Settings.
+  false
+}

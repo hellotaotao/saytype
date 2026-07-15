@@ -348,6 +348,53 @@ body {
   color: var(--pill-warn-text);
 }
 
+/* Engine quick-switch: a segmented [Groq | OpenAI | Local] control mirroring
+   config.provider (same switch as the tray's Engine submenu). */
+.engine-seg {
+  display: inline-flex;
+  gap: 3px;
+  margin-top: 14px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--panel-bg-subtle);
+  border: 1px solid var(--panel-border);
+}
+
+.engine-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.engine-seg-btn:hover {
+  background: var(--panel-bg);
+  color: var(--app-text);
+}
+
+.engine-seg-btn.active {
+  background: var(--accent-soft-bg);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.engine-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--pill-ok-bg);
+  color: var(--pill-ok-text);
+  white-space: nowrap;
+}
+
 .readiness-shortcuts {
   display: flex;
   align-items: center;
@@ -883,6 +930,63 @@ body {
   margin-top: 6px;
   line-height: 1.55;
   display: block;
+}
+
+/* Page 5's local-engine hero card (shown on local-capable hardware). Same
+   family as .ob-provider, but full-width with a leading icon and an inline
+   download progress bar. */
+.ob-local-card {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  border: 1.5px solid var(--accent);
+  border-radius: 14px;
+  background: var(--input-bg);
+  padding: 17px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  margin-bottom: 12px;
+}
+
+.ob-local-card.selected {
+  background: var(--accent-soft-bg);
+}
+
+.ob-local-card.downloading {
+  cursor: default;
+}
+
+.ob-local-icon {
+  font-size: 26px;
+  color: var(--accent);
+  flex: none;
+  margin-top: 1px;
+}
+
+.ob-local-card.selected .ob-local-icon {
+  color: var(--pill-ok-text);
+}
+
+.ob-local-body {
+  flex: 1;
+  min-width: 0;
+  display: block;
+}
+
+.ob-local-progress {
+  width: 100%;
+  height: 5px;
+  margin-top: 9px;
+  accent-color: var(--accent);
+}
+
+.ob-cloud-toggle {
+  display: block;
+  margin: 0 0 10px;
+  font-size: 12.5px;
 }
 
 .ob-key-row {

@@ -114,7 +114,8 @@ pub async fn check_and_download(app: &AppHandle) -> UpdateStatus {
 
   *app.state::<AppState>().pending_update.lock().unwrap() =
     Some(PendingUpdate { update, bytes });
-  tray::set_update_ready(app, &version);
+  // pending_update is stored above, so the rebuilt menu picks up the entry.
+  tray::refresh_menu(app);
 
   let status = UpdateStatus::new("ready", Some(version), None);
   set_status(app, status.clone());

@@ -40,28 +40,30 @@
         </div>
       </div>
 
-      <!-- 2. Privacy -->
+      <!-- 2. Privacy — local-first narrative: the strongest story (audio never
+           leaves the machine) leads; the cloud path is the explicit opt-in. -->
       <div class="onboard-page" data-ob-page="2">
         <h1 data-i18n="onboarding.privacy.title">Your voice goes only where you point it</h1>
         <p class="ob-lead" data-i18n="onboarding.privacy.lead">SayType has no servers of its own.</p>
         <div class="ob-flow">
-          <div class="ob-flow-node">
+          <div class="ob-flow-node accent">
             <span class="material-icons">laptop_mac</span>
             <div class="ob-flow-title" data-i18n="onboarding.privacy.nodeMac">This Mac</div>
-            <div class="ob-flow-desc" data-i18n="onboarding.privacy.nodeMacDesc">recording · history</div>
+            <div class="ob-flow-desc" data-i18n="onboarding.privacy.nodeMacDesc">local model · recording · history</div>
           </div>
           <div class="ob-flow-arrow">
             <span class="material-icons">arrow_forward</span>
-            <div class="ob-flow-arrow-label" data-i18n="onboarding.privacy.arrow">direct, with your own key</div>
+            <div class="ob-flow-arrow-label" data-i18n="onboarding.privacy.arrow">cloud mode only — with your own key</div>
           </div>
-          <div class="ob-flow-node accent">
+          <div class="ob-flow-node">
             <span class="material-icons">cloud</span>
             <div class="ob-flow-title" data-i18n="onboarding.privacy.nodeCloud">Groq / OpenAI</div>
             <div class="ob-flow-desc" data-i18n="onboarding.privacy.nodeCloudDesc">your own account</div>
           </div>
         </div>
         <div class="ob-privacy-lines">
-          <div class="ob-privacy-line"><span class="material-icons">verified_user</span><span data-i18n="onboarding.privacy.line1">Audio goes straight to your service</span></div>
+          <div class="ob-privacy-line"><span class="material-icons">verified_user</span><span data-i18n="onboarding.privacy.lineLocal">With the local model, audio never leaves this Mac</span></div>
+          <div class="ob-privacy-line"><span class="material-icons">cloud</span><span data-i18n="onboarding.privacy.line1">Cloud mode goes straight to your service</span></div>
           <div class="ob-privacy-line"><span class="material-icons">laptop_mac</span><span data-i18n="onboarding.privacy.line2">History stays on this Mac</span></div>
         </div>
       </div>
@@ -90,25 +92,39 @@
         <div class="ob-actions" id="obAxActions"></div>
       </div>
 
-      <!-- 5. Provider + API key -->
+      <!-- 5. Engine — on local-capable hardware (Apple Silicon) a Local hero
+           card leads and the cloud cards fold away below it; elsewhere the
+           local card stays hidden and the cloud section is simply open.
+           Titles/desc/progress are all rendered by main.js (renderObLocal). -->
       <div class="onboard-page" data-ob-page="5">
-        <h1 data-i18n="onboarding.key.title">Connect your transcription service</h1>
-        <p class="ob-lead" data-i18n="onboarding.key.lead">You use your own API key.</p>
-        <div class="ob-providers">
-          <button type="button" class="ob-provider" id="obProviderGroq" data-provider="groq">
-            <span class="ob-provider-name">Groq<span class="ob-provider-tag" data-i18n="onboarding.key.groqTag">Recommended · free</span></span>
-            <span class="ob-provider-desc" data-i18n="onboarding.key.groqDesc">The free tier is generous</span>
-          </button>
-          <button type="button" class="ob-provider" id="obProviderOpenai" data-provider="openai">
-            <span class="ob-provider-name">OpenAI</span>
-            <span class="ob-provider-desc" data-i18n="onboarding.key.openaiDesc">gpt-4o-transcribe / whisper-1, pay as you go</span>
-          </button>
+        <h1 id="obKeyTitle" data-i18n="onboarding.key.title">Connect your transcription service</h1>
+        <p class="ob-lead" id="obKeyLead" data-i18n="onboarding.key.lead">You use your own API key.</p>
+        <button type="button" class="ob-local-card" id="obLocalCard" hidden>
+          <span class="material-icons ob-local-icon" id="obLocalIcon">memory</span>
+          <span class="ob-local-body">
+            <span class="ob-provider-name"><span data-i18n="onboarding.key.localName">Local · Qwen3</span><span class="ob-provider-tag" data-i18n="onboarding.key.localTag">Recommended · free · offline</span></span>
+            <span class="ob-provider-desc" id="obLocalDesc"></span>
+            <progress class="ob-local-progress" id="obLocalProgress" max="1000" value="0" hidden></progress>
+          </span>
+        </button>
+        <button type="button" class="link-btn ob-cloud-toggle" id="obCloudToggle" hidden></button>
+        <div id="obCloudSection">
+          <div class="ob-providers">
+            <button type="button" class="ob-provider" id="obProviderGroq" data-provider="groq">
+              <span class="ob-provider-name">Groq<span class="ob-provider-tag" data-i18n="onboarding.key.groqTag">Recommended · free</span></span>
+              <span class="ob-provider-desc" data-i18n="onboarding.key.groqDesc">The free tier is generous</span>
+            </button>
+            <button type="button" class="ob-provider" id="obProviderOpenai" data-provider="openai">
+              <span class="ob-provider-name">OpenAI</span>
+              <span class="ob-provider-desc" data-i18n="onboarding.key.openaiDesc">gpt-4o-transcribe / whisper-1, pay as you go</span>
+            </button>
+          </div>
+          <div class="ob-key-row">
+            <input class="ob-key-input" id="obKeyInput" type="password" autocomplete="off" spellcheck="false" />
+            <button type="button" class="btn" id="obKeySaveBtn" data-i18n="onboarding.key.save">Save</button>
+          </div>
+          <div class="ob-key-help" id="obKeyHelp"></div>
         </div>
-        <div class="ob-key-row">
-          <input class="ob-key-input" id="obKeyInput" type="password" autocomplete="off" spellcheck="false" />
-          <button type="button" class="btn" id="obKeySaveBtn" data-i18n="onboarding.key.save">Save</button>
-        </div>
-        <div class="ob-key-help" id="obKeyHelp"></div>
       </div>
 
       <!-- 6. First try — or, when steps were skipped, an honest checklist -->

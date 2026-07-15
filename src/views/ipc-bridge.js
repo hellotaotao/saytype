@@ -40,6 +40,8 @@
     "save-dictionary": "save_dictionary",
     "set-onboarding-completed": "set_onboarding_completed",
     "save-onboarding-api-key": "save_onboarding_api_key",
+    "set-provider": "set_provider",
+    "open-local-model-panel": "open_local_model_panel",
     "download-local-model": "download_local_model",
     "cancel-local-model-download": "cancel_local_model_download",
     "get-local-model-status": "get_local_model_status",
@@ -57,6 +59,7 @@
     "save-dictionary": [["text"]],
     "copy-to-clipboard": [["text"], ["shape"]],
     "save-onboarding-api-key": [["provider"], ["apiKey", "api_key"]],
+    "set-provider": [["provider"]],
   };
 
   // Channels whose first arg is binary and is sent as the RAW IPC body (Tauri's

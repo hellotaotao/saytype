@@ -125,6 +125,10 @@ pub struct SettingsPayload {
   /// Whether the first-launch onboarding wizard has been completed (or skipped).
   /// The main window shows the wizard while this is false.
   pub onboarding_completed: bool,
+  /// Whether this hardware should steer the user toward the local engine
+  /// (wizard top pick, "recommended" tag on switchers). Compile-time constant:
+  /// Apple Silicon only. Independent of whether the assets are downloaded.
+  pub local_capable: bool,
 }
 
 impl SettingsPayload {
@@ -156,6 +160,7 @@ impl SettingsPayload {
       os: std::env::consts::OS.to_string(),
       is_dev: cfg!(debug_assertions),
       onboarding_completed: config.onboarding_completed,
+      local_capable: crate::platform::supports_local_first(),
     }
   }
 }
@@ -447,6 +452,17 @@ mod tests {
     config.provider = "groq".into();
     config.api_key_groq = "gsk".into();
     assert!(SettingsPayload::from_config_with(&config, false).has_api_key);
+  }
+
+  #[test]
+  fn settings_payload_local_capable_follows_platform() {
+    // Apple Silicon steers local-first; everything else stays cloud-first
+    // (spec 2026-07-14 engine-switch: compile-time gate, no runtime probing).
+    let payload = SettingsPayload::from_config_with(&AppConfig::default(), false);
+    assert_eq!(
+      payload.local_capable,
+      cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    );
   }
 
   #[test]

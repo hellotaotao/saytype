@@ -190,6 +190,14 @@ pub fn set_auto_launch(enabled: bool) -> Result<()> {
   Ok(())
 }
 
+pub fn supports_local_first() -> bool {
+  // Apple Silicon (unified memory + Metal, verified RTF ≈ 0.1) is where the
+  // local engine should be the recommended default; Intel Macs stay
+  // cloud-first. Per-arch compile-time: in a universal binary each slice
+  // answers for the hardware it actually runs on.
+  cfg!(target_arch = "aarch64")
+}
+
 fn insert_text_via_cgevent(text: &str) -> Result<()> {
   const K_CG_HID_EVENT_TAP: u32 = 0;
   const MAX_CHARS_PER_EVENT: usize = 20;

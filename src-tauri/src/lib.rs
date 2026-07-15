@@ -180,6 +180,8 @@ pub fn run() {
       commands::save_dictionary,
       commands::set_onboarding_completed,
       commands::save_onboarding_api_key,
+      commands::set_provider,
+      commands::open_local_model_panel,
       commands::download_local_model,
       commands::cancel_local_model_download,
       commands::get_local_model_status,

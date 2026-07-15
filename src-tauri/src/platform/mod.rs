@@ -28,6 +28,7 @@
 //! fn copy_to_clipboard(text: &str) -> anyhow::Result<()>;
 //! fn insert_text(text: &str) -> InsertResult;
 //! fn set_auto_launch(enabled: bool) -> anyhow::Result<()>;
+//! fn supports_local_first() -> bool;
 //! ```
 
 #[cfg(target_os = "macos")]
