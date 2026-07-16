@@ -489,8 +489,6 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
   head.appendChild(badge);
   card.appendChild(head);
 
-  card.appendChild(buildEngineSwitcher());
-
   const shortcuts = document.createElement("div");
   shortcuts.className = "readiness-shortcuts";
   [
@@ -540,31 +538,68 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
   if (!axOk) {
     card.appendChild(buildAxGuide());
   }
+
+  renderEngineCard();
 }
 
-// Engine quick-switch: one segmented control [Groq | OpenAI | Local] at the
-// top of the readiness card, mirroring config.provider (the tray's Engine
-// submenu is the same switch). "Local" carries a "recommended" tag on
-// local-capable hardware (Apple Silicon). Selecting local before its assets
-// are downloaded is rejected by the backend — we then open Settings on the
-// download panel instead of silently switching to an unusable engine.
+// Engine quick-switch: its own card right under the readiness card — one
+// segmented control [Groq | OpenAI | Local] mirroring config.provider (the
+// tray's Engine submenu is the same switch). Deliberately NOT inside the
+// readiness card: that card is pure status display, and burying an
+// interactive control among status rows made it unfindable. The
+// "recommended" tag on Local is a nudge, so it only shows on local-capable
+// hardware (Apple Silicon) while a cloud engine is selected. Selecting local
+// before its assets are downloaded is rejected by the backend — we then open
+// Settings on the download panel instead of silently switching to an
+// unusable engine.
 const ENGINE_OPTIONS = [
   { value: "groq", label: "Groq" },
   { value: "openai", label: "OpenAI" },
   { value: "local", labelKey: "home.engineLocal" },
 ];
 
-function buildEngineSwitcher() {
+const ENGINE_CAPTION_KEY = {
+  local: "home.engineCaptionLocal",
+  groq: "home.engineCaptionGroq",
+  openai: "home.engineCaptionOpenai",
+};
+
+function renderEngineCard() {
+  const card = document.getElementById("engine-card");
+  if (!card) {
+    return;
+  }
+
+  const iconWrap = document.createElement("div");
+  iconWrap.className = "readiness-icon";
+  iconWrap.appendChild(makeIcon("memory"));
+
+  const titles = document.createElement("div");
+  titles.className = "engine-titles";
+  const title = document.createElement("div");
+  title.className = "engine-title";
+  title.textContent = t("home.engineLabel");
+  const sub = document.createElement("div");
+  sub.className = "engine-sub";
+  const captionKey = ENGINE_CAPTION_KEY[cachedSettings?.provider];
+  sub.textContent = captionKey ? t(captionKey) : "";
+  titles.appendChild(title);
+  titles.appendChild(sub);
+
   const seg = document.createElement("div");
   seg.className = "engine-seg";
+  seg.setAttribute("role", "radiogroup");
   ENGINE_OPTIONS.forEach(({ value, label, labelKey }) => {
+    const active = cachedSettings?.provider === value;
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `engine-seg-btn${cachedSettings?.provider === value ? " active" : ""}`;
+    btn.className = `engine-seg-btn${active ? " active" : ""}`;
+    btn.setAttribute("role", "radio");
+    btn.setAttribute("aria-checked", String(active));
     const text = document.createElement("span");
     text.textContent = labelKey ? t(labelKey) : label;
     btn.appendChild(text);
-    if (value === "local" && cachedSettings?.localCapable) {
+    if (value === "local" && cachedSettings?.localCapable && !active) {
       const tag = document.createElement("span");
       tag.className = "engine-tag";
       tag.textContent = t("home.engineRecommended");
@@ -575,7 +610,8 @@ function buildEngineSwitcher() {
     });
     seg.appendChild(btn);
   });
-  return seg;
+
+  card.replaceChildren(iconWrap, titles, seg);
 }
 
 async function selectEngine(provider) {
