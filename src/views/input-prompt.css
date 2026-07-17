@@ -335,16 +335,25 @@ body {
 }
 
 .transcription-text {
+  /* Positioned against the window (body is the 460x190 viewport), NOT inside
+     .input-prompt — that box has overflow:hidden and would clip this bubble
+     entirely (it did, for every release until now). The 80px box is centered,
+     so its bottom edge sits at calc(50% + 40px); start just below it and cap
+     the height to what fits inside the window (~2 lines). JS keeps scrollTop
+     pinned to the bottom so the newest streamed text is what shows. */
   position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  margin-top: 8px;
+  top: calc(50% + 44px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 360px;
+  box-sizing: border-box;
+  max-height: 46px;
+  overflow: hidden;
   color: var(--prompt-text);
   font-size: 13px;
   font-weight: 500;
   text-align: center;
-  padding: 8px 16px;
+  padding: 6px 14px;
   background: var(--prompt-transcription-bg);
   border-radius: 12px;
   -webkit-backdrop-filter: blur(15px);

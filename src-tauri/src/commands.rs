@@ -358,7 +358,7 @@ pub async fn transcribe_audio(
     _ = cancellation.cancelled() => Err(anyhow::anyhow!("TRANSCRIPTION_CANCELLED")),
     result = async {
       match &route {
-        TranscriptionRoute::Local => perform_local_transcription(audio_buffer, &mime).await,
+        TranscriptionRoute::Local => perform_local_transcription(&app, audio_buffer, &mime).await,
         TranscriptionRoute::Cloud { provider, api_key } => {
           perform_transcription_request(
             &state.http_client,
@@ -873,14 +873,19 @@ pub fn resolve_transcription_route(
 
 /// Local decode: hand the (frontend-guaranteed) WAV to the subprocess runner.
 /// Lives inside the caller's tokio::select! — dropping this future kills the
-/// child process (kill_on_drop), so cancel truly aborts the decode.
-async fn perform_local_transcription(audio_buffer: Vec<u8>, mime_type: &str) -> Result<String> {
+/// child process (kill_on_drop), so cancel truly aborts the decode. `app` is
+/// only used to stream partial transcript text to the input-prompt window.
+async fn perform_local_transcription(
+  app: &AppHandle,
+  audio_buffer: Vec<u8>,
+  mime_type: &str,
+) -> Result<String> {
   if !mime_type.contains("wav") {
     return Err(anyhow::anyhow!(
       "local transcription expects WAV audio, got {mime_type} (frontend must re-encode)"
     ));
   }
-  crate::local_asr::transcribe_wav(&audio_buffer).await.map_err(|err| {
+  crate::local_asr::transcribe_wav(Some(app), &audio_buffer).await.map_err(|err| {
     if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
       anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
     } else {

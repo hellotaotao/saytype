@@ -206,6 +206,16 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   unchanged and cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs +
   per-platform llama.cpp zip, ~1GB under `<app-data>/local-asr/`), the resumable
   sha256-gated downloader, and the stdout parser (`language <lang><asr_text>` prefix).
+  stdout is **pumped incrementally, not `wait_with_output()`** — the CLI emits the
+  transcript token-by-token, so `transcribe_wav` forwards the text-so-far to the
+  input-prompt window (`local-transcription-partial`, throttled 100ms). Both pipes
+  must be drained concurrently or the child blocks on a full one. This is **visible
+  progress only, NOT streaming ASR**: Qwen3-ASR is encoder-decoder, so the whole clip
+  is encoded before token 1 (measured: first byte 2.4s into a 6.5s decode of an 82s
+  clip; 7.7s into 31.7s for a 5.5min one) — total latency and peak memory are
+  unchanged, and no prompt/context trick changes that (`-p` is **ignored entirely**:
+  4 wildly different prompts → byte-identical output, so `condition_on_previous_text`
+  is unavailable and chunked/moving-window schemes can't stitch context).
   **Invocation invariants:** an explicit `-c` is mandatory (the model metadata's ctx
   65536 otherwise preallocates a 7GiB KV cache), sized **per-clip** by `ctx_size_for_wav`
   (clamped to [2048, 16384]) — a *fixed* small ctx overflowed on long audio: llama.cpp
@@ -253,7 +263,14 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
 
 Renderer → Rust: `bridge.invoke("type-text", text)` → Tauri `invoke("type_text", { text })`.
 Rust → Renderer: `app.emit("shortcut-updated", …)` / `"ui-theme-updated"` /
-`"accessibility-permission-changed"`, received via `bridge.on(...)`.
+`"accessibility-permission-changed"`, received via `bridge.on(...)`. **Always
+`emit` (broadcast), never `emit_to`**: the frontend registers listeners with
+target `{ kind: "Any" }` (ipc-bridge.js), so an `emit_to("<window>", …)` targets a
+specific webview and is silently dropped — it never reaches `bridge.on`. e.g.
+`local-transcription-partial` (`{ text }`), the local decoder's transcript-so-far,
+is broadcast even though only `input-prompt` listens. (The existing
+`emit_to(..., "cleanup-microphone")` / `"open-local-model-panel"` calls share this
+latent gap — they don't reach the renderer either.)
 
 **When adding a new IPC command, update three places:** the `#[tauri::command]` in
 `commands.rs`, its registration in the `invoke_handler!` list in `lib.rs`, and the

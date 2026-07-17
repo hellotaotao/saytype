@@ -33,9 +33,12 @@
         <span class="copy-btn-label" id="copyBtnLabel">Copy</span>
       </button>
     </div>
-    
-    <div class="transcription-text" id="transcriptionText"></div>
   </div>
+
+  <!-- Sibling of the prompt box, NOT a child: .input-prompt has overflow:hidden,
+       which silently clipped this bubble (positioned below the box) for its
+       entire life — the final-transcription preview was never actually visible. -->
+  <div class="transcription-text" id="transcriptionText"></div>
 
   <script src="ipc-bridge.js"></script>
   <script src="i18n.js"></script>

@@ -187,6 +187,28 @@ class VoiceInputPrompt {
   }
 
   setupEventListeners() {
+    // The local ASR subprocess emits its transcript token-by-token as it
+    // decodes, so show the text landing instead of a silent wait (a 5min clip
+    // decodes for ~30s). This is progress only -- the clip is fully encoded
+    // before the first token, so it does not arrive any sooner overall, and
+    // storeTranscriptionResult still overwrites this with the final text before
+    // anything is inserted. Guarded on the in-progress count: a cancelled
+    // decode can have one emit already in flight, which must not repaint the
+    // prompt after it was cleared.
+    ipc.on("local-transcription-partial", (event, payload) => {
+      const text = payload && payload.text;
+      if (!text || !this.transcriptionText) {
+        return;
+      }
+      if (this.transcriptionInProgressCount <= 0) {
+        return;
+      }
+      this.transcriptionText.textContent = text;
+      this.transcriptionText.classList.add("visible");
+      // The bubble is height-capped; keep the newest text in view.
+      this.transcriptionText.scrollTop = this.transcriptionText.scrollHeight;
+    });
+
     ipc.on("shortcut-updated", (event, payload) => {
       if (!payload) {
         return;
@@ -500,6 +522,8 @@ class VoiceInputPrompt {
     this.pendingInsertionsById.set(sessionId, transcription);
     this.transcriptionText.textContent = transcription;
     this.transcriptionText.classList.add("visible");
+    // Height-capped bubble: show the tail, consistent with the streaming view.
+    this.transcriptionText.scrollTop = this.transcriptionText.scrollHeight;
   }
 
   async flushPendingInsertions() {

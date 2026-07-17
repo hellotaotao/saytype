@@ -12,6 +12,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::Emitter;
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 pub const LOCAL_PROVIDER: &str = "local";
@@ -220,10 +221,58 @@ pub fn parse_mtmd_output(stdout: &str) -> String {
   }
 }
 
+/// The transcript so far, from a partially-read stdout. None until the
+/// `<asr_text>` marker lands — everything before it is the chat template's
+/// `language <lang>` prefix, which is not transcript. Unlike
+/// parse_mtmd_output this must tolerate a truncated tail: a read can split a
+/// multi-byte char, which from_utf8_lossy renders as U+FFFD, so trailing
+/// replacement chars are dropped rather than shown as garbage.
+fn partial_text(stdout: &[u8]) -> Option<String> {
+  let s = String::from_utf8_lossy(stdout);
+  let idx = s.rfind("<asr_text>")?;
+  Some(s[idx + "<asr_text>".len()..].trim_start().trim_end_matches('\u{FFFD}').to_string())
+}
+
+/// Floor on how often partial text is pushed to the webview. The model emits
+/// tokens far faster than the UI needs repainting.
+const PARTIAL_EMIT_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Run one transcription in a llama-mtmd-cli subprocess. Cancellation-safe
 /// by construction: dropping this future kills the child (kill_on_drop) and
 /// removes the temp file (TempFile guard).
-pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
+///
+/// stdout is drained incrementally rather than via wait_with_output(): the CLI
+/// emits the transcript token-by-token (measured: first byte 2.4s into a 6.5s
+/// decode of an 82s clip; 7.7s into 31.7s for a 5.5min one), so partial text is
+/// forwarded to the input-prompt window as it lands. This buys *visible
+/// progress only* — the whole clip is still encoded before the first token, so
+/// total latency and peak memory are unchanged; it is not streaming ASR (the
+/// model is encoder-decoder and cannot be).
+pub async fn transcribe_wav(app: Option<&tauri::AppHandle>, wav_bytes: &[u8]) -> Result<String> {
+  transcribe_wav_inner(wav_bytes, |text| {
+    let Some(app) = app else { return };
+    // Broadcast, NOT emit_to: the frontend registers its listener with
+    // target { kind: "Any" } (ipc-bridge.js), which only receives app.emit()
+    // events. An emit_to("input-prompt", …) targets Webview("input-prompt") and
+    // is silently dropped by an Any listener — every working event in this app
+    // broadcasts. input-prompt is the only window listening for this, so a
+    // broadcast is harmless.
+    let _ = app.emit(
+      "local-transcription-partial",
+      serde_json::json!({ "text": text }),
+    );
+  })
+  .await
+}
+
+/// The runner behind transcribe_wav. `on_partial` receives the transcript so
+/// far as tokens land (throttled to PARTIAL_EMIT_INTERVAL, and only when the
+/// text actually grew). Split out so tests can observe the streaming without
+/// standing up an AppHandle.
+async fn transcribe_wav_inner(
+  wav_bytes: &[u8],
+  mut on_partial: impl FnMut(&str),
+) -> Result<String> {
   let base = local_asr_dir()?;
   if !assets_ready_at(&base) {
     anyhow::bail!("LOCAL_MODEL_MISSING: local model assets are missing or incomplete");
@@ -239,7 +288,7 @@ pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
     .with_context(|| format!("failed to write temp audio {}", tmp_path.display()))?;
 
   let started = std::time::Instant::now();
-  let child = tokio::process::Command::new(cli_path(&base))
+  let mut child = tokio::process::Command::new(cli_path(&base))
     .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
     .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
     .arg("--audio").arg(&tmp_path)
@@ -252,13 +301,52 @@ pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
     .spawn()
     .context("failed to start llama-mtmd-cli")?;
 
-  let output = tokio::time::timeout(TRANSCRIBE_TIMEOUT, child.wait_with_output())
+  let mut child_stdout = child.stdout.take().expect("stdout is piped");
+  let mut child_stderr = child.stderr.take().expect("stderr is piped");
+
+  // Both pipes must be drained concurrently -- letting either fill blocks the
+  // child. stdout additionally streams partial text out as it arrives.
+  let pump = async {
+    let stream_stdout = async {
+      let mut acc: Vec<u8> = Vec::new();
+      let mut buf = [0u8; 2048];
+      let mut last_emit: Option<std::time::Instant> = None;
+      let mut last_sent = 0usize;
+      loop {
+        let n = child_stdout.read(&mut buf).await?;
+        if n == 0 {
+          break;
+        }
+        acc.extend_from_slice(&buf[..n]);
+        if last_emit.is_some_and(|t| t.elapsed() < PARTIAL_EMIT_INTERVAL) {
+          continue;
+        }
+        if let Some(text) = partial_text(&acc) {
+          if text.len() != last_sent {
+            last_sent = text.len();
+            last_emit = Some(std::time::Instant::now());
+            on_partial(&text);
+          }
+        }
+      }
+      Ok::<Vec<u8>, std::io::Error>(acc)
+    };
+    let drain_stderr = async {
+      let mut acc = Vec::new();
+      child_stderr.read_to_end(&mut acc).await?;
+      Ok::<Vec<u8>, std::io::Error>(acc)
+    };
+    tokio::try_join!(stream_stdout, drain_stderr)
+  };
+
+  let (stdout_bytes, stderr_bytes) = tokio::time::timeout(TRANSCRIBE_TIMEOUT, pump)
     .await
     .map_err(|_| anyhow::anyhow!("local ASR timed out after {}s", TRANSCRIBE_TIMEOUT.as_secs()))?
-    .context("failed to run llama-mtmd-cli")?;
+    .context("failed to read llama-mtmd-cli output")?;
+  let status = child.wait().await.context("failed to run llama-mtmd-cli")?;
 
-  if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr);
+  if !status.success() {
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
     let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
     // After dynamic ctx sizing (see CTX_CAP), a decode failure almost always
     // means the clip still exceeded the KV-cache cap. Translate the raw llama
@@ -270,10 +358,10 @@ pub async fn transcribe_wav(wav_bytes: &[u8]) -> Result<String> {
         "Recording is too long for the on-device model ({secs}s). Keep local dictation under ~13 minutes, or switch to a cloud provider in Settings for long recordings."
       );
     }
-    anyhow::bail!("llama-mtmd-cli failed ({}): {last}", output.status);
+    anyhow::bail!("llama-mtmd-cli failed ({status}): {last}");
   }
 
-  let text = parse_mtmd_output(&String::from_utf8_lossy(&output.stdout));
+  let text = parse_mtmd_output(&String::from_utf8_lossy(&stdout_bytes));
   // Counts only -- no transcribed text in logs.
   log::info!(
     "local ASR: decoded {} KB wav in {:.2}s ({} chars)",
@@ -646,6 +734,26 @@ mod tests {
   }
 
   #[test]
+  fn partial_text_waits_for_the_marker_then_tracks_the_tail() {
+    // Nothing to show until the marker lands: the `language <lang>` prefix is
+    // chat-template noise, not transcript.
+    assert_eq!(partial_text(b"\nlangua"), None);
+    assert_eq!(partial_text(b"\nlanguage Chinese"), None);
+    // Marker present but no tokens yet -> empty, not None.
+    assert_eq!(partial_text("\nlanguage Chinese<asr_text>".as_bytes()), Some(String::new()));
+    // Tokens arriving.
+    assert_eq!(
+      partial_text("\nlanguage Chinese<asr_text>今天我想".as_bytes()),
+      Some("今天我想".into())
+    );
+    // A read can split a multi-byte char; the partial tail must be dropped
+    // rather than surfaced as U+FFFD garbage in the UI.
+    let full = "\nlanguage Chinese<asr_text>今天".as_bytes();
+    let truncated = &full[..full.len() - 1]; // chop one byte off 天
+    assert_eq!(partial_text(truncated), Some("今".into()));
+  }
+
+  #[test]
   fn ctx_scales_with_clip_length_within_bounds() {
     // 16 kHz mono 16-bit WAV = 32000 bytes/s after a 44-byte header.
     let wav = |secs: f64| 44 + (secs * 32000.0) as usize;
@@ -734,7 +842,7 @@ mod tests {
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 0);
-    let text = rt.block_on(transcribe_wav(&wav)).expect("subprocess ok");
+    let text = rt.block_on(transcribe_wav(None, &wav)).expect("subprocess ok");
     assert_eq!(text, "", "silence must yield empty text");
     // Temp file cleaned up:
     let leftovers = fs::read_dir(std::env::temp_dir()).unwrap()
