@@ -172,12 +172,23 @@ pub fn set_auto_launch(enabled: bool) -> Result<()> {
     );
     fs::write(&plist_path, plist)
       .with_context(|| format!("failed to write {}", plist_path.display()))?;
+    // Best-effort: unload fails whenever the agent isn't currently loaded.
     let _ = Command::new("launchctl")
       .args(["unload", plist_path.to_string_lossy().as_ref()])
       .status();
-    let _ = Command::new("launchctl")
+    // The load must be checked, though — swallowing its failure made the
+    // settings UI report success while login-launch silently never happened.
+    let load = Command::new("launchctl")
       .args(["load", plist_path.to_string_lossy().as_ref()])
-      .status();
+      .output()
+      .context("failed to run launchctl load")?;
+    if !load.status.success() {
+      anyhow::bail!(
+        "launchctl load failed ({}): {}",
+        load.status,
+        String::from_utf8_lossy(&load.stderr).trim()
+      );
+    }
   } else {
     let _ = Command::new("launchctl")
       .args(["unload", plist_path.to_string_lossy().as_ref()])
@@ -268,8 +279,10 @@ fn focused_element_accepts_text() -> bool {
       &mut focused,
     );
     CFRelease(system_wide as *const c_void);
-    // Warn-level so shipped builds keep a per-dictation trace of this guard's
-    // decision — it has misfired on AX-opaque apps (ChatGPT Atlas) before.
+    // Blocks and AX-opaque uncertainty stay warn-level so shipped builds keep
+    // a trace of the decisions that can go wrong — the guard has misfired on
+    // AX-opaque apps (ChatGPT Atlas) before. The routine allow path logs at
+    // info (dev-visible only; the log file filters at Warn).
     match classify_focus_query(err, !focused.is_null()) {
       FocusQuery::NothingFocused => {
         log::warn!("insert-guard: focus query err={err} -> block (nothing focused)");
@@ -314,11 +327,14 @@ fn focused_element_accepts_text() -> bool {
 
     CFRelease(focused);
     let accepts = value_settable || text_role;
-    log::warn!(
-      "insert-guard: focused role={} settable={value_settable} -> {}",
-      role_name.as_deref().unwrap_or("<unavailable>"),
-      if accepts { "allow" } else { "block (no editable target)" }
-    );
+    let role = role_name.as_deref().unwrap_or("<unavailable>");
+    if accepts {
+      log::info!("insert-guard: focused role={role} settable={value_settable} -> allow");
+    } else {
+      log::warn!(
+        "insert-guard: focused role={role} settable={value_settable} -> block (no editable target)"
+      );
+    }
     accepts
   }
 }

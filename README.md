@@ -8,7 +8,7 @@ A voice input method built with **Tauri** that lets you dictate text in any appl
 
 - **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe
 - **Real-time Audio Visualization**: Waveform animation while recording
-- **AI Transcription**: Uses Groq's or OpenAI's Whisper API for speech-to-text
+- **AI Transcription**: Cloud (Groq / OpenAI Whisper API) or a fully **local** engine (Qwen3-ASR, ~1 GB one-time download, no API key, audio never leaves your machine)
 - **Auto-typing**: Inserts transcribed text into the active application (macOS; Windows/Linux experimental, untested)
 - **Background Operation**: Runs silently in the system tray
 - **Automatic Updates**: New releases download in the background; restart from the tray when you're ready
@@ -18,7 +18,7 @@ A voice input method built with **Tauri** that lets you dictate text in any appl
 
 - Node.js 16 or higher
 - A Rust toolchain (`rustup`) — required to build the Tauri app
-- A valid Groq or OpenAI API key
+- A Groq or OpenAI API key — **only for the cloud providers**; the local engine needs no key (recommended on Apple Silicon)
 - Microphone access permission (and Accessibility permission on macOS)
 
 ## Download
@@ -55,7 +55,7 @@ To publish a signed macOS `.dmg` to GitHub Releases (built automatically on a
 ## Usage
 
 1. Launch SayType
-2. Configure your Groq/OpenAI API key in Settings
+2. Pick a transcription engine in Settings: download the local model, or enter a Groq/OpenAI API key
 3. Hold down Ctrl+Shift to start recording
 4. Speak while holding the keys
 5. Release to stop recording and transcribe
@@ -65,9 +65,9 @@ To publish a signed macOS `.dmg` to GitHub Releases (built automatically on a
 ## Configuration
 
 Access settings through the tray menu or main window to configure:
-- API key and provider (Groq / OpenAI) for transcription
+- Transcription engine: local model (no key) or cloud provider (Groq / OpenAI) with API key
 - Default microphone
-- Transcription language and custom dictionary
+- Transcription language and custom dictionary (cloud providers only; the local engine auto-detects)
 
 ## Reset macOS permissions for repeated testing
 
@@ -95,7 +95,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 - **按住录音快捷键**:按住 Ctrl+Shift 开始录音,松开即停止并转写
 - **实时音频可视化**:录音时显示波形动画
-- **AI 转写**:使用 Groq 或 OpenAI 的 Whisper API 进行语音转文字
+- **AI 转写**:云端(Groq / OpenAI Whisper API)或完全**本地**引擎(Qwen3-ASR,一次性下载约 1 GB,无需 API key,音频不出本机)
 - **自动输入**:将转写结果插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 - **后台运行**:静默驻留在系统托盘
 - **自动更新**:新版本后台自动下载,你随时从托盘重启完成升级
@@ -105,7 +105,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 - Node.js 16 或更高版本
 - Rust 工具链(`rustup`)—— 构建 Tauri 应用所需
-- 有效的 Groq 或 OpenAI API key
+- Groq 或 OpenAI API key——**仅云端服务商需要**;本地引擎无需 key(Apple Silicon 上推荐)
 - 麦克风访问权限(macOS 上还需辅助功能权限)
 
 ## 下载
@@ -141,7 +141,7 @@ npm run build:linux
 ## 使用方法
 
 1. 启动 SayType
-2. 在「设置」中配置你的 Groq/OpenAI API key
+2. 在「设置」中选择转写引擎:下载本地模型,或填入 Groq/OpenAI API key
 3. 按住 Ctrl+Shift 开始录音
 4. 按住按键的同时说话
 5. 松开按键停止录音并转写
@@ -152,9 +152,9 @@ npm run build:linux
 
 通过托盘菜单或主窗口进入「设置」,可配置:
 
-- 用于转写的 API key 和服务商(Groq / OpenAI)
+- 转写引擎:本地模型(无需 key)或云端服务商(Groq / OpenAI)+ API key
 - 默认麦克风
-- 转写语言和自定义词典
+- 转写语言和自定义词典(仅云端服务商;本地引擎为自动检测)
 
 ## 重复测试时重置 macOS 权限
 

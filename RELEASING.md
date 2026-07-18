@@ -2,26 +2,32 @@
 
 **English** · [中文说明 ↓](#发布中文)
 
-SayType ships as a macOS `.dmg` published to the project's
-[GitHub Releases](https://github.com/hellotaotao/saytype/releases) page. The
-installer is built automatically by the
+SayType ships installers for **macOS, Windows, and Linux** to the project's
+[GitHub Releases](https://github.com/hellotaotao/saytype/releases) page. They
+are built automatically by the
 [`Release`](.github/workflows/release.yml) GitHub Actions workflow — you never
-build or upload it by hand.
+build or upload them by hand.
 
 ## What the workflow does
 
-Pushing a tag shaped like `vX.Y.Z` triggers the workflow, which:
+Pushing a tag shaped like `vX.Y.Z` triggers a **3-platform matrix**, which:
 
-1. Spins up a clean macOS runner.
-2. Builds a **universal** binary (Intel + Apple Silicon) via
-   `tauri build --target universal-apple-darwin`.
-3. Signs it with your Developer ID and notarizes it with Apple — **if** the
-   signing secrets are configured (see [below](#one-time-setup-signing--notarization)).
-4. Creates a **draft** GitHub Release named after the tag and uploads the `.dmg`
-   as an asset.
+1. **macOS** — builds a **universal** binary (Intel + Apple Silicon) via
+   `tauri build --target universal-apple-darwin`, signs it with your Developer
+   ID and notarizes it with Apple — **if** the signing secrets are configured
+   (see [below](#one-time-setup-signing--notarization)).
+2. **Windows** — builds NSIS `.exe` + `.msi`; **Linux** — AppImage/deb/rpm.
+   Both unsigned (and unverified on real machines).
+3. Every leg also emits minisign-signed **auto-update artifacts** plus a merged
+   `latest.json` manifest (requires the `TAURI_SIGNING_PRIVATE_KEY` secrets).
+4. Generates bilingual AI release notes via the Claude API (optional — needs
+   the `ANTHROPIC_API_KEY` secret; skipped with a warning if absent).
+5. Uploads everything to a **draft** GitHub Release named after the tag.
 
 You then review the draft on the Releases page and click **Publish**. (To skip
-the manual publish step, set `releaseDraft: false` in the workflow.)
+the manual publish step, set `releaseDraft: false` in the workflow.) Publishing
+is also the **auto-update rollout gate**: installed clients only see
+*published* releases, so a draft rolls out to no one.
 
 > The workflow only runs on `v*` tag pushes — ordinary commits never trigger it,
 > so the file sits dormant until you cut a release.
@@ -42,9 +48,8 @@ Then watch the **Actions** tab. The first run takes ~15–25 min (two
 architectures plus the notarization queue); later runs are faster thanks to the
 Rust cache.
 
-> Don't run `npm run build:mac` to cut a release — it bumps the version a second
-> time and produces an unsigned local build. Releasing is just
-> bump → commit → tag → push.
+> Don't run `npm run build:mac` to cut a release — it produces an unsigned,
+> non-notarized local build. Releasing is just bump → commit → tag → push.
 
 ## One-time setup: signing & notarization
 
@@ -93,24 +98,29 @@ unaffected.
 
 [↑ English](#releasing)
 
-SayType 以 macOS `.dmg` 的形式发布到项目的
+SayType 面向 **macOS、Windows、Linux** 三平台发布安装包到项目的
 [GitHub Releases](https://github.com/hellotaotao/saytype/releases) 页面。安装包由
 [`Release`](.github/workflows/release.yml) GitHub Actions workflow 自动构建——你不需要
 手动构建或上传。
 
 ## workflow 做了什么
 
-推送形如 `vX.Y.Z` 的 tag 会触发该 workflow,它会:
+推送形如 `vX.Y.Z` 的 tag 会触发一个**三平台矩阵**,它会:
 
-1. 启动一台干净的 macOS runner。
-2. 通过 `tauri build --target universal-apple-darwin` 构建**通用**二进制
-   (Intel + Apple Silicon)。
-3. 用你的 Developer ID 签名并向 Apple 公证——**前提是**配置了签名 secrets
-   (见[下文](#一次性配置签名与公证))。
-4. 创建一个以该 tag 命名的 **草稿** GitHub Release,并把 `.dmg` 作为附件上传。
+1. **macOS** —— 通过 `tauri build --target universal-apple-darwin` 构建**通用**二进制
+   (Intel + Apple Silicon),用你的 Developer ID 签名并向 Apple 公证——**前提是**配置了
+   签名 secrets(见[下文](#一次性配置签名与公证))。
+2. **Windows** —— 构建 NSIS `.exe` + `.msi`;**Linux** —— AppImage/deb/rpm。
+   两者均未签名(也未在真机验证过)。
+3. 每条腿还会产出 minisign 签名的**自动更新产物**,并合并出 `latest.json` 清单
+   (需要 `TAURI_SIGNING_PRIVATE_KEY` 相关 secrets)。
+4. 通过 Claude API 生成中英双语的 AI 发布说明(可选——需要 `ANTHROPIC_API_KEY`
+   secret;缺失时告警跳过,不阻塞)。
+5. 把所有产物上传到一个以该 tag 命名的**草稿** GitHub Release。
 
 随后你在 Releases 页面检查该草稿并点击 **Publish**。(若想跳过手动发布这一步,把
-workflow 里的 `releaseDraft` 设为 `false`。)
+workflow 里的 `releaseDraft` 设为 `false`。)Publish 同时也是**自动更新的发布闸门**:
+已安装的客户端只能看到*已发布*的 release,草稿对它们不可见。
 
 > 该 workflow 只在推送 `v*` tag 时运行——普通提交不会触发,所以平时它一直休眠,直到你
 > 发版。
@@ -129,7 +139,7 @@ git tag v1.0.90 && git push origin v1.0.90
 然后去 **Actions** 标签查看。首次运行约需 15–25 分钟(两种架构 + 公证排队);之后因为有
 Rust 缓存会更快。
 
-> 不要用 `npm run build:mac` 来发版——它会再次 bump 版本号,并产出未签名的本地构建。
+> 不要用 `npm run build:mac` 来发版——它产出的是未签名、未公证的本地构建。
 > 发版就只是 bump → commit → tag → push。
 
 <a id="一次性配置签名与公证"></a>

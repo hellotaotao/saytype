@@ -3,6 +3,60 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
+
+// Serializes every read-modify-write of the history file. Without it, two
+// transcriptions finishing at once (or an append racing a delete/clear) both
+// read the same snapshot and the last writer silently drops the other's entry.
+static HISTORY_LOCK: Mutex<()> = Mutex::new(());
+
+fn history_lock() -> MutexGuard<'static, ()> {
+  HISTORY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// Entry ids double as debug-audio filenames, so they must be unique even when
+// two entries land in the same millisecond — hence the process-wide counter
+// suffix on top of the timestamp.
+static ID_SEQ: AtomicU64 = AtomicU64::new(0);
+
+pub fn next_entry_id() -> String {
+  format!(
+    "{}-{}",
+    chrono::Utc::now().timestamp_millis(),
+    ID_SEQ.fetch_add(1, Ordering::Relaxed)
+  )
+}
+
+pub fn append_entry(entry: Value, cap: usize) -> Result<Vec<String>> {
+  append_entry_in(&settings::history_path()?, entry, cap)
+}
+
+// Prepends `entry`, truncates to `cap`, and returns the audioIds of entries
+// that fell off so the caller can delete their audio files.
+pub fn append_entry_in(path: &Path, entry: Value, cap: usize) -> Result<Vec<String>> {
+  let _guard = history_lock();
+  let mut entries = read_history_entries_from(path).unwrap_or_else(|err| {
+    // Tolerate an unreadable/corrupt history: start a fresh log rather than
+    // failing, so the (atomic) write below repairs the file instead of every
+    // future append inheriting the same read error.
+    log::warn!("history unreadable, starting a fresh log: {err:#}");
+    Vec::new()
+  });
+  entries.insert(0, entry);
+  let dropped = if entries.len() > cap {
+    let ids = entries[cap..]
+      .iter()
+      .filter_map(|e| e.get("audioId").and_then(Value::as_str).map(String::from))
+      .collect();
+    entries.truncate(cap);
+    ids
+  } else {
+    Vec::new()
+  };
+  write_history_entries_to(path, &entries)?;
+  Ok(dropped)
+}
 
 pub fn read_history_entries() -> Result<Vec<Value>> {
   read_history_entries_from(&settings::history_path()?)
@@ -41,6 +95,7 @@ pub fn delete_history_entry(id: &str) -> Result<()> {
 }
 
 pub fn delete_history_entry_in(path: &Path, id: &str) -> Result<()> {
+  let _guard = history_lock();
   let entries = read_history_entries_from(path)?;
   let filtered: Vec<Value> = entries
     .into_iter()
@@ -50,6 +105,9 @@ pub fn delete_history_entry_in(path: &Path, id: &str) -> Result<()> {
 }
 
 pub fn clear_history_entries() -> Result<()> {
+  // Serialized too: a clear racing an in-flight append would otherwise lose to
+  // the append's stale pre-clear snapshot, resurrecting the cleared entries.
+  let _guard = history_lock();
   write_history_entries(&[])
 }
 
@@ -191,6 +249,52 @@ mod tests {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0]["text"], "hello");
     assert_eq!(entries[1]["error"], "oops");
+  }
+
+  #[test]
+  fn append_entry_prepends_caps_and_reports_dropped_audio() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("transcription-history.json");
+    // Oldest entry carries audio so we can see it reported when it falls off.
+    append_entry_in(&path, json!({"id": "a", "text": "1", "audioId": "a"}), 3).unwrap();
+    append_entry_in(&path, json!({"id": "b", "text": "2"}), 3).unwrap();
+    append_entry_in(&path, json!({"id": "c", "text": "3"}), 3).unwrap();
+    let dropped = append_entry_in(&path, json!({"id": "d", "text": "4"}), 3).unwrap();
+
+    assert_eq!(dropped, vec!["a".to_string()]);
+    let entries = read_history_entries_from(&path).unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0]["id"], "d"); // newest first
+    assert_eq!(entries[2]["id"], "b");
+  }
+
+  #[test]
+  fn concurrent_appends_lose_no_entries() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("transcription-history.json");
+    let threads: Vec<_> = (0..8)
+      .map(|t| {
+        let path = path.clone();
+        std::thread::spawn(move || {
+          for i in 0..5 {
+            append_entry_in(&path, json!({"id": format!("{t}-{i}"), "text": "x"}), 1000)
+              .unwrap();
+          }
+        })
+      })
+      .collect();
+    for t in threads {
+      t.join().unwrap();
+    }
+
+    let entries = read_history_entries_from(&path).unwrap();
+    assert_eq!(entries.len(), 40, "read-modify-write appends must not overwrite each other");
+  }
+
+  #[test]
+  fn entry_ids_unique_under_burst() {
+    let ids: std::collections::HashSet<String> = (0..1000).map(|_| next_entry_id()).collect();
+    assert_eq!(ids.len(), 1000, "ids generated in the same millisecond must not collide");
   }
 
   #[test]

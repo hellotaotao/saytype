@@ -59,9 +59,13 @@ pub struct ApiKeys {
 
 // The raw API keys, kept out of get_settings so the secrets are only ever sent
 // to the window that edits them (settings) — not to every window that reads
-// general settings (main, input-prompt).
+// general settings (main, input-prompt). Enforced by the label check below,
+// not just calling convention.
 #[tauri::command]
-pub fn get_api_keys() -> Result<ApiKeys, String> {
+pub fn get_api_keys(window: tauri::WebviewWindow) -> Result<ApiKeys, String> {
+  if window.label() != "settings" {
+    return Err("get_api_keys is only available to the settings window".into());
+  }
   let config = settings::read_config().map_err(stringify_error)?;
   Ok(ApiKeys {
     api_key: config.api_key,
@@ -102,7 +106,14 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
   // `launchctl load` on every save would spawn a duplicate instance (the agent
   // is RunAtLoad), which is the root cause of the double-transcribe bug.
   if settings::auto_launch_needs_update(existing.auto_launch, config.auto_launch) {
-    settings::update_auto_launch(config.auto_launch).map_err(stringify_error)?;
+    if let Err(error) = settings::update_auto_launch(config.auto_launch) {
+      // Re-persist with the flag reverted: the config write above already
+      // stored the new value, and leaving it there would make every future
+      // save of the same toggle skip the launchctl retry as "unchanged".
+      config.auto_launch = existing.auto_launch;
+      settings::write_config(&config).map_err(stringify_error)?;
+      return Err(stringify_error(error));
+    }
   }
 
   if let Some(handle) = state.hotkey.lock().unwrap().as_ref() {
@@ -478,11 +489,16 @@ pub async fn type_text(
   text: String,
   shape: Option<String>,
 ) -> Result<TypeTextResponse, String> {
-  log::warn!(
-    "diag:type_text rust[{}] js[{}]",
-    text_shape(&text),
-    shape.as_deref().unwrap_or("-")
-  );
+  // The shape comparison exists to pin IPC-leg text corruption — only an
+  // actual mismatch deserves warn (and thus the shipped log file, which
+  // filters at Warn); the routine matching case stays dev-visible at info.
+  let rust_shape = text_shape(&text);
+  let js_shape = shape.as_deref().unwrap_or("-");
+  if js_shape != "-" && js_shape != rust_shape {
+    log::warn!("diag:type_text SHAPE MISMATCH rust[{rust_shape}] js[{js_shape}]");
+  } else {
+    log::info!("diag:type_text rust[{rust_shape}] js[{js_shape}]");
+  }
   if text.trim().is_empty() {
     return Ok(TypeTextResponse {
       success: false,
@@ -770,14 +786,7 @@ fn append_activity(
   error: Option<String>,
   audio: Option<(Vec<u8>, String)>,
 ) -> Result<()> {
-  // Tolerate an unreadable/corrupt history: start a fresh log rather than
-  // failing, so the (atomic) write below repairs the file instead of every
-  // future append inheriting the same read error.
-  let mut entries = history::read_history_entries().unwrap_or_else(|err| {
-    log::warn!("history unreadable, starting a fresh log: {err:#}");
-    Vec::new()
-  });
-  let id = Utc::now().timestamp_millis().to_string();
+  let id = history::next_entry_id();
   let mut entry = json!({
     "id": id,
     "text": text,
@@ -795,17 +804,11 @@ fn append_activity(
       Err(e) => log::warn!("failed to save debug audio: {e:#}"),
     }
   }
-  entries.insert(0, entry);
-  if entries.len() > 100 {
-    // Drop the audio files of entries falling off the 100-entry cap.
-    for dropped in &entries[100..] {
-      if let Some(aid) = dropped.get("audioId").and_then(Value::as_str) {
-        let _ = history::delete_debug_audio(aid);
-      }
-    }
-    entries.truncate(100);
+  // Serialized read-modify-write; drop the audio files of entries falling off
+  // the 100-entry cap.
+  for aid in history::append_entry(entry, 100)? {
+    let _ = history::delete_debug_audio(&aid);
   }
-  history::write_history_entries(&entries)?;
   Ok(())
 }
 
