@@ -157,6 +157,7 @@ pub fn run() {
       commands::get_api_keys,
       commands::save_settings,
       commands::get_app_version,
+      commands::get_build_info,
       commands::open_settings,
       commands::close_settings,
       commands::hide_input_prompt,

@@ -31,6 +31,17 @@ the built `.dmg` into `dist/`** — `dist/` is the kept archive of every version
 this step must not be skipped. `build:mac:install` additionally mounts that dmg and copies
 `SayType.app` into `/Applications` over the old version, then relaunches it.
 
+**Dev vs official build identity:** every build embeds a channel at compile time
+(`src-tauri/build.rs`). CI's release workflow sets `SAYTYPE_OFFICIAL_BUILD=1` → channel
+`official` → the UI shows a clean `v1.6.1`; *any* local build (dev mode or packaged) defaults
+to channel `dev` (fail-safe — a local build can never pass as a release) and shows
+`v1.6.1 · dev.42` in the main-window sidebar and the settings updates panel, with git
+hash/dirty/build time in the hover tooltip. The `42` is a local counter in `.dev-build-number`
+(repo root, gitignored), bumped by `scripts/bump-dev-build.js` before every packaged `build*`
+script — `tauri dev` shows the last number without bumping. The semver itself is never
+suffixed, so updater version comparison is untouched (dev builds still get offered official
+updates). Wire: `get_build_info` command → `BuildInfo` (camelCase).
+
 For **local code signing**, the mac build scripts source an untracked `scripts/sign.env`
 (copy from `scripts/sign.env.example`) if present, exporting `APPLE_SIGNING_IDENTITY`. Signing
 with a stable identity makes macOS keep the Accessibility/Microphone grants across rebuilds —

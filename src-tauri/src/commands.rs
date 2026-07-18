@@ -222,6 +222,34 @@ pub fn get_app_version() -> String {
   env!("CARGO_PKG_VERSION").into()
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+  pub version: String,
+  /// "official" only when CI set SAYTYPE_OFFICIAL_BUILD at compile time
+  /// (see build.rs); any local build is "dev".
+  pub channel: String,
+  pub build_number: u64,
+  pub git_hash: String,
+  pub git_dirty: bool,
+  /// Unix seconds; the frontend formats it.
+  pub build_time: u64,
+  pub debug: bool,
+}
+
+#[tauri::command]
+pub fn get_build_info() -> BuildInfo {
+  BuildInfo {
+    version: env!("CARGO_PKG_VERSION").into(),
+    channel: env!("SAYTYPE_BUILD_CHANNEL").into(),
+    build_number: env!("SAYTYPE_BUILD_NUMBER").parse().unwrap_or(0),
+    git_hash: env!("SAYTYPE_GIT_HASH").into(),
+    git_dirty: env!("SAYTYPE_GIT_DIRTY") == "true",
+    build_time: env!("SAYTYPE_BUILD_TIME").parse().unwrap_or(0),
+    debug: cfg!(debug_assertions),
+  }
+}
+
 #[tauri::command]
 pub fn open_settings(app: AppHandle) -> Result<(), String> {
   log::info!("command:open_settings");
@@ -1025,6 +1053,22 @@ pub fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  // --- Build info: channel fail-safe + wire shape ---
+
+  #[test]
+  fn build_info_defaults_to_dev_channel_with_camel_case_fields() {
+    // Test builds never set SAYTYPE_OFFICIAL_BUILD, so build.rs must have
+    // embedded the fail-safe "dev" channel.
+    let info = get_build_info();
+    assert_eq!(info.channel, "dev");
+    assert!(!info.version.is_empty());
+
+    let wire = serde_json::to_value(&info).unwrap();
+    for field in ["version", "channel", "buildNumber", "gitHash", "gitDirty", "buildTime", "debug"] {
+      assert!(wire.get(field).is_some(), "missing wire field {field}");
+    }
+  }
 
   // --- Engine switch: model reset + config preservation ---
 

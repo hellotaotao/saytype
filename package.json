@@ -6,11 +6,11 @@
     "start": "tauri dev",
     "dev": "tauri dev",
     "version:tauri:patch": "node scripts/bump-tauri-version.js",
-    "build": "CI=true tauri build && node scripts/collect-artifacts.js",
-    "build:mac": "CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin",
-    "build:mac:install": "CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin --install",
-    "build:win": "tauri build --target x86_64-pc-windows-msvc",
-    "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
+    "build": "node scripts/bump-dev-build.js && CI=true tauri build && node scripts/collect-artifacts.js",
+    "build:mac": "node scripts/bump-dev-build.js && CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin",
+    "build:mac:install": "node scripts/bump-dev-build.js && CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin --install",
+    "build:win": "node scripts/bump-dev-build.js && tauri build --target x86_64-pc-windows-msvc",
+    "build:linux": "node scripts/bump-dev-build.js && tauri build --target x86_64-unknown-linux-gnu",
     "tauri": "tauri"
   },
   "keywords": [

@@ -113,6 +113,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Marks this as an official release build (build.rs → clean version
+          # badge). Local builds never set it, so they always show as "dev".
+          SAYTYPE_OFFICIAL_BUILD: "1"
         with:
           # 版本号由提交中的 Cargo.toml / tauri.conf.json 决定
           args: ${{ matrix.build-args }}

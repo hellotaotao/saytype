@@ -391,7 +391,12 @@ async function setupUpdatesPanel() {
   });
 
   try {
-    currentAppVersion = await ipc.invoke("get-app-version");
+    // Dev-channel builds show the local build counter alongside the version;
+    // official CI builds stay a clean "1.6.1". Remote versions in the
+    // downloading/ready strings are untouched.
+    const info = await ipc.invoke("get-build-info");
+    currentAppVersion =
+      info.channel === "official" ? info.version : `${info.version} · dev.${info.buildNumber}`;
   } catch {
     currentAppVersion = "";
   }

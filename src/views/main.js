@@ -86,10 +86,23 @@ async function initializeMainPage() {
   await refreshReadiness();
 
   try {
-    const version = await ipc.invoke("get-app-version");
+    const info = await ipc.invoke("get-build-info");
     const element = document.getElementById("appVersion");
-    if (element) {
-      element.textContent = `v${version}`;
+    if (element && info) {
+      if (info.channel === "official") {
+        element.textContent = `v${info.version}`;
+      } else {
+        // Local build: append the dev counter, provenance in the tooltip.
+        element.textContent = `v${info.version} · dev.${info.buildNumber}`;
+        const parts = [`${info.gitHash}${info.gitDirty ? " (dirty)" : ""}`];
+        if (info.buildTime) {
+          parts.push(new Date(info.buildTime * 1000).toLocaleString());
+        }
+        if (info.debug) {
+          parts.push("debug");
+        }
+        element.title = parts.join(" · ");
+      }
     }
   } catch (error) {
     console.error("Failed to load app version", error);

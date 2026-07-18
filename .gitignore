@@ -10,4 +10,6 @@ src-tauri/gen/
 
 # Local-only signing identity for mac builds (copy scripts/sign.env.example)
 scripts/sign.env
+# Local dev build counter (bumped by scripts/bump-dev-build.js)
+.dev-build-number
 .playwright-mcp/
