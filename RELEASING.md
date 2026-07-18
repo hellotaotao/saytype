@@ -48,8 +48,12 @@ Then watch the **Actions** tab. The first run takes ~15–25 min (two
 architectures plus the notarization queue); later runs are faster thanks to the
 Rust cache.
 
-> Don't run `npm run build:mac` to cut a release — it produces an unsigned,
-> non-notarized local build. Releasing is just bump → commit → tag → push.
+> Don't run `npm run build:mac` to cut a release — it produces a local
+> dev-channel build. When `scripts/sign.env` is configured, the build is signed
+> with the configured local identity, but is not notarized by default. With the
+> release secrets configured, official release artifacts are signed, notarized,
+> and stapled in CI.
+> Releasing is just bump → commit → tag → push.
 
 ## One-time setup: signing & notarization
 
@@ -139,8 +143,10 @@ git tag v1.0.90 && git push origin v1.0.90
 然后去 **Actions** 标签查看。首次运行约需 15–25 分钟(两种架构 + 公证排队);之后因为有
 Rust 缓存会更快。
 
-> 不要用 `npm run build:mac` 来发版——它产出的是未签名、未公证的本地构建。
-> 发版就只是 bump → commit → tag → push。
+> 不要用 `npm run build:mac` 来发版——它产出的是本地 dev-channel 构建。配置
+> `scripts/sign.env` 后,本地构建会使用其中配置的 identity 签名,但默认不进行公证。
+> 配置 release secrets 后,正式发布产物由 CI 完成签名、公证和 ticket stapling。
+> 发版流程仍然是 bump → commit → tag → push。
 
 <a id="一次性配置签名与公证"></a>
 

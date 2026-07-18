@@ -47,7 +47,7 @@ For **local code signing**, the mac build scripts source an untracked `scripts/s
 with a stable identity makes macOS keep the Accessibility/Microphone grants across rebuilds —
 ad-hoc signing (the default when the file is absent) changes the cdhash each build and re-prompts.
 Notarized release builds additionally set `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` and require a
-*Developer ID Application* cert; local builds skip notarization.
+*Developer ID Application* cert; normal local builds skip notarization by default.
 
 ## Release signing & notarization (macOS)
 
