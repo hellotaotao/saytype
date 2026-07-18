@@ -342,13 +342,12 @@ body {
      the height to what fits inside the window (~2 lines). JS keeps scrollTop
      pinned to the bottom so the newest streamed text is what shows. */
   position: absolute;
-  top: calc(50% + 44px);
+  top: calc(50% + 46px);
   left: 50%;
   transform: translateX(-50%);
   width: 360px;
   box-sizing: border-box;
-  max-height: 46px;
-  overflow: hidden;
+  max-height: 46px; /* 6+6 padding + the inner scroller's 34px */
   color: var(--prompt-text);
   font-size: 13px;
   font-weight: 500;
@@ -364,7 +363,27 @@ body {
   opacity: 0;
   transition: opacity 0.4s ease;
   text-shadow: var(--prompt-text-shadow);
-  line-height: 1.3;
+  line-height: 17px;
+}
+
+/* The scrolling viewport inside the bubble: exactly two 17px lines. JS pins
+   scrollTop to the bottom so the newest streamed text shows, and toggles
+   .scrolled when older lines are hidden above. */
+.transcription-text-inner {
+  max-height: 34px;
+  overflow: hidden;
+}
+
+/* Scroll-to-bottom usually leaves the top visible line cut mid-glyph, which
+   reads as "the prompt box is covering the bubble" (reported after v1.6.0);
+   pixel-snapping scrollTop proved fragile (measured scrollHeight doesn't
+   follow the naive padding+lines math). Instead, fade the clipped line out:
+   an intentional-looking "more above" affordance, robust to any line-height
+   and scroll position. Applied only when actually scrolled, so short
+   transcripts render at full strength. */
+.transcription-text-inner.scrolled {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 15px);
+  mask-image: linear-gradient(to bottom, transparent 0, black 15px);
 }
 
 .transcription-text.visible {

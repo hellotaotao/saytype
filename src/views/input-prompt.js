@@ -138,6 +138,7 @@ class VoiceInputPrompt {
     this.waveContainer = document.getElementById("waveContainer");
     this.statusText = document.getElementById("statusText");
     this.transcriptionText = document.getElementById("transcriptionText");
+    this.transcriptionTextInner = document.getElementById("transcriptionTextInner");
     this.modelBadge = document.getElementById("modelBadge");
     this.copyBtn = document.getElementById("copyBtn");
     this.copyBtnLabel = document.getElementById("copyBtnLabel");
@@ -203,10 +204,7 @@ class VoiceInputPrompt {
       if (this.transcriptionInProgressCount <= 0) {
         return;
       }
-      this.transcriptionText.textContent = text;
-      this.transcriptionText.classList.add("visible");
-      // The bubble is height-capped; keep the newest text in view.
-      this.transcriptionText.scrollTop = this.transcriptionText.scrollHeight;
+      this.setTranscriptionPreview(text);
     });
 
     ipc.on("shortcut-updated", (event, payload) => {
@@ -520,10 +518,30 @@ class VoiceInputPrompt {
 
   storeTranscriptionResult(sessionId, transcription) {
     this.pendingInsertionsById.set(sessionId, transcription);
-    this.transcriptionText.textContent = transcription;
+    this.setTranscriptionPreview(transcription);
+  }
+
+  /// Shows `text` in the height-capped preview bubble, pinned to the tail so
+  /// the newest (streamed) text is what's visible. `.scrolled` drives the
+  /// top-edge fade mask — only when older lines are actually hidden above,
+  /// so a short transcript renders at full strength.
+  setTranscriptionPreview(text) {
+    const inner = this.transcriptionTextInner;
+    if (!inner) {
+      return;
+    }
+    inner.textContent = text;
     this.transcriptionText.classList.add("visible");
-    // Height-capped bubble: show the tail, consistent with the streaming view.
-    this.transcriptionText.scrollTop = this.transcriptionText.scrollHeight;
+    inner.scrollTop = inner.scrollHeight;
+    inner.classList.toggle("scrolled", inner.scrollTop > 0);
+  }
+
+  clearTranscriptionPreview() {
+    if (this.transcriptionTextInner) {
+      this.transcriptionTextInner.textContent = "";
+      this.transcriptionTextInner.classList.remove("scrolled");
+    }
+    this.transcriptionText.classList.remove("visible");
   }
 
   async flushPendingInsertions() {
@@ -656,8 +674,7 @@ class VoiceInputPrompt {
       // into the Listening state) after getUserMedia resolves below.
       this.statusText.textContent = "";
       if (!this.pendingInsertionOrder.length && this.transcriptionInProgressCount === 0) {
-        this.transcriptionText.textContent = "";
-        this.transcriptionText.classList.remove("visible");
+        this.clearTranscriptionPreview();
       }
 
       // Acquire a fresh stream for this recording; it is fully released when
@@ -776,8 +793,7 @@ class VoiceInputPrompt {
     if (shouldCancel) {
       this.promptText.textContent = t("inputPrompt.cancelled");
       this.statusText.textContent = "";
-      this.transcriptionText.textContent = "";
-      this.transcriptionText.classList.remove("visible");
+      this.clearTranscriptionPreview();
     } else {
       this.promptText.textContent = t("inputPrompt.processing");
       this.statusText.textContent = t("inputPrompt.transcribing");
@@ -1224,11 +1240,10 @@ class VoiceInputPrompt {
     this.isFlushingInsertQueue = false;
     
     this.promptElement.classList.remove("visible", "recording");
-    this.transcriptionText.classList.remove("visible");
+    this.clearTranscriptionPreview();
     this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
     this.statusText.textContent = "";
     this.statusText.style.color = "";
-    this.transcriptionText.textContent = "";
 
     // Reset recording state
     this.isRecording = false;

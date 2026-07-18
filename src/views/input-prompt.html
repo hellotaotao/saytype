@@ -38,7 +38,12 @@
   <!-- Sibling of the prompt box, NOT a child: .input-prompt has overflow:hidden,
        which silently clipped this bubble (positioned below the box) for its
        entire life — the final-transcription preview was never actually visible. -->
-  <div class="transcription-text" id="transcriptionText"></div>
+  <div class="transcription-text" id="transcriptionText">
+    <!-- Text lives in an inner scroller so the fade mask (applied when older
+         lines are scrolled out above) fades only the text, not the bubble's
+         own background/border. -->
+    <div class="transcription-text-inner" id="transcriptionTextInner"></div>
+  </div>
 
   <script src="ipc-bridge.js"></script>
   <script src="i18n.js"></script>
