@@ -498,6 +498,13 @@ class VoiceInputPrompt {
     this.clearHidePromptTimer();
     this.hidePromptTimerId = setTimeout(() => {
       this.hidePromptTimerId = null;
+      // A scheduled hide always belongs to a terminal state. If a recording
+      // (re)started in the meantime, firing now would tear down the live mic
+      // and clear the insertion queue — drop the stale hide instead. (Any
+      // legitimate hide during recording is a direct hidePrompt() call.)
+      if (this.isRecording || this.starting) {
+        return;
+      }
       this.hidePrompt();
     }, delayMs);
   }
@@ -921,14 +928,20 @@ class VoiceInputPrompt {
       translateMode,
       cancelledShortPress,
     } = recordingSession;
-    const allowUi = sessionId === this.recordingSessionId && !this.isRecording && !this.starting;
+    // Recomputed at every use, NOT captured once: transcriptions outlive this
+    // stack frame, and a slow failure can land while the user is already
+    // recording the next session. The old one-shot capture stayed stale-true
+    // and let that failure repaint the prompt and schedule hidePrompt — which
+    // tears down the live mic and clears the insertion queue mid-recording.
+    const allowUi = () =>
+      sessionId === this.recordingSessionId && !this.isRecording && !this.starting;
 
     this.transcriptionInProgressCount += 1;
     this.updateStatusText();
     try {
       if (cancelledShortPress) {
         this.removePendingInsertion(sessionId);
-        if (allowUi) {
+        if (allowUi()) {
           this.cancelledShortPress = false;
           this.recordingStartedAt = null;
           this.audioChunks = [];
@@ -941,7 +954,7 @@ class VoiceInputPrompt {
       if (!chunks.length) {
         console.warn("No audio chunks captured; skipping transcription request");
         this.removePendingInsertion(sessionId);
-        if (allowUi) {
+        if (allowUi()) {
           this.statusText.textContent = t("inputPrompt.noAudio");
           this.statusText.style.color = "var(--status-warning)";
           this.scheduleHidePrompt(1500);
@@ -971,7 +984,7 @@ class VoiceInputPrompt {
           const verdict = await window.SayTypeVadGate.analyze(audioBlob, { forceWav: useLocalWav });
           if (!verdict.speech) {
             this.removePendingInsertion(sessionId);
-            if (allowUi) {
+            if (allowUi()) {
               this.statusText.textContent = t("inputPrompt.noSpeech");
               this.scheduleHidePrompt(2000);
             }
@@ -1022,7 +1035,7 @@ class VoiceInputPrompt {
         await this.flushPendingInsertions();
       } else {
         this.removePendingInsertion(sessionId);
-        if (allowUi) {
+        if (allowUi()) {
           this.statusText.textContent = t("inputPrompt.noSpeech");
           this.scheduleHidePrompt(2000);
         }
@@ -1041,7 +1054,7 @@ class VoiceInputPrompt {
       const isCancelled =
         (error && error.name === "TranscriptionCancelledError") ||
         message.includes("TRANSCRIPTION_CANCELLED");
-      if (allowUi) {
+      if (allowUi()) {
         if (isCancelled) {
           this.statusText.textContent = t("inputPrompt.cancelled");
           this.statusText.style.color = "var(--status-warning)";
