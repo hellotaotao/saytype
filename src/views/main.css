@@ -1463,7 +1463,53 @@ body {
   user-select: text;
 }
 
-/* Notification toast */
+/* Notification toasts. The fixed column is what keeps simultaneous messages
+   from stacking on top of each other — each toast is a static flex child, so
+   the gap does the spacing and removal reflows the rest up. */
+#notification-stack {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
 .notification {
   font-family: inherit;
+  max-width: 400px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: var(--status-info);
+  color: #ffffff;
+  font-size: 14px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transform: translateX(100%);
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+
+.notification.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.notification-success {
+  background: var(--status-success);
+}
+
+.notification-warning {
+  background: var(--status-warning);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification {
+    transition: opacity 0.3s ease;
+    transform: none;
+  }
 }

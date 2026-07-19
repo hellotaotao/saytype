@@ -191,8 +191,13 @@ function renderLocalModelPanel(status) {
   const pct = status.totalBytes ? status.downloadedBytes / status.totalBytes : 0;
   progressEl.value = Math.round(pct * 1000);
   progressEl.classList.toggle("hidden", status.state !== "downloading");
-  deleteBtn.classList.toggle("hidden", status.state !== "ready");
-  deleteBtn.textContent = translate("settings.localModel.delete");
+  // Also offered in the "partial" state: an interrupted download leaves up to
+  // ~1 GB of .part files behind, and resuming is not the only way out of it.
+  const isPartial = status.state === "partial";
+  deleteBtn.classList.toggle("hidden", status.state !== "ready" && !isPartial);
+  deleteBtn.textContent = translate(
+    isPartial ? "settings.localModel.deletePartial" : "settings.localModel.delete"
+  );
 
   if (status.state === "ready") {
     statusEl.textContent = translate("settings.localModel.statusReady", {
@@ -273,7 +278,11 @@ async function offerSwitchToLocal() {
 }
 
 async function handleLocalModelDelete() {
-  if (!confirm(translate("settings.localModel.deleteConfirm"))) {
+  const confirmKey =
+    localModelState === "partial"
+      ? "settings.localModel.deletePartialConfirm"
+      : "settings.localModel.deleteConfirm";
+  if (!confirm(translate(confirmKey))) {
     return;
   }
   try {

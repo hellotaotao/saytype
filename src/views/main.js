@@ -1709,41 +1709,36 @@ async function copyToClipboard(text, button) {
   }, 2000);
 }
 
+// Toasts live in one fixed column so two messages fired close together stack
+// downward instead of landing on top of each other. Styling is in main.css —
+// the element only carries state classes.
+function notificationStack() {
+  let stack = document.getElementById("notification-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "notification-stack";
+    document.body.appendChild(stack);
+  }
+  return stack;
+}
+
 function showNotification(message, type = "info") {
   const notification = document.createElement("div");
   notification.className = `notification notification-${type}`;
-  notification.style.cssText = `
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    background: ${type === "success" ? "var(--status-success)" : type === "warning" ? "var(--status-warning)" : "var(--status-info)"};
-    color: white;
-    padding: 14px 18px;
-    border-radius: 10px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    z-index: 10000;
-    max-width: 400px;
-    font-size: 14px;
-    opacity: 0;
-    transform: translateX(100%);
-    transition: all 0.3s ease;
-  `;
   notification.textContent = message;
+  notificationStack().appendChild(notification);
 
-  document.body.appendChild(notification);
+  // Flush the just-inserted hidden state so the class change transitions from
+  // it. Deliberately NOT requestAnimationFrame: this window is hidden rather
+  // than closed, and rAF never fires while it is, which would leave a toast
+  // parked off-screen forever.
+  void notification.offsetHeight;
+  notification.classList.add("visible");
 
   setTimeout(() => {
-    notification.style.opacity = "1";
-    notification.style.transform = "translateX(0)";
-  }, 100);
-
-  setTimeout(() => {
-    notification.style.opacity = "0";
-    notification.style.transform = "translateX(100%)";
+    notification.classList.remove("visible");
     setTimeout(() => {
-      if (notification.parentNode) {
-        notification.parentNode.removeChild(notification);
-      }
+      notification.remove();
     }, 300);
   }, 5000);
 }

@@ -906,16 +906,25 @@ pub fn resolve_transcription_route(
 /// Lives inside the caller's tokio::select! — dropping this future kills the
 /// child process (kill_on_drop), so cancel truly aborts the decode. `app` is
 /// only used to stream partial transcript text to the input-prompt window.
-async fn perform_local_transcription(
-  app: &AppHandle,
-  audio_buffer: Vec<u8>,
-  mime_type: &str,
-) -> Result<String> {
+/// llama.cpp's mtmd decoder reads WAV via miniaudio and cannot handle AAC/m4a,
+/// so the frontend re-encodes to 16 kHz mono WAV for the local route. A
+/// non-WAV mime arriving here means that contract broke upstream — fail loudly
+/// rather than handing the decoder bytes it will choke on.
+fn ensure_wav_mime(mime_type: &str) -> Result<()> {
   if !mime_type.contains("wav") {
     return Err(anyhow::anyhow!(
       "local transcription expects WAV audio, got {mime_type} (frontend must re-encode)"
     ));
   }
+  Ok(())
+}
+
+async fn perform_local_transcription(
+  app: &AppHandle,
+  audio_buffer: Vec<u8>,
+  mime_type: &str,
+) -> Result<String> {
+  ensure_wav_mime(mime_type)?;
   crate::local_asr::transcribe_wav(Some(app), &audio_buffer).await.map_err(|err| {
     if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
       anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
@@ -1273,5 +1282,22 @@ mod tests {
       other => panic!("{other:?}"),
     }
     assert!(resolve_transcription_route(&config_with("openai", "", ""), false).is_err());
+  }
+
+  #[test]
+  fn local_route_accepts_the_wav_mimes_the_frontend_sends() {
+    for mime in ["audio/wav", "audio/wave", "audio/x-wav", "audio/wav; codecs=1"] {
+      assert!(ensure_wav_mime(mime).is_ok(), "{mime} should be accepted");
+    }
+  }
+
+  #[test]
+  fn local_route_rejects_mimes_the_local_decoder_cannot_read() {
+    // Chiefly the WebKit MediaRecorder default (AAC in mp4) — reaching the
+    // local decoder with it means the frontend skipped its WAV re-encode.
+    for mime in ["audio/mp4", "audio/aac", "audio/webm;codecs=opus", ""] {
+      let err = ensure_wav_mime(mime).unwrap_err().to_string();
+      assert!(err.contains("expects WAV audio"), "unexpected error for {mime:?}: {err}");
+    }
   }
 }

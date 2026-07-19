@@ -296,6 +296,9 @@
           cancel: "Cancel download",
           delete: "Delete model",
           deleteConfirm: "Delete the local model? You'll need to download ~1 GB again to use it.",
+          deletePartial: "Discard download",
+          deletePartialConfirm:
+            "Discard the unfinished download and free up the disk space? You can start it again anytime.",
           notReady: "Download the local model first, then save.",
           downloadFailed: "Model download failed: {reason}",
           switchPrompt: "Local model is ready. Switch transcription to the local engine now?",
@@ -627,6 +630,8 @@
           cancel: "取消下载",
           delete: "删除模型",
           deleteConfirm: "删除本地模型？再次使用需重新下载约 1 GB。",
+          deletePartial: "删除未完成的下载",
+          deletePartialConfirm: "删除未完成的下载文件、释放磁盘空间？随时可以重新开始下载。",
           notReady: "请先下载本地模型，再保存设置。",
           downloadFailed: "模型下载失败：{reason}",
           switchPrompt: "本地模型已就绪。现在切换到本地转写引擎吗？",

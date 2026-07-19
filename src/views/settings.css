@@ -233,6 +233,40 @@ body {
   margin-left: 20px;
 }
 
+/* Local-model download progress. A bare <progress> paints in the engine's
+   system blue, which belongs to none of the three themes — take over both the
+   track and the fill so the one-time ~1 GB download looks like part of the app.
+   The -webkit- pseudo-elements are what WKWebView actually honors; the
+   shorthand rules cover engines that style the element directly. */
+#localModelProgress {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 150px;
+  height: 6px;
+  vertical-align: middle;
+  margin-right: 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--settings-button-secondary-hover);
+  overflow: hidden;
+}
+
+#localModelProgress::-webkit-progress-bar {
+  background: var(--settings-button-secondary-hover);
+  border-radius: 999px;
+}
+
+#localModelProgress::-webkit-progress-value {
+  background: var(--settings-accent);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+#localModelProgress::-moz-progress-bar {
+  background: var(--settings-accent);
+  border-radius: 999px;
+}
+
 .btn {
   background: var(--settings-accent);
   border: none;
