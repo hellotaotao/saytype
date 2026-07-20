@@ -508,11 +508,29 @@ pub async fn type_text(
     });
   }
 
+  // The whole insert path is blocking work — Accessibility queries plus a
+  // paced synthetic-event loop (macOS sleeps ~5ms per 20 chars, so ≈250ms for
+  // a 1000-char insert; enigo blocks similarly on Windows/Linux). Hand it to
+  // the blocking pool so it never parks an async worker thread. This changes
+  // no timing: the pacing is what makes text stream in rather than land at
+  // once, and it stays exactly as it was.
+  //
+  // A panic inside the task degrades to `Failed` rather than propagating an
+  // Err: that is the same graceful path as any failed insert, and the
+  // transcription is already in History either way.
+  let outcome = match tokio::task::spawn_blocking(move || platform::insert_text(&text)).await {
+    Ok(result) => result,
+    Err(join_error) => {
+      log::error!("text insertion task failed to run: {join_error}");
+      InsertResult::Failed
+    }
+  };
+
   // No clipboard fallback by design: every transcription is already saved to
   // history (see transcribe_audio), so a failed insert just points the user
   // there instead of overwriting their clipboard. The per-OS mechanism lives
   // behind `platform::insert_text`; this maps its outcome to the response.
-  Ok(match platform::insert_text(&text) {
+  Ok(match outcome {
     InsertResult::Inserted { method } => TypeTextResponse {
       success: true,
       method: Some(method.into()),

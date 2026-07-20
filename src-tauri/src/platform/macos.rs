@@ -214,7 +214,8 @@ fn insert_text_via_cgevent(text: &str) -> Result<()> {
   const MAX_CHARS_PER_EVENT: usize = 20;
   let utf16: Vec<u16> = text.encode_utf16().collect();
 
-  for chunk in utf16.chunks(MAX_CHARS_PER_EVENT) {
+  let mut chunks = utf16.chunks(MAX_CHARS_PER_EVENT).peekable();
+  while let Some(chunk) = chunks.next() {
     let key_down = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0, true) };
     if key_down.is_null() {
       return Err(anyhow!("failed to create keyboard event"));
@@ -224,7 +225,12 @@ fn insert_text_via_cgevent(text: &str) -> Result<()> {
       CGEventPost(K_CG_HID_EVENT_TAP, key_down);
       CFRelease(key_down as *const c_void);
     }
-    std::thread::sleep(Duration::from_millis(5));
+    // Paces the target app so it consumes each event before the next lands —
+    // without it some apps drop characters. Nothing follows the final chunk,
+    // so pausing after it would tax every insertion 5ms for nothing.
+    if chunks.peek().is_some() {
+      std::thread::sleep(Duration::from_millis(5));
+    }
   }
 
   Ok(())
