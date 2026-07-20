@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, LogicalPosition, Manager};
 
 // Recording starts the instant the modifier combo is down — there is no startup
 // gate. A press shorter than this is treated as a mis-trigger and discarded
@@ -596,7 +596,9 @@ fn dispatch_action(app: &AppHandle, action: Action) {
     Action::Start { translate_mode } => {
       log::info!("hotkey:dispatch start translate_mode={translate_mode}");
       if let Some(window) = app.get_webview_window("input-prompt") {
-        position_input_prompt(&window);
+        if let Some(target) = position_input_prompt(&window) {
+          wait_for_position(&window, target);
+        }
         let _ = window.show();
       }
       let _ = app.emit("start-recording", translate_mode);
@@ -612,20 +614,170 @@ fn dispatch_action(app: &AppHandle, action: Action) {
   }
 }
 
-fn position_input_prompt(window: &tauri::WebviewWindow) {
-  let monitor = match window.primary_monitor() {
-    Ok(Some(monitor)) => monitor,
-    _ => return,
-  };
+/// Gap between the prompt's bottom edge and the bottom of the screen, in
+/// logical points — so it looks the same distance up on a 1x external display
+/// and a 2x Retina one. (It used to be 100 *physical* pixels, which rendered as
+/// half the gap on Retina.)
+const PROMPT_BOTTOM_MARGIN: f64 = 100.0;
 
-  let monitor_position = monitor.position();
-  let monitor_size = monitor.size();
-  let window_size = window.outer_size().ok();
-  let width = window_size.map(|size| size.width as i32).unwrap_or(400);
-  let height = window_size.map(|size| size.height as i32).unwrap_or(100);
-  let x = monitor_position.x + ((monitor_size.width as i32 - width) / 2);
-  let y = monitor_position.y + monitor_size.height as i32 - height - 100;
-  let _ = window.set_position(PhysicalPosition::new(x, y));
+/// Fallback prompt size, used only if the window can't report its own — matches
+/// the `input-prompt` dimensions in `tauri.conf.json`.
+const PROMPT_FALLBACK_SIZE: (f64, f64) = (460.0, 190.0);
+
+/// Upper bound on how long `wait_for_position` will hold the prompt back. Well
+/// past the measured 0.4–4.9ms so it never trips in practice, but small enough
+/// that a wedged move can't visibly delay the recording UI.
+const POSITION_SETTLE_TIMEOUT: Duration = Duration::from_millis(60);
+
+/// Puts the prompt bottom-center on the screen the user is actually working on.
+///
+/// ## Everything here is in logical points, deliberately
+///
+/// tao's macOS coordinate spaces disagree with each other, and mixing them
+/// silently picks the wrong screen on any Retina + external-display setup:
+///
+/// * `monitor_from_point(x, y)` compares against `CGDisplayBounds` — **logical
+///   points**, top-left origin.
+/// * `Monitor::position()` / `size()` return **physical pixels** (logical x that
+///   monitor's scale factor).
+/// * `cursor_position()` returns logical points pre-multiplied by the
+///   **primary** monitor's scale factor, whichever screen the pointer is on.
+/// * `set_position` with a `PhysicalPosition` re-divides by the *window's*
+///   current scale factor — which is still the old screen's while we're moving
+///   it. A `LogicalPosition` passes through untouched, so we use that.
+///
+/// So: normalize every input to logical points, and set a logical position.
+fn position_input_prompt(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+  let monitor = target_monitor(window)?;
+  let screen = logical_rect(
+    (monitor.position().x, monitor.position().y),
+    (monitor.size().width, monitor.size().height),
+    monitor.scale_factor(),
+  )?;
+
+  // The window's own size is physical at *its* current scale factor, which is
+  // not necessarily the target monitor's.
+  let window_scale = window.scale_factor().unwrap_or(monitor.scale_factor());
+  let prompt = window
+    .outer_size()
+    .ok()
+    .filter(|_| window_scale > 0.0)
+    .map(|size| {
+      (
+        size.width as f64 / window_scale,
+        size.height as f64 / window_scale,
+      )
+    })
+    .unwrap_or(PROMPT_FALLBACK_SIZE);
+
+  let (x, y) = prompt_origin(screen, prompt);
+  let _ = window.set_position(LogicalPosition::new(x, y));
+  Some((x, y))
+}
+
+/// Blocks until the window has actually moved to `target`, so `show()` can't
+/// flash it on the screen it is leaving.
+///
+/// macOS applies the move asynchronously — tao's `set_outer_position` ends in
+/// `set_frame_top_left_point_async`, a `dispatch_async` onto the main queue —
+/// so an immediate `show()` races it. Measured on a 3-screen desk: without this
+/// the prompt appeared at the *previous* screen's coordinates and jumped, on
+/// roughly 2 of 9 screen changes. Waiting is nearly free because the move
+/// usually lands first: 0.4–4.9ms, 0–1 polls, and 0 polls whenever the prompt
+/// is already on the right screen (the common case).
+fn wait_for_position(window: &tauri::WebviewWindow, target: (f64, f64)) {
+  let deadline = Instant::now() + POSITION_SETTLE_TIMEOUT;
+  loop {
+    // Treat "can't read the position" as settled — never hold the prompt back
+    // over a failed query.
+    let landed = window
+      .outer_position()
+      .ok()
+      .zip(window.scale_factor().ok())
+      .map(|(position, scale)| {
+        (position.x as f64 / scale - target.0).abs() < 1.0
+          && (position.y as f64 / scale - target.1).abs() < 1.0
+      })
+      .unwrap_or(true);
+    if landed || Instant::now() >= deadline {
+      return;
+    }
+    thread::sleep(Duration::from_millis(2));
+  }
+}
+
+/// A rectangle in logical points, top-left origin — the space `CGDisplayBounds`
+/// and `monitor_from_point` share.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LogicalRect {
+  x: f64,
+  y: f64,
+  width: f64,
+  height: f64,
+}
+
+/// `Monitor` reports physical pixels; divide through by its scale factor to get
+/// back to logical points. On a 2x display that turns e.g. position (6880, 0) /
+/// size 5120x2880 back into (3440, 0) / 2560x1440.
+fn logical_rect(position: (i32, i32), size: (u32, u32), scale: f64) -> Option<LogicalRect> {
+  if scale <= 0.0 {
+    return None;
+  }
+  Some(LogicalRect {
+    x: position.0 as f64 / scale,
+    y: position.1 as f64 / scale,
+    width: size.0 as f64 / scale,
+    height: size.1 as f64 / scale,
+  })
+}
+
+/// Bottom-center origin for a `prompt`-sized window on `screen`, all logical.
+fn prompt_origin(screen: LogicalRect, prompt: (f64, f64)) -> (f64, f64) {
+  (
+    screen.x + (screen.width - prompt.0) / 2.0,
+    screen.y + screen.height - prompt.1 - PROMPT_BOTTOM_MARGIN,
+  )
+}
+
+/// Which screen the prompt belongs on, best answer first:
+///
+/// 1. the focused app's window — where the transcription is about to be
+///    inserted, so it's the screen the user is looking at;
+/// 2. the mouse pointer — a good proxy, and it always answers;
+/// 3. the primary monitor — the old unconditional behavior, now only a last
+///    resort.
+fn target_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+  if let Some((x, y)) = crate::platform::focused_window_center() {
+    if let Ok(Some(monitor)) = window.monitor_from_point(x, y) {
+      log::info!("input-prompt: screen from focused window at ({x:.0}, {y:.0})");
+      return Some(monitor);
+    }
+  }
+
+  if let Some((x, y)) = cursor_point_logical(window) {
+    if let Ok(Some(monitor)) = window.monitor_from_point(x, y) {
+      log::info!("input-prompt: screen from cursor at ({x:.0}, {y:.0})");
+      return Some(monitor);
+    }
+  }
+
+  log::warn!("input-prompt: no focused window or cursor screen — using the primary monitor");
+  window.primary_monitor().ok().flatten()
+}
+
+/// `cursor_position()` hands back logical points already multiplied by the
+/// *primary* monitor's scale factor, so undo that to get the plain logical
+/// point `monitor_from_point` expects.
+fn cursor_point_logical(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+  let cursor = window.cursor_position().ok()?;
+  let primary_scale = window
+    .primary_monitor()
+    .ok()
+    .flatten()
+    .map(|monitor| monitor.scale_factor())
+    .filter(|scale| *scale > 0.0)
+    .unwrap_or(1.0);
+  Some((cursor.x / primary_scale, cursor.y / primary_scale))
 }
 
 #[cfg(test)]
@@ -637,6 +789,85 @@ mod tests {
       Shortcut::parse(DEFAULT_RECORD_SHORTCUT).unwrap(),
       Shortcut::parse(TRANSLATE_SHORTCUT).unwrap(),
     )
+  }
+
+  // The three displays below are a real, measured setup (mixed 1x/2x), captured
+  // from CGDisplayBounds + NSScreen.backingScaleFactor:
+  //
+  //   DELL S3423DWC  bounds (0, 0) 3440x1440     scale 1  [main]
+  //   DELL P2418D    bounds (3440, 0) 2560x1440  scale 2
+  //   LS27R75        bounds (-2560, 0) 2560x1440 scale 2
+  //
+  // `Monitor` hands those back as *physical* pixels, which is what the inputs
+  // here are. Getting the scale division wrong is silent and catastrophic: the
+  // 2x screens would place the prompt at x≈9210 / x≈-4350, i.e. nowhere.
+  const PROMPT_SIZE: (f64, f64) = (460.0, 190.0);
+
+  #[test]
+  fn one_x_screen_is_unchanged_by_the_scale_division() {
+    let screen = logical_rect((0, 0), (3440, 1440), 1.0).unwrap();
+    assert_eq!(
+      screen,
+      LogicalRect {
+        x: 0.0,
+        y: 0.0,
+        width: 3440.0,
+        height: 1440.0
+      }
+    );
+    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (1490.0, 1150.0));
+  }
+
+  #[test]
+  fn two_x_screen_right_of_main_normalizes_to_logical_points() {
+    // Physical position is the logical 3440 pre-multiplied by the scale factor.
+    let screen = logical_rect((6880, 0), (5120, 2880), 2.0).unwrap();
+    assert_eq!(
+      screen,
+      LogicalRect {
+        x: 3440.0,
+        y: 0.0,
+        width: 2560.0,
+        height: 1440.0
+      }
+    );
+    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (4490.0, 1150.0));
+  }
+
+  #[test]
+  fn two_x_screen_left_of_main_keeps_its_negative_origin() {
+    let screen = logical_rect((-5120, 0), (5120, 2880), 2.0).unwrap();
+    assert_eq!(
+      screen,
+      LogicalRect {
+        x: -2560.0,
+        y: 0.0,
+        width: 2560.0,
+        height: 1440.0
+      }
+    );
+    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (-1510.0, 1150.0));
+  }
+
+  #[test]
+  fn the_bottom_margin_is_the_same_logical_gap_on_every_screen() {
+    // Same visual gap regardless of DPI — the old code used physical pixels, so
+    // the 2x screens got half the gap.
+    for (position, size, scale) in [
+      ((0, 0), (3440u32, 1440u32), 1.0),
+      ((6880, 0), (5120, 2880), 2.0),
+    ] {
+      let screen = logical_rect(position, size, scale).unwrap();
+      let (_, y) = prompt_origin(screen, PROMPT_SIZE);
+      let gap = screen.y + screen.height - (y + PROMPT_SIZE.1);
+      assert_eq!(gap, PROMPT_BOTTOM_MARGIN);
+    }
+  }
+
+  #[test]
+  fn a_bogus_scale_factor_is_rejected_rather_than_dividing_by_zero() {
+    assert!(logical_rect((0, 0), (3440, 1440), 0.0).is_none());
+    assert!(logical_rect((0, 0), (3440, 1440), -1.0).is_none());
   }
 
   #[test]

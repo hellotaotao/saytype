@@ -27,6 +27,7 @@
 //! fn reveal_app_in_finder();
 //! fn copy_to_clipboard(text: &str) -> anyhow::Result<()>;
 //! fn insert_text(text: &str) -> InsertResult;
+//! fn focused_window_center() -> Option<(f64, f64)>;
 //! fn set_auto_launch(enabled: bool) -> anyhow::Result<()>;
 //! fn supports_local_first() -> bool;
 //! ```

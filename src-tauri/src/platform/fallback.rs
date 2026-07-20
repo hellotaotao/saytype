@@ -59,6 +59,13 @@ pub fn insert_text(text: &str) -> InsertResult {
   }
 }
 
+pub fn focused_window_center() -> Option<(f64, f64)> {
+  // No AX equivalent wired up yet (Windows: GetForegroundWindow + GetWindowRect;
+  // Linux/X11: _NET_ACTIVE_WINDOW). The caller falls back to the mouse pointer,
+  // which already puts the prompt on the right screen in the common case.
+  None
+}
+
 pub fn set_auto_launch(_enabled: bool) -> Result<()> {
   Ok(())
 }

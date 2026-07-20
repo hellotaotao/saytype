@@ -345,6 +345,125 @@ fn focused_element_accepts_text() -> bool {
   }
 }
 
+#[repr(C)]
+struct CGPoint {
+  x: f64,
+  y: f64,
+}
+
+#[repr(C)]
+struct CGSize {
+  width: f64,
+  height: f64,
+}
+
+const K_AX_VALUE_CGPOINT: u32 = 1;
+const K_AX_VALUE_CGSIZE: u32 = 2;
+
+/// AX calls are synchronous round-trips to the target app's run loop, so a
+/// wedged app would otherwise stall the caller for the 6s default — on the
+/// hotkey thread that delay lands *before* the recording window appears.
+///
+/// NOTE: setting this on the *system-wide* element sets it *process-globally*
+/// (Apple's documented behavior), so it also caps the `focused_element_accepts_text`
+/// insert guard below. That is deliberate and fails safe: a timeout there reads
+/// as `Unanswerable`, which the guard already treats as "allow", so a slow app
+/// can never cause a valid insertion to be blocked — it only stops a wedged app
+/// from freezing the insert path for six seconds.
+const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.25;
+
+/// Center of the frontmost app's focused window, in the global top-left-origin
+/// **logical point** space — the same space `CGDisplayBounds` uses, so the
+/// caller can hand it straight to `monitor_from_point` to ask which screen the
+/// user is actually working on.
+///
+/// Returns `None` whenever Accessibility can't answer: permission not granted,
+/// nothing focused, or an AX-opaque app. Chromium shells make that last case
+/// routine (see `classify_focus_query` above — ChatGPT Atlas errors out even
+/// with a field visibly focused), which is exactly why the caller keeps a mouse
+/// pointer fallback instead of treating `None` as "no screen".
+pub fn focused_window_center() -> Option<(f64, f64)> {
+  unsafe {
+    let system_wide = AXUIElementCreateSystemWide();
+    if system_wide.is_null() {
+      return None;
+    }
+    AXUIElementSetMessagingTimeout(system_wide, AX_QUERY_TIMEOUT_SECONDS);
+
+    let app = copy_ax_attribute(system_wide, "AXFocusedApplication");
+    CFRelease(system_wide);
+    let app = app?;
+
+    let focused = copy_ax_attribute(app, "AXFocusedWindow");
+    CFRelease(app);
+    let focused = focused?;
+
+    let position = copy_ax_attribute(focused, "AXPosition");
+    let size = copy_ax_attribute(focused, "AXSize");
+    CFRelease(focused);
+
+    let (position, size) = match (position, size) {
+      (Some(position), Some(size)) => (position, size),
+      (position, size) => {
+        // One of the two came back — release it before bailing.
+        if let Some(value) = position {
+          CFRelease(value);
+        }
+        if let Some(value) = size {
+          CFRelease(value);
+        }
+        return None;
+      }
+    };
+
+    let mut origin = CGPoint { x: 0.0, y: 0.0 };
+    let mut extent = CGSize {
+      width: 0.0,
+      height: 0.0,
+    };
+    let got_origin = AXValueGetValue(
+      position,
+      K_AX_VALUE_CGPOINT,
+      &mut origin as *mut CGPoint as *mut c_void,
+    );
+    let got_extent = AXValueGetValue(
+      size,
+      K_AX_VALUE_CGSIZE,
+      &mut extent as *mut CGSize as *mut c_void,
+    );
+    CFRelease(position);
+    CFRelease(size);
+
+    // A zero-sized window is a degenerate answer (some apps report one for
+    // off-screen or freshly-created windows); its "center" would be a bogus
+    // point, so treat it as unanswered.
+    if !got_origin || !got_extent || extent.width <= 0.0 || extent.height <= 0.0 {
+      return None;
+    }
+    Some((
+      origin.x + extent.width / 2.0,
+      origin.y + extent.height / 2.0,
+    ))
+  }
+}
+
+/// Reads one AX attribute, handing back the retained value on success. The
+/// caller owns it and must `CFRelease` it (AX "Copy" follows the create rule).
+unsafe fn copy_ax_attribute(element: *const c_void, attribute: &str) -> Option<*const c_void> {
+  let name = CFString::new(attribute);
+  let mut value: *const c_void = std::ptr::null();
+  let err = AXUIElementCopyAttributeValue(
+    element,
+    name.as_concrete_TypeRef() as *const c_void,
+    &mut value,
+  );
+  if err == 0 && !value.is_null() {
+    Some(value)
+  } else {
+    None
+  }
+}
+
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
   fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
@@ -354,6 +473,8 @@ extern "C" {
   fn AXUIElementCreateSystemWide() -> *const c_void;
   fn AXUIElementCopyAttributeValue(element: *const c_void, attribute: *const c_void, value: *mut *const c_void) -> i32;
   fn AXUIElementIsAttributeSettable(element: *const c_void, attribute: *const c_void, settable: *mut u8) -> i32;
+  fn AXUIElementSetMessagingTimeout(element: *const c_void, timeoutInSeconds: f32) -> i32;
+  fn AXValueGetValue(value: *const c_void, theType: u32, valuePtr: *mut c_void) -> bool;
 }
 
 #[link(name = "AVFoundation", kind = "framework")]
