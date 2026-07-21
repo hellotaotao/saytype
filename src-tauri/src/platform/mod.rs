@@ -25,6 +25,7 @@
 //! fn open_accessibility_settings();
 //! fn open_microphone_settings();
 //! fn reveal_app_in_finder();
+//! fn app_bundle_path() -> Option<std::path::PathBuf>;
 //! fn copy_to_clipboard(text: &str) -> anyhow::Result<()>;
 //! fn insert_text(text: &str) -> InsertResult;
 //! fn focused_window_center() -> Option<(f64, f64)>;

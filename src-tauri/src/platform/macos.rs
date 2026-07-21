@@ -73,15 +73,26 @@ pub fn open_microphone_settings() {
     .status();
 }
 
-/// What to reveal in Finder for "drag SayType into the Accessibility list":
-/// the .app bundle when running installed (exe = SayType.app/Contents/MacOS/x),
-/// else the bare executable (dev builds outside a bundle).
-fn finder_reveal_target(exe: &std::path::Path) -> &std::path::Path {
+/// 上溯三级找 `.app` bundle(exe = SayType.app/Contents/MacOS/x)。
+/// 裸二进制(dev 构建)返回 None。
+fn app_bundle_of(exe: &std::path::Path) -> Option<&std::path::Path> {
   exe
     .ancestors()
     .nth(3)
     .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
-    .unwrap_or(exe)
+}
+
+/// What to reveal in Finder for "drag SayType into the Accessibility list":
+/// the .app bundle when running installed, else the bare executable.
+fn finder_reveal_target(exe: &std::path::Path) -> &std::path::Path {
+  app_bundle_of(exe).unwrap_or(exe)
+}
+
+/// 拖拽云朵的负载路径。**只有真正的 bundle 才有意义**——裸二进制拖进辅助功能
+/// 列表不会让 SayType 获得权限,所以此时返回 None,调用方据此不显示云朵。
+pub fn app_bundle_path() -> Option<std::path::PathBuf> {
+  let exe = std::env::current_exe().ok()?;
+  app_bundle_of(&exe).map(std::path::Path::to_path_buf)
 }
 
 // Recovery path for the one case the prompt+deep-link flow can't fix: after
@@ -504,6 +515,26 @@ mod tests {
     assert_eq!(
       finder_reveal_target(Path::new("/Users/tao/code/SayType/target/debug/saytype")),
       Path::new("/Users/tao/code/SayType/target/debug/saytype")
+    );
+  }
+
+  #[test]
+  fn app_bundle_is_some_only_inside_a_real_bundle() {
+    use std::path::Path;
+    // 安装态:exe = SayType.app/Contents/MacOS/saytype,上溯三级即 bundle。
+    assert_eq!(
+      app_bundle_of(Path::new("/Applications/SayType.app/Contents/MacOS/saytype")),
+      Some(Path::new("/Applications/SayType.app"))
+    );
+    // dev 裸二进制:没有 .app 祖先 → None(云朵据此不显示)。
+    assert_eq!(
+      app_bundle_of(Path::new("/Users/tao/code/SayType/target/debug/saytype")),
+      None
+    );
+    // 上溯三级存在但不是 .app,同样不算。
+    assert_eq!(
+      app_bundle_of(Path::new("/a/b/c/d/saytype")),
+      None
     );
   }
 

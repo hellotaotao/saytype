@@ -32,6 +32,11 @@ pub fn open_microphone_settings() {}
 
 pub fn reveal_app_in_finder() {}
 
+/// 非 macOS 没有辅助功能授权这回事,也就没有拖拽云朵。
+pub fn app_bundle_path() -> Option<std::path::PathBuf> {
+  None
+}
+
 pub fn copy_to_clipboard(_text: &str) -> Result<()> {
   Err(anyhow!("Clipboard write is not supported on this platform"))
 }
