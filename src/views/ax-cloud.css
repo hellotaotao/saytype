@@ -43,7 +43,9 @@ body {
 }
 #cloudShape .stop-top { stop-color: var(--cloud-top); }
 #cloudShape .stop-bottom { stop-color: var(--cloud-bottom); }
-#cloudDrop { flood-color: var(--cloud-shadow); }
+/* CSS drop-shadow, not the SVG <feDropShadow> primitive: the latter renders a
+   hard black outline around the cloud in WebKit. */
+#cloudBody { filter: drop-shadow(0 5px 11px var(--cloud-shadow)); }
 
 /* Icon + caption live inside the SVG viewBox, so they scale with the cloud. */
 #appIcon {

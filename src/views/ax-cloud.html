@@ -21,18 +21,13 @@
         <stop class="stop-top" offset="0"/>
         <stop class="stop-bottom" offset="1"/>
       </linearGradient>
-      <!-- Simple single-primitive drop shadow: verified clean in the real
-           WKWebView. The hand-rolled feFlood/feComposite/feMerge feather looked
-           fine in Chromium but rendered dark + jagged in WebKit — don't. -->
-      <filter id="cloudShadow" x="-45%" y="-35%" width="190%" height="185%">
-        <feDropShadow id="cloudDrop" dx="0" dy="8" stdDeviation="8"/>
-      </filter>
     </defs>
 
     <!-- Silhouette: overlapping circles fused by a shared userSpaceOnUse
-         gradient (seamless) in one group, so the filter casts a single soft
-         shadow for the whole shape. -->
-    <g filter="url(#cloudShadow)" fill="url(#cloudFill)">
+         gradient (seamless). Shadow is a CSS drop-shadow on this group (see
+         ax-cloud.css) — the SVG <feDropShadow> primitive renders a hard black
+         outline around the cloud in WebKit. -->
+    <g id="cloudBody" fill="url(#cloudFill)">
       <ellipse cx="100" cy="156" rx="84" ry="43"/>
       <circle cx="58" cy="120" r="36"/>
       <circle cx="102" cy="92" r="48"/>
