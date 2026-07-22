@@ -95,6 +95,15 @@ pub fn app_bundle_path() -> Option<std::path::PathBuf> {
   app_bundle_of(&exe).map(std::path::Path::to_path_buf)
 }
 
+/// Attach the drag layer on the cloud window's NSView. Not attached (returns
+/// false) when there is no .app bundle (a dev bare binary).
+pub fn attach_app_drag_source(ns_view: *mut c_void) -> bool {
+  match app_bundle_path() {
+    Some(bundle) => super::drag_cloud::attach(ns_view, &bundle),
+    None => false,
+  }
+}
+
 // Recovery path for the one case the prompt+deep-link flow can't fix: after
 // the user removes SayType from the Accessibility list, TCC's re-registration
 // via the prompt is unreliable, so the row may never reappear. Dropping the

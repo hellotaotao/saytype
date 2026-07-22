@@ -37,6 +37,11 @@ pub fn app_bundle_path() -> Option<std::path::PathBuf> {
   None
 }
 
+/// No drag cloud off macOS.
+pub fn attach_app_drag_source(_ns_view: *mut std::ffi::c_void) -> bool {
+  false
+}
+
 pub fn copy_to_clipboard(_text: &str) -> Result<()> {
   Err(anyhow!("Clipboard write is not supported on this platform"))
 }

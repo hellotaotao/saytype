@@ -2,9 +2,14 @@
 //! drag source itself lives in `platform::attach_app_drag_source`; this module
 //! only shows, hides, and positions the window.
 
+use std::sync::Once;
+
 use tauri::{AppHandle, Manager, PhysicalPosition};
 
 const WINDOW_LABEL: &str = "ax-cloud";
+
+/// The native drag overlay is attached once, on the first show.
+static ATTACH_OVERLAY: Once = Once::new();
 
 /// Show the cloud. Returns false when it was NOT shown — a dev bare binary has
 /// no .app bundle, and dragging it into the list would not grant SayType
@@ -21,6 +26,16 @@ pub fn show(app: &AppHandle) -> bool {
   };
 
   position_left_of_center(&window);
+
+  // Attach the native drag overlay once; later shows reuse the one layer.
+  ATTACH_OVERLAY.call_once(|| match window.ns_view() {
+    Ok(view) => {
+      if !crate::platform::attach_app_drag_source(view) {
+        log::error!("ax-cloud: failed to attach the drag overlay");
+      }
+    }
+    Err(error) => log::error!("ax-cloud: ns_view() unavailable: {error}"),
+  });
 
   if let Err(error) = window.show() {
     log::error!("ax-cloud: failed to show: {error}");

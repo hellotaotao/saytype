@@ -26,6 +26,7 @@
 //! fn open_microphone_settings();
 //! fn reveal_app_in_finder();
 //! fn app_bundle_path() -> Option<std::path::PathBuf>;
+//! fn attach_app_drag_source(ns_view: *mut std::ffi::c_void) -> bool;
 //! fn copy_to_clipboard(text: &str) -> anyhow::Result<()>;
 //! fn insert_text(text: &str) -> InsertResult;
 //! fn focused_window_center() -> Option<(f64, f64)>;
@@ -35,6 +36,8 @@
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod drag_cloud;
 #[cfg(target_os = "macos")]
 pub use macos::*;
 
