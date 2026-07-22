@@ -482,16 +482,25 @@ pub async fn download_model(app: tauri::AppHandle, cancel: CancellationToken) ->
   Ok(())
 }
 
-/// Extract every regular file in the archive, flattened to its basename, into
-/// bin/<LLAMA_BUILD>/, and mark all of them executable on unix (the CLI needs
-/// it; the bundled dylibs don't care). Flattening keeps us independent of the
-/// archive's top-level folder naming across llama.cpp releases -- adjust ONLY
-/// if the Task-3 Step-1 rpath check demanded preserved structure.
+/// Extract the archive into bin/<LLAMA_BUILD>/, flattening every entry to its
+/// basename, and mark extracted files executable on unix (the CLI needs it; the
+/// bundled dylibs don't care). Flattening keeps us independent of the archive's
+/// top-level folder naming across llama.cpp releases -- adjust ONLY if the
+/// Task-3 Step-1 rpath check demanded preserved structure.
+///
+/// Symlinks MUST be recreated, not skipped: macOS/Linux llama.cpp ships each
+/// versioned dylib/.so as a real file (libX.0.0.9960.dylib) PLUS a compatibility
+/// symlink (libX.0.dylib) that is the install-name the executables link against.
+/// Dropping those symlinks (the pre-2026-07 bug: `!is_file() { continue }` ate
+/// them) left dyld unable to resolve @rpath/libX.0.dylib, so llama-mtmd-cli
+/// SIGABRT'd on the FIRST clean download. It hid in dev because that machine's
+/// bin/ had been laid out by a manual `tar` extraction, which keeps symlinks.
 ///
 /// macOS/Linux releases are gzip-compressed tarballs; Windows releases are a
 /// real zip (Task 2 finding) -- so the two platforms use different crates.
 #[cfg(unix)]
 fn extract_llama_archive(base: &Path) -> Result<(), String> {
+  use std::os::unix::fs::PermissionsExt;
   let archive_path = base.join(llama_zip_asset().rel_path);
   let out_dir = bin_dir(base);
   fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
@@ -500,15 +509,32 @@ fn extract_llama_archive(base: &Path) -> Result<(), String> {
   let mut archive = tar::Archive::new(gz);
   for entry in archive.entries().map_err(|e| e.to_string())? {
     let mut entry = entry.map_err(|e| e.to_string())?;
-    if !entry.header().entry_type().is_file() {
-      continue;
-    }
+    let entry_type = entry.header().entry_type();
     let entry_path = entry.path().map_err(|e| e.to_string())?.into_owned();
     let Some(name) = entry_path.file_name().map(|n| n.to_owned()) else { continue };
-    let out_path = out_dir.join(name);
+    let out_path = out_dir.join(&name);
+
+    // Compat symlink (libX.0.dylib -> libX.0.0.9960.dylib): recreate it,
+    // flattening the target to a basename to match our same-dir flattened
+    // layout (llama's targets are already same-dir). Creating it before the
+    // target file lands is fine -- a dangling symlink resolves once the real
+    // file is written later in this same loop.
+    if entry_type.is_symlink() {
+      if let Some(target) = entry
+        .link_name()
+        .map_err(|e| e.to_string())?
+        .and_then(|t| t.file_name().map(|n| n.to_owned()))
+      {
+        let _ = fs::remove_file(&out_path); // replace any stale entry
+        std::os::unix::fs::symlink(&target, &out_path).map_err(|e| e.to_string())?;
+      }
+      continue;
+    }
+    if !entry_type.is_file() {
+      continue;
+    }
     let mut out = fs::File::create(&out_path).map_err(|e| e.to_string())?;
     std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-    use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&out_path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
   }
   if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
@@ -813,6 +839,63 @@ mod tests {
     let s = model_status_at(dir, false);
     assert_eq!(s.state, "ready");
     assert_eq!(s.downloaded_bytes, s.total_bytes);
+  }
+
+  // Regression for the fresh-download SIGABRT: the tar extractor used to drop
+  // the versioned-dylib compatibility symlinks, so dyld could not resolve
+  // @rpath/libX.0.dylib and llama-mtmd-cli aborted on every clean download.
+  #[cfg(unix)]
+  #[test]
+  fn extract_recreates_dylib_symlinks() {
+    use flate2::{write::GzEncoder, Compression};
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let base = temp.path();
+    let archive_path = base.join(llama_zip_asset().rel_path);
+    fs::create_dir_all(archive_path.parent().unwrap_or(base)).unwrap();
+
+    // A .tar.gz mimicking llama's macOS layout under a top-level folder (to
+    // exercise basename-flattening): real versioned dylib + compat symlink + CLI.
+    {
+      let gz = GzEncoder::new(fs::File::create(&archive_path).unwrap(), Compression::fast());
+      let mut b = tar::Builder::new(gz);
+
+      let real = b"real-dylib-bytes";
+      let mut h = tar::Header::new_gnu();
+      h.set_entry_type(tar::EntryType::Regular);
+      h.set_size(real.len() as u64);
+      h.set_mode(0o644);
+      b.append_data(&mut h, "llama/build/bin/libllama-common.0.0.9960.dylib", &real[..]).unwrap();
+
+      let mut h = tar::Header::new_gnu();
+      h.set_entry_type(tar::EntryType::Symlink);
+      h.set_size(0);
+      h.set_mode(0o777);
+      b.append_link(&mut h, "llama/build/bin/libllama-common.0.dylib", "libllama-common.0.0.9960.dylib")
+        .unwrap();
+
+      let cli = b"#!/bin/sh\n";
+      let mut h = tar::Header::new_gnu();
+      h.set_entry_type(tar::EntryType::Regular);
+      h.set_size(cli.len() as u64);
+      h.set_mode(0o755);
+      b.append_data(&mut h, "llama/build/bin/llama-mtmd-cli", &cli[..]).unwrap();
+
+      b.into_inner().unwrap().finish().unwrap();
+    }
+
+    extract_llama_archive(base).unwrap();
+
+    let link = bin_dir(base).join("libllama-common.0.dylib");
+    assert!(
+      fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+      "compat symlink must be recreated, not skipped"
+    );
+    assert_eq!(
+      fs::read(&link).unwrap(),
+      b"real-dylib-bytes",
+      "symlink must resolve to the real versioned dylib"
+    );
   }
 
   /// Needs the real assets laid out (Task 3 Step 1). Run manually:
