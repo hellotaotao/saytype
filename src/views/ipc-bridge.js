@@ -28,6 +28,8 @@
     "show-permission-dialog": "show_permission_dialog",
     "open-microphone-settings": "open_microphone_settings",
     "reveal-app-in-finder": "reveal_app_in_finder",
+    "show-ax-cloud": "show_ax_cloud",
+    "hide-ax-cloud": "hide_ax_cloud",
     "copy-to-clipboard": "copy_to_clipboard",
     "check-microphone-permission": "check_microphone_permission",
     "check-accessibility-permission": "check_accessibility_permission",
