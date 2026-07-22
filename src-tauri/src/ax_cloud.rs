@@ -4,7 +4,7 @@
 
 use std::sync::Once;
 
-use tauri::{AppHandle, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 
 const WINDOW_LABEL: &str = "ax-cloud";
 
@@ -51,6 +51,15 @@ pub fn hide(app: &AppHandle) {
   if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
     let _ = window.hide();
   }
+}
+
+/// The user closed the cloud (its close button) before granting. Hide it and
+/// tell the main window to leave the "waiting" state, so its guide button comes
+/// back — otherwise the card stays stuck on "Waiting for permission…" with no
+/// way to re-summon the cloud and System Settings.
+pub fn dismiss(app: &AppHandle) {
+  hide(app);
+  let _ = app.emit("ax-cloud-dismissed", ());
 }
 
 /// System Settings usually opens centered-to-right, so the cloud sits in the

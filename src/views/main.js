@@ -221,6 +221,15 @@ function bindEvents() {
     void refreshReadiness();
   });
 
+  ipc.on("ax-cloud-dismissed", () => {
+    // The user closed the drag helper before granting. Leave the "waiting"
+    // state so the guide button returns — clicking it re-opens the cloud and
+    // System Settings. A late grant is still caught on window refocus.
+    stopAxPolling();
+    axGuideTimedOut = false;
+    void refreshReadiness();
+  });
+
   ipc.on("shortcut-updated", () => {
     void refreshReadiness();
   });

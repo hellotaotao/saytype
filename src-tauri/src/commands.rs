@@ -589,6 +589,13 @@ pub fn hide_ax_cloud(app: AppHandle) {
   crate::ax_cloud::hide(&app);
 }
 
+// The user dismissed the drag cloud before granting. Hides it and signals the
+// main window to leave the "waiting" state so the guide button reappears.
+#[tauri::command]
+pub fn dismiss_ax_cloud(app: AppHandle) {
+  crate::ax_cloud::dismiss(&app);
+}
+
 // Explicit, user-initiated clipboard write — used ONLY by the input-prompt's
 // "insertion failed → click Copy" affordance. The per-OS mechanism (pbcopy on
 // macOS) lives behind `platform::copy_to_clipboard`. There is still no

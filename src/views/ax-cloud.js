@@ -20,8 +20,8 @@ async function initAxCloud() {
   document.getElementById("closeBtn").addEventListener("click", () => {
     // This window is focus:false, so it receives no keyboard events — this
     // button is the only manual way to dismiss the cloud.
-    ipc.invoke("hide-ax-cloud").catch((error) => {
-      console.error("Failed to hide the drag cloud:", error);
+    ipc.invoke("dismiss-ax-cloud").catch((error) => {
+      console.error("Failed to dismiss the drag cloud:", error);
     });
   });
 }

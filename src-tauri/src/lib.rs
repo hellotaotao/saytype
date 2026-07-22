@@ -173,6 +173,7 @@ pub fn run() {
       commands::reveal_app_in_finder,
       commands::show_ax_cloud,
       commands::hide_ax_cloud,
+      commands::dismiss_ax_cloud,
       commands::copy_to_clipboard,
       commands::check_microphone_permission,
       commands::check_accessibility_permission,
