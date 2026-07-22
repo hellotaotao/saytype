@@ -10,12 +10,10 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --cloud-top: #474d59;
-    --cloud-bottom: #2f343d;
-    --cloud-shadow: rgba(0, 0, 0, 0.55);
-    --cloud-highlight: rgba(255, 255, 255, 0.10);
-    --cloud-text: #f0f2f6;
-    --cloud-muted: rgba(255, 255, 255, 0.66);
+    /* Keep the cloud light in dark mode too — a white cloud still reads as a
+       cloud (a dark "storm cloud" looked bad); just deepen the shadow so it
+       still grounds on a dark backdrop. */
+    --cloud-shadow: rgba(8, 14, 28, 0.45);
   }
 }
 
@@ -45,7 +43,7 @@ body {
 }
 #cloudShape .stop-top { stop-color: var(--cloud-top); }
 #cloudShape .stop-bottom { stop-color: var(--cloud-bottom); }
-#cloudFlood { flood-color: var(--cloud-shadow); }
+#cloudDrop { flood-color: var(--cloud-shadow); }
 
 /* Icon + caption live inside the SVG viewBox, so they scale with the cloud. */
 #appIcon {
