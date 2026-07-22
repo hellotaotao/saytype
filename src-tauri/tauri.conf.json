@@ -56,6 +56,20 @@
         "skipTaskbar": true,
         "focus": false,
         "shadow": false
+      },
+      {
+        "label": "ax-cloud",
+        "url": "ax-cloud.html",
+        "width": 200,
+        "height": 230,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "focus": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "shadow": false
       }
     ],
     "security": {

@@ -221,6 +221,15 @@ function bindEvents() {
     void refreshReadiness();
   });
 
+  ipc.on("ax-cloud-dismissed", () => {
+    // The user closed the drag helper before granting. Leave the "waiting"
+    // state so the guide button returns — clicking it re-opens the cloud and
+    // System Settings. A late grant is still caught on window refocus.
+    stopAxPolling();
+    axGuideTimedOut = false;
+    void refreshReadiness();
+  });
+
   ipc.on("shortcut-updated", () => {
     void refreshReadiness();
   });
@@ -283,6 +292,10 @@ async function refreshReadiness() {
   if (axOk) {
     stopAxPolling();
     axGuideTimedOut = false;
+    // Also covers "granted after the 90s poll stopped": the refocus recheck
+    // funnels here. Otherwise the cloud would stay on screen (the poll timeout
+    // deliberately leaves it up).
+    ipc.invoke("hide-ax-cloud").catch(() => {});
   }
   // Keep the onboarding wizard's Accessibility page in sync — every AX state
   // change (button flow, polling, focus recheck) funnels through here.
@@ -355,6 +368,13 @@ async function startAccessibilityFlow() {
   } catch (error) {
     console.error("Failed to open accessibility settings:", error);
   }
+
+  // Appears alongside the deep-link, not on a timeout: a stuck user needs this
+  // drag entry point in the first second. A dev bare binary has no .app bundle,
+  // so the backend refuses to show it and returns false.
+  ipc.invoke("show-ax-cloud").catch((error) => {
+    console.error("Failed to show the drag cloud:", error);
+  });
 
   beginAxPolling();
 }

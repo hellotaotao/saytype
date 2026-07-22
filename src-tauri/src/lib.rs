@@ -1,3 +1,4 @@
+mod ax_cloud;
 mod commands;
 mod history;
 mod hotkey;
@@ -14,6 +15,7 @@ use tauri::{webview::PageLoadEvent, Manager, WindowEvent};
 const MAIN_ENTRY_SCRIPT: &str = include_str!("../../src/views/main.js");
 const SETTINGS_ENTRY_SCRIPT: &str = include_str!("../../src/views/settings.js");
 const INPUT_PROMPT_ENTRY_SCRIPT: &str = include_str!("../../src/views/input-prompt.js");
+const AX_CLOUD_ENTRY_SCRIPT: &str = include_str!("../../src/views/ax-cloud.js");
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -47,6 +49,7 @@ pub fn run() {
         "main" => Some(("data-main-js-ran", MAIN_ENTRY_SCRIPT)),
         "settings" => Some(("data-settings-js-ran", SETTINGS_ENTRY_SCRIPT)),
         "input-prompt" => Some(("data-input-prompt-js-ran", INPUT_PROMPT_ENTRY_SCRIPT)),
+        "ax-cloud" => Some(("data-ax-cloud-js-ran", AX_CLOUD_ENTRY_SCRIPT)),
         _ => None,
       };
 
@@ -168,6 +171,9 @@ pub fn run() {
       commands::show_permission_dialog,
       commands::open_microphone_settings,
       commands::reveal_app_in_finder,
+      commands::show_ax_cloud,
+      commands::hide_ax_cloud,
+      commands::dismiss_ax_cloud,
       commands::copy_to_clipboard,
       commands::check_microphone_permission,
       commands::check_accessibility_permission,

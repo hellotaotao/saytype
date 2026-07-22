@@ -308,6 +308,10 @@
         unsaved: "Unsaved changes",
         saveError: "Failed to save settings. Please try again.",
       },
+      axCloud: {
+        hint: "Drag me into the list",
+        close: "Close",
+      },
       inputPrompt: {
         title: "Voice Input",
         hint: "Hold {record} to dictate, {translate} for English",
@@ -640,6 +644,10 @@
         save: "保存",
         unsaved: "有未保存的更改",
         saveError: "保存设置失败，请重试。",
+      },
+      axCloud: {
+        hint: "把我拖进列表",
+        close: "关闭",
       },
       inputPrompt: {
         title: "语音输入",

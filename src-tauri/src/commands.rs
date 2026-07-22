@@ -576,6 +576,26 @@ pub fn reveal_app_in_finder() -> Result<(), String> {
   Ok(())
 }
 
+// Show the Accessibility drag cloud. Returns whether it was actually shown —
+// false on a dev bare binary (no .app bundle), which the frontend uses to
+// decide whether it needs to hide it later.
+#[tauri::command]
+pub fn show_ax_cloud(app: AppHandle) -> bool {
+  crate::ax_cloud::show(&app)
+}
+
+#[tauri::command]
+pub fn hide_ax_cloud(app: AppHandle) {
+  crate::ax_cloud::hide(&app);
+}
+
+// The user dismissed the drag cloud before granting. Hides it and signals the
+// main window to leave the "waiting" state so the guide button reappears.
+#[tauri::command]
+pub fn dismiss_ax_cloud(app: AppHandle) {
+  crate::ax_cloud::dismiss(&app);
+}
+
 // Explicit, user-initiated clipboard write — used ONLY by the input-prompt's
 // "insertion failed → click Copy" affordance. The per-OS mechanism (pbcopy on
 // macOS) lives behind `platform::copy_to_clipboard`. There is still no

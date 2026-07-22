@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self';">
+  <title>SayType</title>
+  <link rel="stylesheet" href="material-icons.css">
+  <link rel="stylesheet" href="ax-cloud.css">
+</head>
+<body>
+  <!-- Close button stays HTML at the window's top-right 28x28: drag_cloud.rs's
+       hitTest: punches a click-through hole there. Everything else lives inside
+       the SVG viewBox so the cloud, icon, and caption scale as one unit. -->
+  <button id="closeBtn" type="button" aria-label="Close">
+    <span class="material-icons">close</span>
+  </button>
+
+  <svg id="cloudShape" viewBox="0 0 200 230" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <defs>
+      <linearGradient id="cloudFill" x1="0" y1="48" x2="0" y2="200" gradientUnits="userSpaceOnUse">
+        <stop class="stop-top" offset="0"/>
+        <stop class="stop-bottom" offset="1"/>
+      </linearGradient>
+    </defs>
+
+    <!-- Silhouette: overlapping circles fused by a shared userSpaceOnUse
+         gradient (seamless). Shadow is a CSS drop-shadow on this group (see
+         ax-cloud.css) — the SVG <feDropShadow> primitive renders a hard black
+         outline around the cloud in WebKit. -->
+    <g id="cloudBody" fill="url(#cloudFill)">
+      <ellipse cx="100" cy="156" rx="84" ry="43"/>
+      <circle cx="58" cy="120" r="36"/>
+      <circle cx="102" cy="92" r="48"/>
+      <circle cx="146" cy="114" r="40"/>
+      <circle cx="34" cy="150" r="27"/>
+      <circle cx="170" cy="146" r="28"/>
+    </g>
+
+    <image id="appIcon" href="icon.png" xlink:href="icon.png" x="65" y="72" width="70" height="70"
+           preserveAspectRatio="xMidYMid meet"/>
+
+    <foreignObject x="16" y="147" width="168" height="46">
+      <div id="hintWrap" xmlns="http://www.w3.org/1999/xhtml">
+        <span id="hint"></span>
+      </div>
+    </foreignObject>
+  </svg>
+
+  <script src="ipc-bridge.js"></script>
+  <script src="i18n.js"></script>
+  <script src="ax-cloud.js"></script>
+</body>
+</html>
