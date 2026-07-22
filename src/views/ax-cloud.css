@@ -1,16 +1,21 @@
 :root {
-  --cloud-bg: rgba(252, 251, 248, 0.97);
-  --cloud-border: rgba(31, 38, 38, 0.12);
-  --cloud-text: #2a2a24;
-  --cloud-muted: #6b635a;
+  --cloud-top: #ffffff;
+  --cloud-bottom: #e6ebf3;
+  /* Cool, low-opacity shadow (rgba carries its own alpha into flood-color). */
+  --cloud-shadow: rgba(54, 70, 99, 0.30);
+  --cloud-highlight: rgba(255, 255, 255, 0.85);
+  --cloud-text: #363b45;
+  --cloud-muted: #6c737f;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --cloud-bg: rgba(38, 38, 46, 0.97);
-    --cloud-border: rgba(255, 255, 255, 0.14);
-    --cloud-text: #f2f2f5;
-    --cloud-muted: rgba(255, 255, 255, 0.7);
+    --cloud-top: #474d59;
+    --cloud-bottom: #2f343d;
+    --cloud-shadow: rgba(0, 0, 0, 0.55);
+    --cloud-highlight: rgba(255, 255, 255, 0.10);
+    --cloud-text: #f0f2f6;
+    --cloud-muted: rgba(255, 255, 255, 0.66);
   }
 }
 
@@ -19,6 +24,7 @@
 body {
   margin: 0;
   background: transparent;
+  overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   /* The whole cloud is a drag source; disable text selection so dragging
      doesn't turn into selecting text. */
@@ -26,27 +32,73 @@ body {
   -webkit-user-select: none;
 }
 
-#cloud {
-  position: relative;
+/* The cloud silhouette fills the window; the native drag overlay sits above it
+   in the real app, so nothing here needs to be interactive except the close
+   button. */
+#cloudShape {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
+  display: block;
+  pointer-events: none;
+}
+#cloudShape .stop-top { stop-color: var(--cloud-top); }
+#cloudShape .stop-bottom { stop-color: var(--cloud-bottom); }
+#cloudDrop { flood-color: var(--cloud-shadow); }
+#cloudHighlight { fill: var(--cloud-highlight); }
+
+/* Icon + caption live inside the SVG viewBox, so they scale with the cloud. */
+#appIcon {
+  filter: drop-shadow(0 2px 5px rgba(30, 40, 60, 0.16));
+}
+
+#hintWrap {
+  height: 100%;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding: 18px;
-  border-radius: 18px;
-  background: var(--cloud-bg);
-  border: 1px solid var(--cloud-border);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+
+#hint {
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 500;
   color: var(--cloud-text);
 }
 
+/* Fixed 28x28, pinned to the window's top-right -- must stay in sync with
+   drag_cloud.rs's CLOSE_BUTTON_SIZE, which punches the click-through hole. */
+#closeBtn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  /* Frosted chip: this is the only way to dismiss the window and it sits off
+     the cloud, so it must read over any backdrop (light or dark Settings). */
+  background: rgba(48, 52, 60, 0.42);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+#closeBtn:hover { background: rgba(48, 52, 60, 0.62); }
+#closeBtn .material-icons { font-size: 15px; }
+
 /* Base glyph rule for the Material Icons ligature font. The shared
    material-icons.css only declares the @font-face; each window carries this
-   class rule itself (mirrors main.css) — without the 'liga' feature the close
-   button renders the literal word "close" instead of the × glyph. */
+   class rule itself (mirrors main.css) -- without the 'liga' feature the close
+   button renders the literal word "close" instead of the x glyph. */
 .material-icons {
   font-family: 'Material Icons';
   font-weight: normal;
@@ -61,37 +113,4 @@ body {
   -webkit-font-feature-settings: 'liga';
   font-feature-settings: 'liga';
   -webkit-font-smoothing: antialiased;
-}
-
-/* Fixed 28x28 -- must stay in sync with drag_cloud.rs's CLOSE_BUTTON_SIZE. */
-#closeBtn {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--cloud-muted);
-  cursor: pointer;
-}
-
-#closeBtn:hover { background: rgba(127, 127, 127, 0.16); }
-#closeBtn .material-icons { font-size: 16px; }
-
-#appIcon {
-  width: 84px;
-  height: 84px;
-  pointer-events: none; /* Let the overlay handle events; don't let the img eat them. */
-}
-
-#hint {
-  font-size: 12.5px;
-  line-height: 1.45;
-  text-align: center;
-  color: var(--cloud-muted);
 }
