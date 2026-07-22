@@ -45,8 +45,7 @@ body {
 }
 #cloudShape .stop-top { stop-color: var(--cloud-top); }
 #cloudShape .stop-bottom { stop-color: var(--cloud-bottom); }
-#cloudDrop { flood-color: var(--cloud-shadow); }
-#cloudHighlight { fill: var(--cloud-highlight); }
+#cloudFlood { flood-color: var(--cloud-shadow); }
 
 /* Icon + caption live inside the SVG viewBox, so they scale with the cloud. */
 #appIcon {

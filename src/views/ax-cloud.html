@@ -21,8 +21,19 @@
         <stop class="stop-top" offset="0"/>
         <stop class="stop-bottom" offset="1"/>
       </linearGradient>
-      <filter id="cloudShadow" x="-45%" y="-35%" width="190%" height="185%">
-        <feDropShadow id="cloudDrop" dx="0" dy="8" stdDeviation="8"/>
+      <filter id="cloudShadow" x="-55%" y="-45%" width="210%" height="200%" color-interpolation-filters="sRGB">
+        <!-- Soft grounding shadow, built from the shape's alpha. -->
+        <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="shBlur"/>
+        <feOffset in="shBlur" dy="7" result="shOff"/>
+        <feFlood id="cloudFlood" flood-color="#36465e" flood-opacity="0.3" result="shCol"/>
+        <feComposite in="shCol" in2="shOff" operator="in" result="shadow"/>
+        <!-- Feather the cloud's own edge so its alpha fades to transparent
+             (no hard outline), then lay it over the shadow. -->
+        <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="softCloud"/>
+        <feMerge>
+          <feMergeNode in="shadow"/>
+          <feMergeNode in="softCloud"/>
+        </feMerge>
       </filter>
     </defs>
 
@@ -38,13 +49,10 @@
       <circle cx="170" cy="146" r="28"/>
     </g>
 
-    <!-- Soft lit-from-above highlight across the upper puffs. -->
-    <ellipse id="cloudHighlight" cx="100" cy="80" rx="50" ry="24"/>
-
-    <image id="appIcon" href="icon.png" xlink:href="icon.png" x="65" y="54" width="70" height="70"
+    <image id="appIcon" href="icon.png" xlink:href="icon.png" x="65" y="72" width="70" height="70"
            preserveAspectRatio="xMidYMid meet"/>
 
-    <foreignObject x="16" y="135" width="168" height="46">
+    <foreignObject x="16" y="147" width="168" height="46">
       <div id="hintWrap" xmlns="http://www.w3.org/1999/xhtml">
         <span id="hint"></span>
       </div>
