@@ -455,12 +455,18 @@ pub async fn transcribe_audio(
         "Transcription"
       };
       let message = format!("{mode} failed: {}", error);
-      // Best-effort here too: surface the original API error to the user, not a
-      // secondary history-write error.
-      if let Err(err) = append_activity(&message, false, Some(error.to_string()), audio_for_debug) {
-        log::warn!("failed to record failed transcription in history: {err:#}");
+      // A hung/timed-out decode is auto-retried by the frontend, which on final
+      // give-up saves a single "pending audio" entry (save_pending_transcription).
+      // Logging a failed row per attempt here would double-log the retried hang,
+      // so skip it for hangs; every other failure still logs once as before.
+      if !is_hang_error(&error) {
+        // Best-effort: surface the original API error to the user, not a
+        // secondary history-write error.
+        if let Err(err) = append_activity(&message, false, Some(error.to_string()), audio_for_debug) {
+          log::warn!("failed to record failed transcription in history: {err:#}");
+        }
+        let _ = app.emit("activity-updated", ());
       }
-      let _ = app.emit("activity-updated", ());
       Err(error.to_string())
     }
   }
@@ -850,6 +856,102 @@ fn append_activity(
   Ok(())
 }
 
+// Persists a failed clip's audio and records a single "pending" history entry
+// pointing at it, so the user can re-transcribe it later. Unlike append_activity's
+// debug-only capture, this runs in release — it is the recovery store for a
+// give-up after the frontend's auto-retry. The audio write MUST succeed (a
+// pending entry with no audio is useless), so its error propagates. Returns the
+// new entry id.
+fn append_pending_audio(bytes: &[u8], mime: &str) -> Result<String> {
+  let id = history::next_entry_id();
+  history::write_debug_audio(&id, bytes, mime)?;
+  let entry = json!({
+    "id": id,
+    "text": "",
+    "timestamp": Utc::now().to_rfc3339(),
+    "success": false,
+    "error": null,
+    "pending": true,
+    "audioId": id,
+    "audioMime": mime,
+  });
+  // Serialized read-modify-write; drop the audio files of entries falling off
+  // the 100-entry cap so the store can't grow unbounded.
+  for aid in history::append_entry(entry, 100)? {
+    let _ = history::delete_debug_audio(&aid);
+  }
+  Ok(id)
+}
+
+// Saves a clip whose transcription hung and could not be recovered by the
+// frontend's auto-retry, as a re-transcribable "pending" history entry. The
+// audio arrives as the raw IPC body (same octet-stream path as transcribe_audio);
+// `mime-type` rides along as a header. Returns the new entry id.
+#[tauri::command]
+pub async fn save_pending_transcription(
+  app: AppHandle,
+  request: tauri::ipc::Request<'_>,
+) -> Result<String, String> {
+  let audio: Vec<u8> = match request.body() {
+    tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+    tauri::ipc::InvokeBody::Json(_) => {
+      return Err("save_pending_transcription expects a raw audio body".into());
+    }
+  };
+  if audio.is_empty() {
+    return Err("Audio buffer is empty".into());
+  }
+  let mime = request
+    .headers()
+    .get("mime-type")
+    .and_then(|value| value.to_str().ok())
+    .filter(|value| !value.is_empty())
+    .unwrap_or("audio/wav")
+    .to_string();
+
+  let id = append_pending_audio(&audio, &mime).map_err(stringify_error)?;
+  let _ = app.emit("activity-updated", ());
+  Ok(id)
+}
+
+// Re-runs transcription on a stored pending clip. On success the entry becomes a
+// normal text entry in place (position preserved) and its audio is deleted; on
+// failure the entry stays pending so the user can try again (a re-hang is bounded
+// by the same watchdog). Pending clips are always the local 16 kHz WAV, so this
+// goes through the local route regardless of the current provider.
+#[tauri::command]
+pub async fn retranscribe_pending(app: AppHandle, id: String) -> Result<String, String> {
+  let (bytes, mime) = history::read_debug_audio(&id).map_err(stringify_error)?;
+  let raw = perform_local_transcription(&app, bytes, &mime)
+    .await
+    .map_err(stringify_error)?;
+  let text = crate::scrub::scrub_transcription(&raw);
+
+  let entry = if text.trim().is_empty() {
+    // Re-transcribe produced no speech — resolve out of the pending state rather
+    // than looping, and drop the audio (retrying silence won't help).
+    json!({
+      "id": id,
+      "text": "",
+      "timestamp": Utc::now().to_rfc3339(),
+      "success": false,
+      "error": "No speech detected",
+    })
+  } else {
+    json!({
+      "id": id,
+      "text": text,
+      "timestamp": Utc::now().to_rfc3339(),
+      "success": true,
+      "error": null,
+    })
+  };
+  history::update_history_entry(&id, entry).map_err(stringify_error)?;
+  let _ = history::delete_debug_audio(&id);
+  let _ = app.emit("activity-updated", ());
+  Ok(text)
+}
+
 // A strong, richly-punctuated Chinese example appended to the transcription
 // `prompt` — but ONLY for Whisper + Chinese (see `build_transcription_prompt`).
 //
@@ -1068,6 +1170,17 @@ fn is_cancellation_error(error: &anyhow::Error) -> bool {
     .contains("TRANSCRIPTION_CANCELLED")
 }
 
+// Whether a transcription failure is a hang/timeout — the local watchdog aborts
+// a wedged decode with a "treating as hung" message, and the hard cap reports
+// "timed out". The frontend auto-retries these and, on final give-up, saves one
+// pending-audio entry; so transcribe_audio must NOT log a per-attempt failed row
+// for them (that would double-log a retried hang). Keep in sync with
+// isRetryableTranscriptionError in input-prompt.js.
+fn is_hang_error(error: &anyhow::Error) -> bool {
+  let message = error.to_string();
+  message.contains("treating as hung") || message.contains("timed out")
+}
+
 fn accessibility_status(prompt: bool) -> AccessibilityStatus {
   if platform::accessibility_required() {
     let granted = platform::accessibility_granted(prompt);
@@ -1118,6 +1231,25 @@ mod tests {
     for field in ["version", "channel", "buildNumber", "gitHash", "gitDirty", "buildTime", "debug"] {
       assert!(wire.get(field).is_some(), "missing wire field {field}");
     }
+  }
+
+  // --- Hang classification: gates per-attempt failed-history logging ---
+
+  #[test]
+  fn hang_and_timeout_errors_are_classified_as_retryable_hangs() {
+    assert!(is_hang_error(&anyhow::anyhow!(
+      "local ASR stalled mid-decode (no progress for 20s) — treating as hung"
+    )));
+    assert!(is_hang_error(&anyhow::anyhow!(
+      "local ASR produced no output within 23s for a 82s clip — treating as hung"
+    )));
+    assert!(is_hang_error(&anyhow::anyhow!("local ASR timed out after 180s")));
+    // Deterministic / user errors are not hangs — they still log once.
+    assert!(!is_hang_error(&anyhow::anyhow!("api key not configured")));
+    assert!(!is_hang_error(&anyhow::anyhow!("TRANSCRIPTION_CANCELLED")));
+    assert!(!is_hang_error(&anyhow::anyhow!(
+      "Recording is too long for the on-device model (900s)."
+    )));
   }
 
   // --- Engine switch: model reset + config preservation ---

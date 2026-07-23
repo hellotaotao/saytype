@@ -104,6 +104,31 @@ pub fn delete_history_entry_in(path: &Path, id: &str) -> Result<()> {
   write_history_entries_to(path, &filtered)
 }
 
+pub fn update_history_entry(id: &str, new_entry: Value) -> Result<bool> {
+  update_history_entry_in(&settings::history_path()?, id, new_entry)
+}
+
+// Replaces the entry whose "id" matches, in place (keeping its list position),
+// with `new_entry`. Returns whether a match was found. Used by re-transcribe to
+// turn a "pending audio" placeholder back into a normal text entry without
+// reordering history.
+pub fn update_history_entry_in(path: &Path, id: &str, new_entry: Value) -> Result<bool> {
+  let _guard = history_lock();
+  let mut entries = read_history_entries_from(path)?;
+  let mut found = false;
+  for entry in entries.iter_mut() {
+    if entry.get("id").and_then(Value::as_str) == Some(id) {
+      *entry = new_entry;
+      found = true;
+      break;
+    }
+  }
+  if found {
+    write_history_entries_to(path, &entries)?;
+  }
+  Ok(found)
+}
+
 pub fn clear_history_entries() -> Result<()> {
   // Serialized too: a clear racing an in-flight append would otherwise lose to
   // the append's stale pre-clear snapshot, resurrecting the cleared entries.
@@ -116,7 +141,9 @@ pub fn clear_history_entries() -> Result<()> {
 // call sites; these helpers themselves are storage-only. ----
 
 pub fn ext_for_mime(mime: &str) -> &'static str {
-  if mime.contains("mp4") {
+  if mime.contains("wav") {
+    "wav"
+  } else if mime.contains("mp4") {
     "m4a"
   } else {
     "webm"
@@ -124,12 +151,16 @@ pub fn ext_for_mime(mime: &str) -> &'static str {
 }
 
 fn mime_for_ext(ext: &str) -> String {
-  if ext == "m4a" {
-    "audio/mp4".into()
-  } else {
-    "audio/webm".into()
+  match ext {
+    "wav" => "audio/wav".into(),
+    "m4a" => "audio/mp4".into(),
+    _ => "audio/webm".into(),
   }
 }
+
+// Extensions the audio store may have written, newest formats first. Read/delete
+// probe each since the entry only records the id, not the extension.
+const AUDIO_EXTS: [&str; 3] = ["wav", "m4a", "webm"];
 
 pub fn write_debug_audio_in(dir: &Path, id: &str, bytes: &[u8], mime: &str) -> Result<()> {
   fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -139,7 +170,7 @@ pub fn write_debug_audio_in(dir: &Path, id: &str, bytes: &[u8], mime: &str) -> R
 }
 
 pub fn read_debug_audio_in(dir: &Path, id: &str) -> Result<(Vec<u8>, String)> {
-  for ext in ["m4a", "webm"] {
+  for ext in AUDIO_EXTS {
     let path = dir.join(format!("{id}.{ext}"));
     if path.exists() {
       let bytes =
@@ -151,7 +182,7 @@ pub fn read_debug_audio_in(dir: &Path, id: &str) -> Result<(Vec<u8>, String)> {
 }
 
 pub fn delete_debug_audio_in(dir: &Path, id: &str) -> Result<()> {
-  for ext in ["m4a", "webm"] {
+  for ext in AUDIO_EXTS {
     let path = dir.join(format!("{id}.{ext}"));
     if path.exists() {
       let _ = fs::remove_file(&path);
@@ -266,6 +297,49 @@ mod tests {
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0]["id"], "d"); // newest first
     assert_eq!(entries[2]["id"], "b");
+  }
+
+  #[test]
+  fn audio_roundtrip_supports_wav() {
+    // Local-mode failed clips are 16 kHz WAV; the pending-audio store must keep
+    // them as .wav and report audio/wav, not fall through to the webm branch.
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path();
+    write_debug_audio_in(dir, "w", &[1, 2, 3], "audio/wav").unwrap();
+    assert!(dir.join("w.wav").exists(), "wav must be stored with a .wav extension");
+    let (bytes, mime) = read_debug_audio_in(dir, "w").unwrap();
+    assert_eq!(bytes, vec![1, 2, 3]);
+    assert_eq!(mime, "audio/wav");
+    delete_debug_audio_in(dir, "w").unwrap();
+    assert!(read_debug_audio_in(dir, "w").is_err());
+  }
+
+  #[test]
+  fn update_history_entry_replaces_matching_entry_in_place() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("transcription-history.json");
+    append_entry_in(&path, json!({"id": "1", "text": "a"}), 10).unwrap();
+    append_entry_in(&path, json!({"id": "2", "text": "b", "pending": true}), 10).unwrap();
+
+    let updated = update_history_entry_in(
+      &path,
+      "2",
+      json!({"id": "2", "text": "fixed", "pending": false, "success": true}),
+    )
+    .unwrap();
+    assert!(updated);
+
+    let entries = read_history_entries_from(&path).unwrap();
+    assert_eq!(entries.len(), 2);
+    // Position preserved (newest-first: id 2 was appended last, so it's index 0).
+    assert_eq!(entries[0]["id"], "2");
+    assert_eq!(entries[0]["text"], "fixed");
+    assert_eq!(entries[0]["pending"], false);
+    assert_eq!(entries[1]["id"], "1"); // untouched
+
+    // A missing id changes nothing and reports not-found.
+    assert!(!update_history_entry_in(&path, "nope", json!({"id": "nope"})).unwrap());
+    assert_eq!(read_history_entries_from(&path).unwrap().len(), 2);
   }
 
   #[test]

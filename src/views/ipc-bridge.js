@@ -24,6 +24,8 @@
     "cleanup-microphone": "cleanup_microphone",
     "cancel-transcription": "cancel_transcription",
     "transcribe-audio": "transcribe_audio",
+    "save-pending-transcription": "save_pending_transcription",
+    "retranscribe-pending": "retranscribe_pending",
     "type-text": "type_text",
     "show-permission-dialog": "show_permission_dialog",
     "open-microphone-settings": "open_microphone_settings",
@@ -59,6 +61,7 @@
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
     "read-debug-audio": [["id"]],
+    "retranscribe-pending": [["id"]],
     "type-text": [["text"], ["shape"]],
     "save-dictionary": [["text"]],
     "copy-to-clipboard": [["text"], ["shape"]],
@@ -77,6 +80,10 @@
     "transcribe-audio": {
       body: 0, // args[0] = audio bytes (Uint8Array / ArrayBuffer)
       headers: { "translate-mode": 1, "mime-type": 2 }, // args[1], args[2]
+    },
+    "save-pending-transcription": {
+      body: 0, // args[0] = audio bytes (the failed clip's WAV)
+      headers: { "mime-type": 1 }, // args[1]
     },
   };
 

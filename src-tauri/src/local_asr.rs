@@ -9,7 +9,7 @@ use sha2::Digest;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::Emitter;
 use tokio::io::AsyncReadExt;
@@ -198,6 +198,59 @@ fn ctx_size_for_wav(wav_len: usize) -> u32 {
   tokens.clamp(CTX_FLOOR, CTX_CAP)
 }
 
+/// How long to wait for the FIRST stdout byte before declaring the decode hung,
+/// sized to the clip. Qwen3-ASR encodes the whole clip before emitting token 1,
+/// and that encode grows with clip length (measured ~0.03 s per audio-second:
+/// first byte 2.4 s into an 82 s clip, 7.7 s into a 5.5 min one). Budget
+/// generously — a 15 s base + 0.1 s per audio-second gives ~5-10x margin over
+/// those measurements, so a slow machine is never mistaken for a wedged process.
+/// The flat `TRANSCRIBE_TIMEOUT` remains the outer hard cap.
+const FIRST_BYTE_BASE: Duration = Duration::from_secs(15);
+fn first_byte_deadline(wav_len: usize) -> Duration {
+  let seconds = wav_len.saturating_sub(44) as f64 / 32000.0;
+  FIRST_BYTE_BASE + Duration::from_millis((seconds * 100.0) as u64)
+}
+
+/// Once tokens are flowing, a healthy decode never pauses this long between
+/// stdout growth. A gap beyond this means the CLI wedged mid-decode.
+const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How often the hang watchdog re-evaluates progress. Coarse on purpose — the
+/// thresholds it guards are tens of seconds, so a 1 s cadence is plenty.
+const WATCHDOG_POLL: Duration = Duration::from_secs(1);
+
+/// Verdict of the hang watchdog at one poll tick.
+#[derive(Debug, PartialEq, Eq)]
+enum StallCheck {
+  /// Still making (or plausibly about to make) progress — keep waiting.
+  Ok,
+  /// No stdout at all past the clip-sized first-byte grace: the CLI never
+  /// started producing, treat as wedged.
+  HungBeforeFirstByte,
+  /// Tokens were flowing but stdout has been silent past NO_PROGRESS_TIMEOUT.
+  HungMidDecode,
+}
+
+/// Decide whether a decode has hung, given whether any stdout byte has landed,
+/// how long since the process started, how long since stdout last grew, and the
+/// clip length (which sets the first-byte grace). Pure so it can be unit-tested
+/// without a subprocess; the async pump calls it on a poll tick.
+fn stall_check(
+  seen_first_byte: bool,
+  since_start: Duration,
+  since_progress: Duration,
+  wav_len: usize,
+) -> StallCheck {
+  if !seen_first_byte {
+    if since_start > first_byte_deadline(wav_len) {
+      return StallCheck::HungBeforeFirstByte;
+    }
+  } else if since_progress > NO_PROGRESS_TIMEOUT {
+    return StallCheck::HungMidDecode;
+  }
+  StallCheck::Ok
+}
+
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Removes the temp WAV on drop -- including when the whole transcribe future
@@ -304,6 +357,15 @@ async fn transcribe_wav_inner(
   let mut child_stdout = child.stdout.take().expect("stdout is piped");
   let mut child_stderr = child.stderr.take().expect("stderr is piped");
 
+  // Shared progress state read by the hang watchdog below. The stdout loop
+  // stamps `last_progress_ms` (millis since `started`) every time bytes land and
+  // flips `seen_first_byte` on the first one; the watchdog turns a lack of
+  // movement into an abort. Relaxed ordering is fine — these are advisory
+  // liveness signals, not a synchronization protocol.
+  let last_progress_ms = AtomicU64::new(0);
+  let seen_first_byte = AtomicBool::new(false);
+  let wav_len = wav_bytes.len();
+
   // Both pipes must be drained concurrently -- letting either fill blocks the
   // child. stdout additionally streams partial text out as it arrives.
   let pump = async {
@@ -317,6 +379,8 @@ async fn transcribe_wav_inner(
         if n == 0 {
           break;
         }
+        seen_first_byte.store(true, Ordering::Relaxed);
+        last_progress_ms.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
         acc.extend_from_slice(&buf[..n]);
         if last_emit.is_some_and(|t| t.elapsed() < PARTIAL_EMIT_INTERVAL) {
           continue;
@@ -339,10 +403,47 @@ async fn transcribe_wav_inner(
     tokio::try_join!(stream_stdout, drain_stderr)
   };
 
-  let (stdout_bytes, stderr_bytes) = tokio::time::timeout(TRANSCRIBE_TIMEOUT, pump)
-    .await
-    .map_err(|_| anyhow::anyhow!("local ASR timed out after {}s", TRANSCRIBE_TIMEOUT.as_secs()))?
-    .context("failed to read llama-mtmd-cli output")?;
+  // Hang watchdog: a healthy decode either produces its first byte within the
+  // clip-sized grace, or — once flowing — never pauses past NO_PROGRESS_TIMEOUT.
+  // Detect a wedged CLI early instead of making the user wait out the flat
+  // TRANSCRIBE_TIMEOUT (which stays as the outer hard cap). On a hung verdict we
+  // return Err; the function returning drops `child` (kill_on_drop) and `_tmp`.
+  let watchdog = async {
+    loop {
+      tokio::time::sleep(WATCHDOG_POLL).await;
+      let since_start = started.elapsed();
+      let since_progress =
+        since_start.saturating_sub(Duration::from_millis(last_progress_ms.load(Ordering::Relaxed)));
+      match stall_check(
+        seen_first_byte.load(Ordering::Relaxed),
+        since_start,
+        since_progress,
+        wav_len,
+      ) {
+        StallCheck::Ok => continue,
+        StallCheck::HungBeforeFirstByte => {
+          break anyhow::anyhow!(
+            "local ASR produced no output within {}s for a {}s clip — treating as hung",
+            first_byte_deadline(wav_len).as_secs(),
+            wav_len.saturating_sub(44) / 32000
+          );
+        }
+        StallCheck::HungMidDecode => {
+          break anyhow::anyhow!(
+            "local ASR stalled mid-decode (no progress for {}s) — treating as hung",
+            NO_PROGRESS_TIMEOUT.as_secs()
+          );
+        }
+      }
+    }
+  };
+
+  let (stdout_bytes, stderr_bytes) = tokio::select! {
+    pumped = tokio::time::timeout(TRANSCRIBE_TIMEOUT, pump) => pumped
+      .map_err(|_| anyhow::anyhow!("local ASR timed out after {}s", TRANSCRIBE_TIMEOUT.as_secs()))?
+      .context("failed to read llama-mtmd-cli output")?,
+    hung = watchdog => return Err(hung),
+  };
   let status = child.wait().await.context("failed to run llama-mtmd-cli")?;
 
   if !status.success() {
@@ -795,6 +896,54 @@ mod tests {
     assert!(ctx_size_for_wav(wav(135.0)) > CTX_FLOOR);
     // A pathological clip clamps to the cap rather than ballooning the KV cache.
     assert_eq!(ctx_size_for_wav(wav(900.0)), CTX_CAP); // 900*20+512 > cap
+  }
+
+  #[test]
+  fn first_byte_deadline_scales_with_clip_length_over_a_base() {
+    // 16 kHz mono 16-bit WAV = 32000 bytes/s after a 44-byte header.
+    let wav = |secs: f64| 44 + (secs * 32000.0) as usize;
+    // Empty / sub-header input must not underflow — just the base.
+    assert_eq!(first_byte_deadline(0), FIRST_BYTE_BASE);
+    assert_eq!(first_byte_deadline(10), FIRST_BYTE_BASE); // shorter than the header
+    // Base + 0.1 s per audio-second. Measured first byte was 2.4 s for an 82 s
+    // clip and 7.7 s for a 5.5 min one, so these deadlines keep ~5-10x margin.
+    assert_eq!(first_byte_deadline(wav(82.0)), FIRST_BYTE_BASE + Duration::from_millis(8200));
+    assert_eq!(first_byte_deadline(wav(330.0)), FIRST_BYTE_BASE + Duration::from_millis(33000));
+    // Longer clip => longer grace, and it stays under the hard cap.
+    assert!(first_byte_deadline(wav(780.0)) > first_byte_deadline(wav(82.0)));
+    assert!(first_byte_deadline(wav(780.0)) < TRANSCRIBE_TIMEOUT);
+  }
+
+  #[test]
+  fn stall_check_flags_a_missing_first_byte_past_the_clip_grace() {
+    let wav = |secs: f64| 44 + (secs * 32000.0) as usize;
+    let clip = wav(82.0);
+    let grace = first_byte_deadline(clip); // 23.2 s
+    // Before the grace elapses, a silent process is still just encoding.
+    assert_eq!(
+      stall_check(false, grace - Duration::from_secs(1), grace - Duration::from_secs(1), clip),
+      StallCheck::Ok
+    );
+    // Past the grace with still no byte -> wedged during encode.
+    assert_eq!(
+      stall_check(false, grace + Duration::from_secs(1), grace + Duration::from_secs(1), clip),
+      StallCheck::HungBeforeFirstByte
+    );
+  }
+
+  #[test]
+  fn stall_check_flags_a_stalled_decode_after_first_byte() {
+    let clip = 44 + 82 * 32000;
+    // Tokens flowing recently -> Ok, regardless of total elapsed.
+    assert_eq!(
+      stall_check(true, Duration::from_secs(300), NO_PROGRESS_TIMEOUT - Duration::from_secs(1), clip),
+      StallCheck::Ok
+    );
+    // Silent past the no-progress window -> wedged mid-decode.
+    assert_eq!(
+      stall_check(true, Duration::from_secs(300), NO_PROGRESS_TIMEOUT + Duration::from_secs(1), clip),
+      StallCheck::HungMidDecode
+    );
   }
 
   #[test]

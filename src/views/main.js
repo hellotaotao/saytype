@@ -1427,6 +1427,9 @@ function dateGroupLabel(timestamp) {
 
 function buildActivityRow(activity) {
   const rawText = (activity.text ?? "").toString();
+  // A hung local decode that the input-prompt saved for recovery: no text yet,
+  // just a stored clip the user can re-transcribe (see retranscribe_pending).
+  const isPending = activity.pending === true;
 
   const item = document.createElement("div");
   item.className = "activity-item";
@@ -1437,34 +1440,54 @@ function buildActivityRow(activity) {
 
   const text = document.createElement("div");
   text.className = "activity-text";
-  if (activity.success === false) {
-    text.classList.add("failed");
+  if (isPending) {
+    text.classList.add("pending");
+    text.textContent = t("activity.pendingAudio");
+    text.title = t("activity.pendingAudio");
+  } else {
+    if (activity.success === false) {
+      text.classList.add("failed");
+    }
+    text.textContent = rawText;
+    text.title = rawText;
   }
-  text.textContent = rawText;
-  text.title = rawText;
 
   const actions = document.createElement("div");
   actions.className = "activity-actions";
 
-  // Dev-only: play back the original recording captured for this entry.
-  if (cachedSettings?.isDev && activity.audioId) {
-    const playBtn = document.createElement("button");
-    playBtn.className = "icon-btn";
-    playBtn.type = "button";
-    playBtn.title = t("activity.playTitle");
-    playBtn.setAttribute("aria-label", t("activity.playTitle"));
-    playBtn.appendChild(makeIcon("play_arrow"));
-    playBtn.addEventListener("click", () => playDebugAudio(activity.audioId, playBtn));
-    actions.appendChild(playBtn);
-  }
+  if (isPending) {
+    // Re-run transcription on the stored clip; on success the "activity-updated"
+    // event refreshes this row into a normal text entry.
+    const retryBtn = document.createElement("button");
+    retryBtn.className = "icon-btn";
+    retryBtn.type = "button";
+    retryBtn.title = t("activity.retranscribeTitle");
+    retryBtn.setAttribute("aria-label", t("activity.retranscribeTitle"));
+    retryBtn.appendChild(makeIcon("replay"));
+    retryBtn.addEventListener("click", () => retranscribePending(activity.id, retryBtn));
+    actions.appendChild(retryBtn);
+  } else {
+    // Dev-only: play back the original recording captured for this entry.
+    if (cachedSettings?.isDev && activity.audioId) {
+      const playBtn = document.createElement("button");
+      playBtn.className = "icon-btn";
+      playBtn.type = "button";
+      playBtn.title = t("activity.playTitle");
+      playBtn.setAttribute("aria-label", t("activity.playTitle"));
+      playBtn.appendChild(makeIcon("play_arrow"));
+      playBtn.addEventListener("click", () => playDebugAudio(activity.audioId, playBtn));
+      actions.appendChild(playBtn);
+    }
 
-  const copyBtn = document.createElement("button");
-  copyBtn.className = "icon-btn";
-  copyBtn.type = "button";
-  copyBtn.title = t("activity.copyTitle");
-  copyBtn.setAttribute("aria-label", t("activity.copyTitle"));
-  copyBtn.appendChild(makeIcon("content_copy"));
-  copyBtn.addEventListener("click", () => copyToClipboard(rawText, copyBtn));
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "icon-btn";
+    copyBtn.type = "button";
+    copyBtn.title = t("activity.copyTitle");
+    copyBtn.setAttribute("aria-label", t("activity.copyTitle"));
+    copyBtn.appendChild(makeIcon("content_copy"));
+    copyBtn.addEventListener("click", () => copyToClipboard(rawText, copyBtn));
+    actions.appendChild(copyBtn);
+  }
 
   const deleteBtn = document.createElement("button");
   deleteBtn.className = "icon-btn danger";
@@ -1473,14 +1496,32 @@ function buildActivityRow(activity) {
   deleteBtn.setAttribute("aria-label", t("activity.deleteTitle"));
   deleteBtn.appendChild(makeIcon("delete"));
   deleteBtn.addEventListener("click", () => deleteActivity(activity.id));
-
-  actions.appendChild(copyBtn);
   actions.appendChild(deleteBtn);
 
   item.appendChild(time);
   item.appendChild(text);
   item.appendChild(actions);
   return item;
+}
+
+// Re-transcribe a pending (hung) clip from History. The success path arrives via
+// the "activity-updated" broadcast, which re-renders the row as normal text; on
+// failure we re-enable the button so the user can try again.
+async function retranscribePending(id, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.replaceChildren(makeIcon("hourglass_empty"));
+  }
+  try {
+    await ipc.invoke("retranscribe-pending", id);
+  } catch (error) {
+    console.error("re-transcribe failed:", error);
+    showNotification(t("activity.retranscribeFailed"), "warning");
+    if (btn) {
+      btn.disabled = false;
+      btn.replaceChildren(makeIcon("replay"));
+    }
+  }
 }
 
 // Dev-only: single in-page debug player. Only one recording plays at a time —

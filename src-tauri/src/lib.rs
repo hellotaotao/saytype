@@ -167,6 +167,8 @@ pub fn run() {
       commands::cleanup_microphone,
       commands::cancel_transcription,
       commands::transcribe_audio,
+      commands::save_pending_transcription,
+      commands::retranscribe_pending,
       commands::type_text,
       commands::show_permission_dialog,
       commands::open_microphone_settings,

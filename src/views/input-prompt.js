@@ -85,6 +85,25 @@ function hasMeaningfulText(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// Extracts a human-readable message from a Tauri command rejection, which may
+// be a raw string (Result<_, String>) or an Error.
+function errorMessage(error) {
+  return typeof error === "string"
+    ? error
+    : typeof error?.message === "string"
+      ? error.message
+      : String(error ?? "");
+}
+
+// Whether a failed transcription is worth one automatic retry. A hung/timed-out
+// decode is transient — the local watchdog (local_asr.rs) aborts a wedged
+// subprocess with a "treating as hung" message, and a network/hard timeout is
+// likewise worth one more shot. Deterministic failures (bad key, clip too long,
+// cancelled) must NOT be retried: a retry only re-fails after doubling the wait.
+function isRetryableTranscriptionError(message) {
+  return /treating as hung/i.test(message) || /timed out/i.test(message);
+}
+
 // Shape-only text metric (counts, never content) sent alongside type-text /
 // copy-to-clipboard; the backend logs it next to its own count of the received
 // string, so a mismatch pins text corruption to the JS→Rust IPC leg. Must
@@ -915,6 +934,38 @@ class VoiceInputPrompt {
     logMicrophoneCleanup("Microphone cleanup completed");
   }
 
+  // Runs the transcribe IPC with a single automatic retry on a transient
+  // (hung / timed-out) failure. Across the retry the recording's session id
+  // stays at the head of the insertion queue, so a later completed segment
+  // waits its turn rather than jumping ahead — recording order is preserved.
+  // Only after the retry also fails does the caller's catch give up (drop the
+  // session, surface the failure). Deterministic errors rethrow immediately.
+  async transcribeWithRetry(uploadBuffer, translateMode, uploadMime) {
+    const MAX_ATTEMPTS = 2; // original + one retry
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await ipc.invoke(
+          "transcribe-audio",
+          uploadBuffer,
+          translateMode,
+          uploadMime
+        );
+      } catch (error) {
+        if (
+          attempt >= MAX_ATTEMPTS ||
+          !isRetryableTranscriptionError(errorMessage(error))
+        ) {
+          throw error;
+        }
+        if (isDev) {
+          console.warn(
+            `Transcription attempt ${attempt} failed (${errorMessage(error)}); auto-retrying once.`
+          );
+        }
+      }
+    }
+  }
+
   async processRecording(recordingSession) {
     if (!recordingSession) {
       console.warn("Missing recording session; skipping transcription.");
@@ -935,6 +986,11 @@ class VoiceInputPrompt {
     // tears down the live mic and clears the insertion queue mid-recording.
     const allowUi = () =>
       sessionId === this.recordingSessionId && !this.isRecording && !this.starting;
+
+    // Hoisted so the catch (give-up path) can stash the exact uploaded bytes as
+    // a re-transcribable pending entry — see the hang-recovery branch below.
+    let uploadBuffer = null;
+    let uploadMime = mimeType || "audio/webm";
 
     this.transcriptionInProgressCount += 1;
     this.updateStatusText();
@@ -973,8 +1029,6 @@ class VoiceInputPrompt {
       // boilerplate (TODO #10). Fail OPEN — any VAD error falls through to
       // uploading the original recording so a VAD bug can never drop or
       // mangle a real dictation.
-      let uploadBuffer = null;
-      let uploadMime = mimeType || "audio/webm";
       // Local backend (non-translate) can only decode WAV — force PCM output
       // from the VAD path, and fall back to a plain decode+encode if the VAD
       // itself fails. Translate mode goes to a cloud API, which takes any format.
@@ -1022,8 +1076,7 @@ class VoiceInputPrompt {
         uploadBuffer = new Uint8Array(await audioBlob.arrayBuffer());
       }
 
-      const transcription = await ipc.invoke(
-        "transcribe-audio",
+      const transcription = await this.transcribeWithRetry(
         uploadBuffer,
         translateMode,
         uploadMime // The upload's actual MIME type (WAV when trimmed)
@@ -1045,15 +1098,32 @@ class VoiceInputPrompt {
       this.removePendingInsertion(sessionId);
       // Tauri rejects with the command's Err value, which is the raw string for
       // a Result<_, String>, so handle both string and Error shapes.
-      const message =
-        typeof error === "string"
-          ? error
-          : typeof error?.message === "string"
-            ? error.message
-            : String(error ?? "");
+      const message = errorMessage(error);
       const isCancelled =
         (error && error.name === "TranscriptionCancelledError") ||
         message.includes("TRANSCRIPTION_CANCELLED");
+
+      // Give-up recovery: a local decode that stayed hung through the auto-retry.
+      // Stash the exact WAV as a re-transcribable pending history entry so the
+      // clip isn't lost — even when the user has moved on and the prompt is gone
+      // (so this runs regardless of allowUi()). Best-effort; a save failure just
+      // logs. Only local hangs qualify — cloud audio isn't persisted, and
+      // re-transcribe runs through the local route.
+      let savedPending = false;
+      if (
+        !isCancelled &&
+        this.currentProvider === "local" &&
+        isRetryableTranscriptionError(message) &&
+        uploadBuffer
+      ) {
+        try {
+          await ipc.invoke("save-pending-transcription", uploadBuffer, uploadMime);
+          savedPending = true;
+        } catch (saveError) {
+          console.warn("failed to save pending audio for retry:", saveError);
+        }
+      }
+
       if (allowUi()) {
         if (isCancelled) {
           this.statusText.textContent = t("inputPrompt.cancelled");
@@ -1067,6 +1137,12 @@ class VoiceInputPrompt {
           this.statusText.textContent = t("inputPrompt.invalidApiKey");
           this.statusText.style.color = "var(--status-warning-strong)";
           this.scheduleHidePrompt(3500);
+        } else if (savedPending) {
+          // Hung and unrecoverable now, but the audio is saved — point the user
+          // to History rather than showing a dead-end failure.
+          this.statusText.textContent = t("inputPrompt.transcriptionHungSaved");
+          this.statusText.style.color = "var(--status-warning)";
+          this.scheduleHidePrompt(4000);
         } else {
           this.statusText.textContent = message
             ? t("inputPrompt.transcriptionFailedReason", { reason: message })
@@ -1186,9 +1262,27 @@ class VoiceInputPrompt {
     const history = new Array(barCount).fill(0);
 
     const SAMPLE_INTERVAL_MS = 65; // ~1.5s of audio spread across the bars
-    const GAIN = 6; // speech RMS is small (~0.05–0.3); amplify to fill height
     const MAX_HEIGHT = 25; // container is 28px tall
-    const ACTIVE_THRESHOLD = 0.04; // glow bars where sound is actually present
+    const MIN_HEIGHT = 3;
+
+    // Perceived loudness is logarithmic (dB), so the old LINEAR map (rms * 6)
+    // made soft-but-clear speech barely lift off the floor — RMS ~0.02–0.05
+    // gave only 3–7.5px of 25 — while it saturated by RMS ~0.17. The meter
+    // looked dead when the mic was fine, so you couldn't tell it was hearing
+    // you. Map RMS in dBFS across a window tuned for dictation instead: quiet
+    // speech already fills a good chunk of the bar, and the whole usable range
+    // is spread out rather than crammed into the loud end. Display-only — this
+    // never touches the audio uploaded for transcription.
+    const FLOOR_DB = -50; // ~RMS 0.003 (room tone) → empty
+    const CEIL_DB = -12; //  ~RMS 0.25 (loud speech) → full
+    const ACTIVE_AMPLITUDE = 0.3; // glow once mapped level clears this (~RMS 0.012)
+
+    const rmsToAmplitude = (rms) => {
+      if (rms <= 0) return 0;
+      const db = 20 * Math.log10(rms);
+      const span = CEIL_DB - FLOOR_DB;
+      return Math.max(0, Math.min(1, (db - FLOOR_DB) / span));
+    };
 
     const sampleVolume = () => {
       if (!this.analyser || !this.dataArray) {
@@ -1205,10 +1299,9 @@ class VoiceInputPrompt {
 
     const render = () => {
       for (let i = 0; i < barCount; i++) {
-        const level = history[i];
-        const amplitude = Math.min(1, level * GAIN);
-        bars[i].style.height = `${Math.max(3, amplitude * MAX_HEIGHT)}px`;
-        bars[i].classList.toggle("active", level > ACTIVE_THRESHOLD);
+        const amplitude = rmsToAmplitude(history[i]);
+        bars[i].style.height = `${Math.max(MIN_HEIGHT, amplitude * MAX_HEIGHT)}px`;
+        bars[i].classList.toggle("active", amplitude > ACTIVE_AMPLITUDE);
       }
     };
 

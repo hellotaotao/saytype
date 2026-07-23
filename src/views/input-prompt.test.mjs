@@ -266,3 +266,151 @@ test("pending transcriptions are not inserted while recording", async () => {
   assert.deepEqual(prompt.pendingInsertionOrder, [1]);
   assert.equal(prompt.pendingInsertionsById.get(1), "first");
 });
+
+function hungError() {
+  return new Error(
+    "local ASR stalled mid-decode (no progress for 20s) — treating as hung"
+  );
+}
+
+function processOneRecording(prompt, id = 1) {
+  return prompt.processRecording({
+    id,
+    chunks: [new Blob([new Uint8Array([1, 2, 3])])],
+    mimeType: "audio/webm",
+    translateMode: false,
+    cancelledShortPress: false,
+  });
+}
+
+test("a hung transcription is auto-retried once and then succeeds", async () => {
+  let calls = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      if (command !== "transcribe-audio") return null;
+      calls += 1;
+      return calls === 1
+        ? Promise.reject(hungError())
+        : Promise.resolve("recovered text");
+    },
+  });
+  let flushes = 0;
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 1,
+    pendingInsertionOrder: [1],
+    async flushPendingInsertions() {
+      flushes += 1;
+    },
+  });
+
+  await processOneRecording(prompt);
+
+  assert.equal(calls, 2, "should invoke twice: original + one retry");
+  assert.equal(prompt.pendingInsertionsById.get(1), "recovered text");
+  // Head stays queued through the retry (flush is mocked, so nothing drains it).
+  assert.deepEqual(prompt.pendingInsertionOrder, [1]);
+  assert.ok(flushes >= 1);
+});
+
+test("a transcription still hung after one retry gives up and unblocks the queue", async () => {
+  let calls = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      if (command !== "transcribe-audio") return null;
+      calls += 1;
+      return Promise.reject(hungError());
+    },
+  });
+  const removed = [];
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 1,
+    pendingInsertionOrder: [1],
+    scheduleHidePrompt() {},
+    removePendingInsertion(id) {
+      removed.push(id);
+      VoiceInputPrompt.prototype.removePendingInsertion.call(this, id);
+    },
+    async flushPendingInsertions() {},
+  });
+
+  await processOneRecording(prompt);
+
+  assert.equal(calls, 2, "one retry, then give up — never a third attempt");
+  assert.deepEqual(removed, [1], "the hung session is dropped from the queue");
+  assert.deepEqual(prompt.pendingInsertionOrder, []);
+  assert.equal(prompt.statusText.style.color, "var(--status-warning-strong)");
+});
+
+test("a local hang surviving the retry is saved as a pending entry", async () => {
+  const commands = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      commands.push(command);
+      if (command === "transcribe-audio") return Promise.reject(hungError());
+      if (command === "save-pending-transcription") return Promise.resolve("entry-1");
+      return null;
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    recordingSessionId: 1,
+    pendingInsertionOrder: [1],
+    scheduleHidePrompt() {},
+    async flushPendingInsertions() {},
+  });
+
+  await processOneRecording(prompt);
+
+  assert.equal(commands.filter((c) => c === "transcribe-audio").length, 2);
+  assert.ok(
+    commands.includes("save-pending-transcription"),
+    "the hung clip must be stashed for later re-transcription"
+  );
+});
+
+test("a cloud hang is not saved as a pending entry", async () => {
+  const commands = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      commands.push(command);
+      if (command === "transcribe-audio") return Promise.reject(hungError());
+      return null;
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "openai",
+    recordingSessionId: 1,
+    pendingInsertionOrder: [1],
+    scheduleHidePrompt() {},
+    async flushPendingInsertions() {},
+  });
+
+  await processOneRecording(prompt);
+
+  assert.ok(
+    !commands.includes("save-pending-transcription"),
+    "cloud audio is not persisted for re-transcription"
+  );
+});
+
+test("a non-retryable transcription error is not retried", async () => {
+  let calls = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      if (command !== "transcribe-audio") return null;
+      calls += 1;
+      return Promise.reject(new Error("api key not configured"));
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 1,
+    pendingInsertionOrder: [1],
+    scheduleHidePrompt() {},
+    async flushPendingInsertions() {},
+  });
+
+  await processOneRecording(prompt);
+
+  assert.equal(calls, 1, "deterministic errors must not be retried");
+  assert.deepEqual(prompt.pendingInsertionOrder, []);
+});
