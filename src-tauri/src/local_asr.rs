@@ -345,6 +345,10 @@ async fn transcribe_wav_inner(
     .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
     .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
     .arg("--audio").arg(&tmp_path)
+    // Each invocation performs real inference immediately and then exits.
+    // llama.cpp's default dummy warmup is redundant here; on the Windows
+    // i5-7400 test machine disabling it cut a 3.2 s clip from 5.40 s to 4.62 s.
+    .arg("--no-warmup")
     .arg("-p").arg("a")
     .arg("-c").arg(ctx_size_for_wav(wav_bytes.len()).to_string())
     .stdin(Stdio::null())
