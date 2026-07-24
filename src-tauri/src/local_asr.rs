@@ -140,6 +140,18 @@ pub fn cli_path(base: &Path) -> PathBuf {
   bin_dir(base).join(name)
 }
 
+fn local_asr_command(program: PathBuf) -> tokio::process::Command {
+  let mut command = tokio::process::Command::new(program);
+  #[cfg(target_os = "windows")]
+  {
+    // llama-mtmd-cli is a console executable. Without CREATE_NO_WINDOW,
+    // Windows opens a terminal for every transcription and may steal focus
+    // from the app that should receive the resulting text.
+    command.creation_flags(0x0800_0000);
+  }
+  command
+}
+
 /// Cheap readiness: every GGUF at its exact size, plus the extracted CLI
 /// present (executable on unix). sha256 is verified once at download time.
 pub fn assets_ready_at(dir: &Path) -> bool {
@@ -341,7 +353,7 @@ async fn transcribe_wav_inner(
     .with_context(|| format!("failed to write temp audio {}", tmp_path.display()))?;
 
   let started = std::time::Instant::now();
-  let mut child = tokio::process::Command::new(cli_path(&base))
+  let mut child = local_asr_command(cli_path(&base))
     .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
     .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
     .arg("--audio").arg(&tmp_path)
