@@ -340,9 +340,9 @@ pub async fn transcribe_audio(
   // The audio arrives as the raw IPC body (Tauri's octet-stream fast path), not
   // a JSON number array — see ipc-bridge.js (tauriRawBody). translate_mode /
   // mime_type ride along as headers. NOTE: this requires input-prompt.html's CSP
-  // to allow `connect-src ipc:`; without it Tauri falls back to the postMessage
-  // transport, which JSON-encodes the bytes → body() is Json, not Raw → the error
-  // below. (Page origin is tauri://localhost; the IPC fetch is ipc://localhost.)
+  // to allow `ipc:` on macOS/Linux and `http://ipc.localhost` on Windows.
+  // Without it Tauri falls back to the postMessage transport, which JSON-encodes
+  // the bytes → body() is Json, not Raw → the error below.
   let audio_buffer: Vec<u8> = match request.body() {
     tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
     tauri::ipc::InvokeBody::Json(_) => {

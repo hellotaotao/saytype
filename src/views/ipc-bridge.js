@@ -74,8 +74,9 @@
   // remaining positional args become request headers the Rust command reads via
   // Request::headers(). Without this a Vec<u8> arg is JSON-encoded as
   // "[12,34,...]" — and the camel+snake aliasing above would send it twice.
-  // (Needs input-prompt.html's CSP to allow connect-src ipc:, else Tauri falls
-  // back to the postMessage transport and JSON-encodes it anyway.)
+  // (Needs input-prompt.html's CSP to allow both IPC origins: `ipc:` on
+  // macOS/Linux and `http://ipc.localhost` on Windows WebView2. Otherwise Tauri
+  // falls back to the postMessage transport and JSON-encodes it anyway.)
   const tauriRawBody = {
     "transcribe-audio": {
       body: 0, // args[0] = audio bytes (Uint8Array / ArrayBuffer)

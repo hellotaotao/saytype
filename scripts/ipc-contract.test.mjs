@@ -136,6 +136,10 @@ test("missingFrom reports entries absent from the haystack", () => {
 // --- the real contract ------------------------------------------------------
 
 const bridgeSource = readFileSync(path.join(repoRoot, "src/views/ipc-bridge.js"), "utf8");
+const inputPromptHtml = readFileSync(
+  path.join(repoRoot, "src/views/input-prompt.html"),
+  "utf8",
+);
 const libSource = readFileSync(path.join(repoRoot, "src-tauri/src/lib.rs"), "utf8");
 const rustDir = path.join(repoRoot, "src-tauri", "src");
 const rustSource = readdirSync(rustDir, { recursive: true })
@@ -176,4 +180,13 @@ test("tauriArgs and tauriRawBody only reference known channels", () => {
     missingFrom(extractBridgeChannelKeys(bridgeSource, "tauriRawBody"), channels),
     [],
   );
+});
+
+test("raw-body IPC page allows Tauri custom protocols on every desktop platform", () => {
+  const csp = inputPromptHtml.match(
+    /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"/i,
+  )?.[1];
+  assert.ok(csp, "input-prompt.html has no Content-Security-Policy meta tag");
+  assert.match(csp, /\bconnect-src\b[^;]*\bipc:/);
+  assert.match(csp, /\bconnect-src\b[^;]*http:\/\/ipc\.localhost\b/);
 });
