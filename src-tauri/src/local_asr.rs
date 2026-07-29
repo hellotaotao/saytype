@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::Emitter;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 pub const LOCAL_PROVIDER: &str = "local";
@@ -270,6 +271,11 @@ fn stall_check(
 }
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// llama-mtmd-cli maps roughly 1.3-1.9 GiB per decode. Keep all local entry
+/// points single-flight so overlapping hotkeys and History retries cannot
+/// multiply that memory or contend for the same Metal device. Cloud requests
+/// do not pass through this module and remain concurrent.
+static LOCAL_INFERENCE: Semaphore = Semaphore::const_new(1);
 
 /// Removes the temp WAV on drop -- including when the whole transcribe future
 /// is dropped by the caller's tokio::select! on cancellation.
@@ -344,6 +350,16 @@ async fn transcribe_wav_inner(
   wav_bytes: &[u8],
   mut on_partial: impl FnMut(&str),
 ) -> Result<String> {
+  let queued_at = std::time::Instant::now();
+  let _inference_permit = LOCAL_INFERENCE
+    .acquire()
+    .await
+    .expect("local inference semaphore is never closed");
+  let queue_time = queued_at.elapsed();
+  if queue_time >= Duration::from_millis(10) {
+    log::info!("local-asr: waited {} ms for inference slot", queue_time.as_millis());
+  }
+
   let base = local_asr_dir()?;
   if !assets_ready_at(&base) {
     anyhow::bail!("LOCAL_MODEL_MISSING: local model assets are missing or incomplete");
@@ -924,6 +940,26 @@ mod tests {
   #[test]
   fn local_inference_disables_per_process_device_fitting() {
     assert_eq!(FIT_ARGS, ["--fit", "off"]);
+  }
+
+  #[tokio::test]
+  async fn local_inference_semaphore_allows_only_one_decode() {
+    let first = LOCAL_INFERENCE.acquire().await.unwrap();
+    assert_eq!(LOCAL_INFERENCE.available_permits(), 0);
+    assert!(
+      tokio::time::timeout(Duration::from_millis(10), LOCAL_INFERENCE.acquire())
+        .await
+        .is_err(),
+      "a second local decode must wait"
+    );
+
+    drop(first);
+    let second = tokio::time::timeout(Duration::from_millis(100), LOCAL_INFERENCE.acquire())
+      .await
+      .expect("released slot should wake the next decode")
+      .unwrap();
+    drop(second);
+    assert_eq!(LOCAL_INFERENCE.available_permits(), 1);
   }
 
   #[test]
