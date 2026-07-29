@@ -231,6 +231,12 @@ const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(20);
 /// thresholds it guards are tens of seconds, so a 1 s cadence is plenty.
 const WATCHDOG_POLL: Duration = Duration::from_secs(1);
 
+/// Skip llama.cpp's per-process device-memory fitting pass. SayType already
+/// supplies a bounded context size, and real-device benchmarks show that
+/// re-running the automatic fit calculation on every short transcription adds
+/// measurable latency without changing output or peak memory.
+const FIT_ARGS: &[&str] = &["--fit", "off"];
+
 /// Verdict of the hang watchdog at one poll tick.
 #[derive(Debug, PartialEq, Eq)]
 enum StallCheck {
@@ -361,6 +367,7 @@ async fn transcribe_wav_inner(
     // llama.cpp's default dummy warmup is redundant here; on the Windows
     // i5-7400 test machine disabling it cut a 3.2 s clip from 5.40 s to 4.62 s.
     .arg("--no-warmup")
+    .args(FIT_ARGS)
     .arg("-p").arg("a")
     .arg("-c").arg(ctx_size_for_wav(wav_bytes.len()).to_string())
     .stdin(Stdio::null())
@@ -912,6 +919,11 @@ mod tests {
     assert!(ctx_size_for_wav(wav(135.0)) > CTX_FLOOR);
     // A pathological clip clamps to the cap rather than ballooning the KV cache.
     assert_eq!(ctx_size_for_wav(wav(900.0)), CTX_CAP); // 900*20+512 > cap
+  }
+
+  #[test]
+  fn local_inference_disables_per_process_device_fitting() {
+    assert_eq!(FIT_ARGS, ["--fit", "off"]);
   }
 
   #[test]
