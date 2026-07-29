@@ -558,6 +558,11 @@ class VoiceInputPrompt {
     }
     inner.textContent = text;
     this.transcriptionText.classList.add("visible");
+    // Drives CSS to dim the prompt box so the streamed-text bubble reads as the
+    // front-most layer (the prompt box keeps its .recording class throughout
+    // transcription, so this body flag is what tells "bubble is up" apart from
+    // "still just listening").
+    document.body.classList.add("has-transcription");
     inner.scrollTop = inner.scrollHeight;
     inner.classList.toggle("scrolled", inner.scrollTop > 0);
   }
@@ -568,6 +573,7 @@ class VoiceInputPrompt {
       this.transcriptionTextInner.classList.remove("scrolled");
     }
     this.transcriptionText.classList.remove("visible");
+    document.body.classList.remove("has-transcription");
   }
 
   async flushPendingInsertions() {

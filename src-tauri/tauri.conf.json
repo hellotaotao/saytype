@@ -46,7 +46,7 @@
         "title": "Voice Input",
         "url": "input-prompt.html",
         "width": 460,
-        "height": 190,
+        "height": 244,
         "visible": false,
         "resizable": false,
         "decorations": false,

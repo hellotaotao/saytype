@@ -31,6 +31,9 @@ function loadVoiceInputPrompt(options = {}) {
     documentElement,
     readyState: "complete",
     addEventListener() {},
+    // setTranscriptionPreview/clearTranscriptionPreview toggle a class here to
+    // drive the layering CSS; stub it so those paths don't NPE under the vm.
+    body: { classList: { add() {}, remove() {}, toggle() {} } },
   };
   const window = {
     __sayTypeInputPromptStarted: true,
