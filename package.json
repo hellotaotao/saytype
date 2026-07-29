@@ -1,6 +1,6 @@
 {
   "name": "saytype",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "Voice input method software built with Tauri",
   "scripts": {
     "start": "tauri dev",
