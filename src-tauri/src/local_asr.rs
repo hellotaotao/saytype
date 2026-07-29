@@ -1,8 +1,8 @@
 //! Local Qwen3-ASR backend (provider "local"): on-demand assets (2 GGUF files
 //! + a pinned llama.cpp release binary), resumable downloads, and
-//! per-transcription subprocess inference via llama-mtmd-cli. No resident
-//! engine: the subprocess exits after each transcription, so SayType's idle
-//! memory is unchanged. See docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
+//! inference via llama-mtmd-cli. The CLI's chat mode keeps one worker warm for
+//! a short idle window; a one-shot subprocess remains the compatibility
+//! fallback. See docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
 use anyhow::{Context, Result};
 use serde::Serialize;
 use sha2::Digest;
@@ -10,9 +10,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Emitter;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -276,6 +278,219 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// multiply that memory or contend for the same Metal device. Cloud requests
 /// do not pass through this module and remain concurrent.
 static LOCAL_INFERENCE: Semaphore = Semaphore::const_new(1);
+static RESIDENT_WORKER: Mutex<Option<ResidentWorker>> = Mutex::new(None);
+static RESIDENT_GENERATION: AtomicU64 = AtomicU64::new(0);
+static RESIDENT_EPOCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static RESIDENT_STARTS: AtomicU64 = AtomicU64::new(0);
+
+/// Keep the ~1.3 GiB worker only long enough to cover normal back-to-back
+/// dictation. This preserves the old near-zero idle footprint after a pause.
+#[cfg(not(test))]
+const RESIDENT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const RESIDENT_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
+const CHAT_PROMPT: &[u8] = b"\n> ";
+
+struct ResidentWorker {
+  child: Child,
+  stdin: ChildStdin,
+  stdout: ChildStdout,
+  ctx_size: u32,
+  generation: u64,
+  epoch: u64,
+}
+
+impl ResidentWorker {
+  async fn spawn(base: &Path, ctx_size: u32) -> Result<Self> {
+    let mut child = local_asr_command(cli_path(base))
+      .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
+      .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
+      .arg("--no-warmup")
+      .args(FIT_ARGS)
+      .arg("-c").arg(ctx_size.to_string())
+      // With no --audio and no prompt, mtmd enters chat mode and accepts a
+      // sequence of `/audio <path>` commands while keeping both models loaded.
+      .stdin(Stdio::piped())
+      .stdout(Stdio::piped())
+      // Chat-mode stderr is verbose enough to fill a pipe over a long session;
+      // one-shot fallback below retains detailed stderr for error reporting.
+      .stderr(Stdio::null())
+      .kill_on_drop(true)
+      .spawn()
+      .context("failed to start resident llama-mtmd-cli")?;
+    let stdin = child.stdin.take().expect("stdin is piped");
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    read_chat_response(&mut stdout, 0, false, |_| {}).await
+      .context("resident llama-mtmd-cli did not reach its initial prompt")?;
+    #[cfg(test)]
+    RESIDENT_STARTS.fetch_add(1, Ordering::Relaxed);
+    Ok(Self {
+      child,
+      stdin,
+      stdout,
+      ctx_size,
+      generation: 0,
+      epoch: RESIDENT_EPOCH.load(Ordering::Relaxed),
+    })
+  }
+
+  fn is_running(&mut self) -> bool {
+    matches!(self.child.try_wait(), Ok(None))
+  }
+
+  async fn transcribe(
+    &mut self,
+    audio_path: &Path,
+    wav_len: usize,
+    on_partial: &mut impl FnMut(&str),
+  ) -> Result<String> {
+    let audio_path_text = audio_path.to_string_lossy();
+    if audio_path_text.contains('\n') || audio_path_text.contains('\r') {
+      anyhow::bail!("temporary audio path contains a newline");
+    }
+
+    self.stdin.write_all(b"/clear\n").await?;
+    self.stdin.flush().await?;
+    read_chat_response(&mut self.stdout, 0, false, |_| {}).await
+      .context("resident worker did not clear its previous conversation")?;
+
+    self.stdin
+      .write_all(format!("/audio {}\n", audio_path.display()).as_bytes())
+      .await?;
+    self.stdin.flush().await?;
+    let loaded = read_chat_response(&mut self.stdout, 0, false, |_| {}).await
+      .context("resident worker did not load the audio")?;
+    if !String::from_utf8_lossy(&loaded).contains("audio loaded") {
+      anyhow::bail!("resident worker rejected the audio file");
+    }
+
+    self.stdin.write_all(b"a\n").await?;
+    self.stdin.flush().await?;
+    let response = read_chat_response(&mut self.stdout, wav_len, true, on_partial).await?;
+    let output = String::from_utf8_lossy(&response);
+    if !output.contains("<asr_text>") {
+      anyhow::bail!("resident worker returned no ASR marker");
+    }
+    Ok(parse_mtmd_output(&output))
+  }
+}
+
+/// Read one chat-mode response, ending at the next prompt. For an inference
+/// response, stream text after `<asr_text>` while retaining the existing
+/// first-token and no-progress watchdog semantics.
+async fn read_chat_response(
+  stdout: &mut ChildStdout,
+  wav_len: usize,
+  stream_partials: bool,
+  mut on_partial: impl FnMut(&str),
+) -> Result<Vec<u8>> {
+  let started = std::time::Instant::now();
+  let mut last_progress = started;
+  let mut acc = Vec::new();
+  let mut buf = [0u8; 2048];
+  let mut seen_asr_marker = false;
+  let mut last_emit: Option<std::time::Instant> = None;
+  let mut last_sent = 0usize;
+
+  loop {
+    let allowed_gap = if seen_asr_marker {
+      NO_PROGRESS_TIMEOUT
+    } else {
+      first_byte_deadline(wav_len)
+    };
+    let elapsed = if seen_asr_marker {
+      last_progress.elapsed()
+    } else {
+      started.elapsed()
+    };
+    let remaining = allowed_gap.saturating_sub(elapsed);
+    if remaining.is_zero() {
+      if seen_asr_marker {
+        anyhow::bail!(
+          "local ASR stalled mid-decode (no progress for {}s) — treating as hung",
+          NO_PROGRESS_TIMEOUT.as_secs()
+        );
+      }
+      anyhow::bail!(
+        "local ASR produced no output within {}s for a {}s clip — treating as hung",
+        first_byte_deadline(wav_len).as_secs(),
+        wav_len.saturating_sub(44) / 32000
+      );
+    }
+
+    let n = tokio::time::timeout(remaining, stdout.read(&mut buf))
+      .await
+      .map_err(|_| anyhow::anyhow!("resident local ASR response timed out"))?
+      .context("failed to read resident llama-mtmd-cli output")?;
+    if n == 0 {
+      anyhow::bail!("resident llama-mtmd-cli exited unexpectedly");
+    }
+    last_progress = std::time::Instant::now();
+    acc.extend_from_slice(&buf[..n]);
+    seen_asr_marker |= acc.windows("<asr_text>".len()).any(|w| w == b"<asr_text>");
+
+    if acc.ends_with(CHAT_PROMPT) {
+      acc.truncate(acc.len() - CHAT_PROMPT.len());
+      if stream_partials {
+        if let Some(text) = partial_text(&acc) {
+          if text.len() != last_sent {
+            on_partial(&text);
+          }
+        }
+      }
+      return Ok(acc);
+    }
+
+    if stream_partials && seen_asr_marker
+      && !last_emit.is_some_and(|t| t.elapsed() < PARTIAL_EMIT_INTERVAL)
+    {
+      if let Some(text) = partial_text(&acc) {
+        if text.len() != last_sent {
+          last_sent = text.len();
+          last_emit = Some(std::time::Instant::now());
+          on_partial(&text);
+        }
+      }
+    }
+  }
+}
+
+fn retire_resident_worker(generation: Option<u64>) {
+  let mut slot = RESIDENT_WORKER.lock().unwrap();
+  let retire = slot
+    .as_ref()
+    .is_some_and(|worker| generation.is_none() || generation == Some(worker.generation));
+  if retire {
+    if let Some(mut worker) = slot.take() {
+      let _ = worker.child.start_kill();
+    }
+  }
+}
+
+/// Stop the warm local worker when SayType exits, switches away from local, or
+/// removes the model files.
+pub fn shutdown_resident_worker() {
+  // Invalidate a worker currently checked out for inference as well as one in
+  // the idle cache. A checked-out worker observes the new epoch in park() and
+  // kills itself instead of becoming resident again.
+  RESIDENT_EPOCH.fetch_add(1, Ordering::Relaxed);
+  retire_resident_worker(None);
+}
+
+fn park_resident_worker(mut worker: ResidentWorker) {
+  if worker.epoch != RESIDENT_EPOCH.load(Ordering::Relaxed) {
+    let _ = worker.child.start_kill();
+    return;
+  }
+  let generation = RESIDENT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+  worker.generation = generation;
+  *RESIDENT_WORKER.lock().unwrap() = Some(worker);
+  tokio::spawn(async move {
+    tokio::time::sleep(RESIDENT_IDLE_TIMEOUT).await;
+    retire_resident_worker(Some(generation));
+  });
+}
 
 /// Removes the temp WAV on drop -- including when the whole transcribe future
 /// is dropped by the caller's tokio::select! on cancellation.
@@ -350,6 +565,7 @@ async fn transcribe_wav_inner(
   wav_bytes: &[u8],
   mut on_partial: impl FnMut(&str),
 ) -> Result<String> {
+  let lease_epoch = RESIDENT_EPOCH.load(Ordering::Relaxed);
   let queued_at = std::time::Instant::now();
   let _inference_permit = LOCAL_INFERENCE
     .acquire()
@@ -374,6 +590,51 @@ async fn transcribe_wav_inner(
   fs::write(&tmp_path, wav_bytes)
     .with_context(|| format!("failed to write temp audio {}", tmp_path.display()))?;
 
+  let ctx_size = ctx_size_for_wav(wav_bytes.len());
+  let cached = RESIDENT_WORKER.lock().unwrap().take();
+  let mut worker = if let Some(mut cached) = cached {
+    if cached.ctx_size == ctx_size && cached.is_running() {
+      cached
+    } else {
+      drop(cached);
+      ResidentWorker::spawn(&base, ctx_size).await?
+    }
+  } else {
+    ResidentWorker::spawn(&base, ctx_size).await?
+  };
+  worker.epoch = lease_epoch;
+  let resident_started = std::time::Instant::now();
+  match tokio::time::timeout(
+    TRANSCRIBE_TIMEOUT,
+    worker.transcribe(&tmp_path, wav_bytes.len(), &mut on_partial),
+  ).await {
+    Ok(Ok(text)) => {
+      park_resident_worker(worker);
+      log::info!(
+        "local ASR: decoded {} KB wav in {:.2}s ({} chars, resident)",
+        wav_bytes.len() / 1024,
+        resident_started.elapsed().as_secs_f32(),
+        text.chars().count()
+      );
+      return Ok(text);
+    }
+    Ok(Err(error)) => {
+      log::warn!("local-asr: resident worker failed, retrying one-shot: {error:#}");
+    }
+    Err(_) => {
+      log::warn!(
+        "local-asr: resident worker timed out after {}s, retrying one-shot",
+        TRANSCRIBE_TIMEOUT.as_secs()
+      );
+    }
+  }
+  // `worker` is deliberately not returned to the cache after any protocol
+  // failure. kill_on_drop terminates it so the one-shot retry starts clean.
+  drop(worker);
+
+  // Compatibility fallback: preserve the original one-process-per-clip path
+  // and its detailed stderr diagnostics if chat mode ever drifts in a future
+  // pinned llama.cpp build.
   let started = std::time::Instant::now();
   let mut child = local_asr_command(cli_path(&base))
     .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
@@ -385,7 +646,7 @@ async fn transcribe_wav_inner(
     .arg("--no-warmup")
     .args(FIT_ARGS)
     .arg("-p").arg("a")
-    .arg("-c").arg(ctx_size_for_wav(wav_bytes.len()).to_string())
+    .arg("-c").arg(ctx_size.to_string())
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
@@ -822,9 +1083,10 @@ async fn stream_to_part(
   Ok(())
 }
 
-/// Settings "delete model": remove the whole local-asr dir (models + bin).
-/// No engine unload needed -- nothing is resident between transcriptions.
+/// Settings "delete model": stop any warm worker, then remove the whole
+/// local-asr dir (models + bin).
 pub fn delete_model() -> Result<(), String> {
+  shutdown_resident_worker();
   let dir = local_asr_dir().map_err(|e| e.to_string())?;
   match fs::remove_dir_all(&dir) {
     Ok(()) => Ok(()),
@@ -1111,7 +1373,8 @@ mod tests {
     );
   }
 
-  /// Needs the real assets laid out (Task 3 Step 1). Run manually:
+  /// Needs the real assets laid out. Runs two decodes to prove the chat worker
+  /// keeps one model process alive between requests. Run manually:
   ///   cargo test real_subprocess_smoke -- --ignored --nocapture
   #[test]
   #[ignore]
@@ -1138,8 +1401,24 @@ mod tests {
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 0);
-    let text = rt.block_on(transcribe_wav(None, &wav)).expect("subprocess ok");
-    assert_eq!(text, "", "silence must yield empty text");
+    let starts_before = RESIDENT_STARTS.load(Ordering::Relaxed);
+    let first = rt.block_on(transcribe_wav(None, &wav)).expect("first resident decode ok");
+    let second = rt.block_on(transcribe_wav(None, &wav)).expect("second resident decode ok");
+    assert_eq!(first, "", "silence must yield empty text");
+    assert_eq!(second, "", "warm-worker silence must yield empty text");
+    assert_eq!(
+      RESIDENT_STARTS.load(Ordering::Relaxed) - starts_before,
+      1,
+      "two same-context decodes must share one resident worker"
+    );
+    rt.block_on(async {
+      tokio::time::sleep(Duration::from_millis(500)).await;
+    });
+    assert!(
+      RESIDENT_WORKER.lock().unwrap().is_none(),
+      "idle worker must retire after the test idle timeout"
+    );
+    shutdown_resident_worker();
     // Temp file cleaned up:
     let leftovers = fs::read_dir(std::env::temp_dir()).unwrap()
       .filter_map(|e| e.ok())
