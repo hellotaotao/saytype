@@ -478,6 +478,34 @@ pub fn shutdown_resident_worker() {
   retire_resident_worker(None);
 }
 
+fn schedule_resident_retirement(generation: u64) {
+  tauri::async_runtime::spawn(async move {
+    tokio::time::sleep(RESIDENT_IDLE_TIMEOUT).await;
+    retire_resident_worker(Some(generation));
+  });
+}
+
+/// Extend the idle deadline when a new local dictation starts recording. This
+/// is deliberately a no-op when no worker is already warm: pressing the hotkey
+/// should not allocate ~1.3 GiB before the user has completed any audio.
+pub fn keep_resident_worker_warm() -> bool {
+  let generation = {
+    let mut slot = RESIDENT_WORKER.lock().unwrap();
+    let Some(worker) = slot.as_mut() else {
+      return false;
+    };
+    if !worker.is_running() {
+      slot.take();
+      return false;
+    }
+    let generation = RESIDENT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    worker.generation = generation;
+    generation
+  };
+  schedule_resident_retirement(generation);
+  true
+}
+
 fn park_resident_worker(mut worker: ResidentWorker) {
   if worker.epoch != RESIDENT_EPOCH.load(Ordering::Relaxed) {
     let _ = worker.child.start_kill();
@@ -486,10 +514,7 @@ fn park_resident_worker(mut worker: ResidentWorker) {
   let generation = RESIDENT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
   worker.generation = generation;
   *RESIDENT_WORKER.lock().unwrap() = Some(worker);
-  tokio::spawn(async move {
-    tokio::time::sleep(RESIDENT_IDLE_TIMEOUT).await;
-    retire_resident_worker(Some(generation));
-  });
+  schedule_resident_retirement(generation);
 }
 
 /// Removes the temp WAV on drop -- including when the whole transcribe future
@@ -1225,6 +1250,13 @@ mod tests {
   }
 
   #[test]
+  fn dictation_keep_alive_does_not_preload_a_worker() {
+    shutdown_resident_worker();
+    assert!(!keep_resident_worker_warm());
+    assert!(RESIDENT_WORKER.lock().unwrap().is_none());
+  }
+
+  #[test]
   fn first_byte_deadline_scales_with_clip_length_over_a_base() {
     // 16 kHz mono 16-bit WAV = 32000 bytes/s after a 44-byte header.
     let wav = |secs: f64| 44 + (secs * 32000.0) as usize;
@@ -1403,6 +1435,18 @@ mod tests {
     wav.resize(wav.len() + data_len as usize, 0);
     let starts_before = RESIDENT_STARTS.load(Ordering::Relaxed);
     let first = rt.block_on(transcribe_wav(None, &wav)).expect("first resident decode ok");
+    assert!(keep_resident_worker_warm(), "recording start should touch a warm worker");
+    rt.block_on(async {
+      tokio::time::sleep(Duration::from_millis(75)).await;
+    });
+    assert!(keep_resident_worker_warm(), "a later dictation should refresh the deadline again");
+    rt.block_on(async {
+      tokio::time::sleep(Duration::from_millis(75)).await;
+    });
+    assert!(
+      RESIDENT_WORKER.lock().unwrap().is_some(),
+      "the refreshed worker must survive beyond its original idle deadline"
+    );
     let second = rt.block_on(transcribe_wav(None, &wav)).expect("second resident decode ok");
     assert_eq!(first, "", "silence must yield empty text");
     assert_eq!(second, "", "warm-worker silence must yield empty text");
