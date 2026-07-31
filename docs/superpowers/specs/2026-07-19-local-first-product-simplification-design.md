@@ -2,7 +2,9 @@
 
 日期：2026-07-19
 
-状态：已获用户方向确认，等待书面 spec 复核
+最近更新：2026-07-29
+
+状态：产品方向已确认；已按 `v1.8.1`（`10670b0`）重新校准；产品代码尚未按本设计实施
 
 来源：本地 Qwen3-ASR 真机效果达到主力使用标准后，对产品定位、首次体验和功能层级的整体重审
 
@@ -14,6 +16,30 @@
 - 本地模式保留翻译快捷键并隐式回退云端。
 
 本设计不否定旧 spec 已交付的本地 ASR、模型下载、断点续传、完整性校验和平台能力判定；这些基础设施继续复用。
+
+## 0. 2026-07-29 当前实现基线
+
+本次更新以仓库 `main` 的 `v1.8.1`（`10670b0`）为实现基线。原产品方向没有改变，但 2026-07-19 以后代码新增了多项必须保留的能力，因此实施本设计时不能再按旧文件列表直接删除或重写。
+
+截至该基线，本设计的核心产品改造**尚未实施**：
+
+- fresh config 仍是 `provider=openai`；
+- 模型未 ready 时仍不能持久化 Local；
+- 首页、托盘和 Settings 仍呈现三个平级 provider；
+- 六页 onboarding 和第二个翻译快捷键仍存在；
+- `hasApiKey`、translation endpoint 与 Local -> Cloud translation fallback 仍存在；
+- README 仍先让用户在三种引擎/API key 之间选择。
+
+与此同时，当前代码已经新增并交付：
+
+1. **Accessibility drag cloud**：首次授权可打开系统设置，并显示可拖入权限列表的浮动入口；授权后自动隐藏；
+2. **输入提示跨屏定位**：优先跟随当前焦点应用所在屏幕，其次鼠标所在屏幕，最后才回退主屏；
+3. **本地 ASR 卡死恢复**：后端首字节/无进度 watchdog、前端自动重试一次、最终失败后保存 exact WAV 到 History 并允许稍后重新转写；
+4. **录音 session 竞态保护**：旧转写不能覆盖或隐藏新录音，多个结果按录音顺序插入；
+5. **跨平台 raw audio IPC**：macOS/Linux 使用 `ipc:`，Windows WebView2 使用 `http://ipc.localhost`；
+6. **本地 runner 优化**：跳过重复 CLI warmup，并在 Windows 隐藏 console window。
+
+后续实现必须把这些能力视为回归基线，而不是可被“产品简化”顺手删除的旧代码。
 
 ## 1. 背景
 
@@ -79,6 +105,8 @@ Groq 与 OpenAI 不是与“本地”平级的产品模式，而是“云端转�
 - 将 API key、provider 和具体模型降为云端高级配置；
 - 保留现有用户选择、已存 key、历史记录和本地模型资产；
 - 对本地未就绪、下载失败和云端未配置给出明确修复入口。
+- 保留 `v1.8.1` 已交付的 Accessibility、跨屏定位、卡死恢复、顺序插入和跨平台 raw IPC 行为；
+- 在把 Local 设为默认主路径前，补齐本地 ASR 的全局并发限制和完整子进程生命周期上限。
 
 ### 3.2 非目标
 
@@ -90,6 +118,9 @@ Groq 与 OpenAI 不是与“本地”平级的产品模式，而是“云端转�
 - 不在本轮扩展 Windows/Linux 的本地性能承诺；
 - 不新增翻译功能的替代入口；
 - 不在本轮实现 LLM 后处理、专名纠正或本地 dictionary。
+- 不在本轮实现长录音分段、AudioWorklet/VAD chunk pipeline 或所谓 streaming ASR；
+- 不重新设计 Accessibility drag cloud 或输入提示跨屏定位算法；
+- 不把所有既有 reliability 审计项都并入本轮；只处理 Local 默认化直接放大的并发、生命周期和 provider/session 一致性问题。
 
 ## 4. 设备推荐规则
 
@@ -104,7 +135,7 @@ Groq 与 OpenAI 不是与“本地”平级的产品模式，而是“云端转�
 
 这里的 `local_capable=false` 表示“不自动推荐”，不是“技术上禁止本地运行”。Local 始终可以在 Settings 中被用户选择。
 
-Groq 是 cloud fresh install 默认 provider；OpenAI 是已有 OpenAI API 账户用户的备选。理由是截至 2026-07-19，Groq Free Plan 对普通个人听写的上手摩擦低于需要独立 API billing 的 OpenAI。对外文案不承诺永久免费；发布前仍需复核 provider 的最新账户和计费要求。
+Groq 是 cloud fresh install 默认 provider；OpenAI 是已有 OpenAI API 账户用户的备选。理由是截至 2026-07-29，[GroqCloud 官方页面](https://groq.com/groqcloud)仍列出 $0 Starter tier，普通个人听写的初次设置摩擦相对更低。对外文案不得承诺永久免费或固定额度；每次发布前仍需复核 provider 的最新账户、模型可用性、rate limit 和计费要求。
 
 ## 5. 配置与状态模型
 
@@ -124,6 +155,14 @@ groq | openai      -> Cloud mode
 ```
 
 这样可以避免不必要的配置迁移和两个字段互相矛盾，同时允许 UI 呈现正确的两层结构。
+
+所有读取 provider 的后端路径必须共用同一个验证边界，将持久化字符串解析为：
+
+```text
+TranscriptionProvider::Local | Groq | OpenAI
+```
+
+未知字符串属于无效配置：UI 显示“转写方式需要重新选择”并打开修复入口，转录请求直接 fail closed。不能继续使用当前部分路径中的“不是 Groq 就当作 OpenAI”式 fallback，因为损坏或未来版本的配置不能触发用户未选择的云端上传。
 
 ### 5.2 设备感知的 fresh default
 
@@ -183,6 +222,22 @@ absent | partial | downloading | ready | error
 
 readiness、onboarding gate 和首页状态统一读取 `engineReady`。原始 API key 仍只允许 Settings 窗口读取。
 
+### 5.5 provider 与 recording session 绑定
+
+一次录音从开始、VAD/WAV 预处理、自动重试到最终错误恢复，必须使用同一个已验证 provider。`recordingSession` 应保存不可变的 `providerAtStart`，而不是在异步流程的每个阶段重新读取可变的 `currentProvider`。
+
+约束如下：
+
+- provider 在 `start-recording` 时确定，后续 Settings 变化只影响下一次录音；
+- 原始音频请求必须携带并由后端验证该 session provider，后端不能在请求到达时静默改走另一个 provider；
+- WAV 编码、模型 badge、错误分类和是否允许保存 pending audio 都读取 `providerAtStart`；
+- 只有 Local session 在 watchdog/timeout 自动重试仍失败后，才可保存 pending WAV；
+- Cloud session 的音频失败后不得持久化为 pending recovery；
+- `retranscribe_pending` 继续明确强制走 Local，因为 pending 文件只允许由 Local session 产生；
+- 自动重试和 pending re-transcribe 都必须经过与普通 Local 请求相同的全局并发门。
+
+这同时修复当前 `input-prompt.js` 中旧 session 失败时读取最新 `currentProvider` 的竞态：用户在旧 Local 转写尚未返回时切到 Cloud，不能导致本地录音丢失；反向切换也不能把旧 Cloud 音频误存到磁盘。
+
 ## 6. Onboarding
 
 现有六页 wizard 收敛为三个阶段。重点不是减少动画页数本身，而是让用户只理解一个价值循环。
@@ -206,6 +261,17 @@ readiness、onboarding gate 和首页状态统一读取 `engineReady`。原始 A
 3. Accessibility 权限。
 
 模型下载与权限授权可以并行，不要求用户等待下载完成后再处理系统权限。
+
+Accessibility checklist 必须复用 `v1.8.1` 的完整授权流程，而不是退回普通 deep link：
+
+1. 先触发系统 Accessibility prompt，使 SayType 出现在权限列表；
+2. 打开系统设置；
+3. 在正式 `.app` 环境中立即显示 drag cloud；
+4. 轮询和窗口 refocus 都重新检查授权；
+5. 授权成功后隐藏 cloud 并更新 checklist；
+6. 开发期 bare binary 无法显示 cloud 时允许明确回退，Windows/Linux 保持现有平台适配行为。
+
+三阶段 onboarding 只改变信息架构，不删除 `ax_cloud.rs`、`platform/drag_cloud.rs` 或 `ax-cloud.*` 窗口。
 
 #### Local-capable 设备
 
@@ -314,18 +380,34 @@ Settings 中将现有 Models/API Provider 页面重构为 **Transcription**。
 - `HotkeyState` 只维护 `record_shortcut`；
 - `Action::Start` 不再携带 `translate_mode`；
 - `start-recording` event 不再携带布尔 mode；
-- `transcribe_audio` command 删除 `translate_mode` 参数；
+- `transcribe_audio` command 删除 `translate_mode`，但保留 raw audio body、MIME 和 session provider；
 - `resolve_transcription_route` 只按 provider 路由；
 - 删除 Local -> Cloud 的 translation fallback；
 - 删除 `/audio/translations` endpoint 和翻译专用模型选择；
 - 删除 Translation 错误文案和相关测试，改为单一路由测试。
 
+删除 `Action::Start { translate_mode }` 时，只能把 action payload 收敛成单一 Start；不得回退或重写 `position_input_prompt()`、`target_monitor()`、logical/physical scale 处理与 `wait_for_position()`。现有“焦点窗口 -> 鼠标 -> 主屏”行为和相关 Rust 单测必须继续通过。
+
+`transcribe_audio` 的 Local 分支继续保留：
+
+- 首字节 deadline、无进度 watchdog 和外层 hard timeout；
+- `local-transcription-partial` 可见进度；
+- `--no-warmup`；
+- Windows `CREATE_NO_WINDOW`；
+- cancellation token 与临时文件清理。
+
+`save_pending_transcription`、`retranscribe_pending`、History pending entry 和保存音频文件都不是 translation 功能，必须保留。翻译删除不得将它们误判为多路由遗留代码。
+
 旧配置文件中的 `translateShortcut` 是未知字段，serde 默认忽略；下一次保存配置时自然清除，不需要单独迁移脚本。
 
 ### 9.2 前端与 IPC
 
-- IPC bridge 删除 `translateMode` header/参数；
+- IPC bridge 删除 `translate-mode` header/参数；
+- `transcribe-audio` 的 raw-body contract 收敛为 `audio bytes + provider + mime-type`，并同步 Rust request parser、调用参数索引和 contract tests；
+- 保留 `save-pending-transcription` 的 raw body + `mime-type` contract；
+- 保留 input-prompt CSP 对 macOS/Linux `ipc:` 和 Windows `http://ipc.localhost` 的允许项；
 - input prompt 删除 `translateMode` 状态、翻译模型映射和 English-output 状态；
+- `recordingSession` 增加不可变 `providerAtStart`，自动重试、WAV 处理和 pending recovery 都使用它；
 - input prompt hint 只显示一个快捷键；
 - 首页只显示“听写”快捷键；
 - onboarding 删除翻译 tip；
@@ -333,6 +415,8 @@ Settings 中将现有 Models/API Provider 页面重构为 **Transcription**。
 - i18n 删除 English-output 与翻译快捷键字符串；
 - CSS 删除只服务于 translation badge/state 的规则；
 - 更新 IPC contract tests 和 DOM/static smoke tests。
+
+`input-prompt.test.mjs` 中已有的 stale-session UI ownership、hide timer、录音顺序插入、卡死后只重试一次、Local pending 保存和 Cloud 不落盘用例必须保留，并在删除参数后更新 fixture。不能用“只剩一种 action”为理由简化掉这些 session guards。
 
 ### 9.3 隐私结果
 
@@ -394,6 +478,10 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 - 模型文件损坏/缺失：提示重新下载，不使用 cloud key；
 - 非推荐设备运行慢：允许取消，不能自动改用 Cloud；
 - 无网络：已下载模型继续工作；未下载时明确说明下载需要网络。
+- watchdog/timeout：同一 session 自动重试一次；再次失败则将 exact Local WAV 保存为 pending history，提示稍后重新转写；
+- pending 保存失败：报告转写失败和恢复保存失败，不能谎称音频已保留；
+- pending re-transcribe 失败：条目继续保持 pending，音频不删除；
+- pending re-transcribe 成功或确认无语音：原位更新条目并删除 recovery audio。
 
 ### 12.2 Cloud
 
@@ -401,6 +489,19 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 - key 无效：保留 provider，提示检查 key；
 - rate limit/服务不可用：显示 provider 原始可理解错误，不切换另一个 provider；
 - 切换 provider：保留另一家的 key，但只使用当前 provider 的 key。
+
+### 12.3 Local 执行边界
+
+Local 变成默认后，不能允许快速连续听写、自动重试和 History 重转写各自启动一个独立 `llama-mtmd-cli`：
+
+- 在 Rust Local ASR 入口设置进程级并发上限 `1`；
+- 普通听写、自动重试和 `retranscribe_pending` 共用同一个门；
+- 排队等待必须响应 cancellation，取消后不能继续启动子进程；
+- 前端 `pendingInsertionOrder` 只保证文字插入顺序，不能被当作模型并发控制；
+- 进程从 spawn、stdout/stderr pump 到 `child.wait()` 的完整生命周期都必须在可取消的 hard timeout 内；
+- timeout/watchdog 返回时必须确认子进程被终止，不能只停止读取 output。
+
+这是启用 Apple Silicon fresh default=Local 的 release gate，而不是以后可选的性能优化。
 
 ## 13. 迁移规则
 
@@ -411,6 +512,8 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 | 已完成 onboarding + OpenAI | 保持 OpenAI |
 | 已保存 cloud keys | 全部保留 |
 | 已下载本地模型 | 全部保留 |
+| 已有 pending transcription/history audio | 全部保留，仍可从 History 重新转写 |
+| 已授予/未授予 Accessibility | 保留系统状态；未授予时继续提供 drag cloud 授权流程 |
 | 旧配置含 `translateShortcut` | 可读取；下次保存时移除 |
 | 无配置文件 + local-capable | fresh default = Local |
 | 无配置文件 + 非 local-capable | fresh default = Groq |
@@ -426,10 +529,17 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 - 已有显式 provider 反序列化后保持不变；
 - Local 未安装时可以被选择和保存；
 - `engineReady` 对 Local/Groq/OpenAI 三种 provider 正确；
+- provider 字符串只接受 Local/Groq/OpenAI；未知值 fail closed，不能落入 OpenAI；
 - Local 未 ready 的 transcription 只返回本地模型错误，不读取 cloud key；
 - cloud provider 仍要求各自 key；
 - hotkey state 只产生单一 `Action::Start`；
+- 删除 translation payload 后，焦点窗口/鼠标/主屏选择、DPI normalization 和 position settle tests 继续通过；
 - `transcribe_audio` 只存在 transcription 路由；
+- raw request 中的 session provider 经过验证，并在自动重试期间保持不变；
+- Local 并发测试证明普通转写、自动重试与 pending re-transcribe 同时到达时最多一个 CLI 运行；
+- 等待并发门和运行中子进程都可取消；
+- watchdog、hard timeout 和 `child.wait()` 共同覆盖完整子进程生命周期；
+- Local hang 保存 pending、re-transcribe 原位更新/失败保留、成功后删除 audio 的现有用例继续通过；
 - 旧 JSON 带 `translateShortcut` 仍能读取。
 
 ### 14.2 前端自动验证
@@ -440,7 +550,12 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 - Local 未 ready 仍保持选中且展示修复状态；
 - 首页只有一个快捷键且无 engine segmented control；
 - input prompt 无 translation copy/state；
-- IPC contract 不再发送 `translateMode`；
+- `recordingSession.providerAtStart` 不受处理中途的 settings/provider 更新影响；
+- stale session 不能重绘/隐藏新录音，结果继续按 recording order 插入；
+- retryable hang 只自动重试一次；只有 Local 失败保存 pending，Cloud 失败不落盘；
+- IPC contract 不再发送 `translate-mode`，但继续发送 raw audio、provider 和 MIME；
+- raw-body 页面继续允许 macOS/Linux `ipc:` 与 Windows `http://ipc.localhost`；
+- Accessibility checklist 继续调用 `show-ax-cloud`，授权成功调用 `hide-ax-cloud`；
 - en/zh i18n key 完整，无遗留 translation key 的 DOM 引用。
 
 ### 14.3 手动 E2E
@@ -456,9 +571,61 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 7. 非推荐设备主动安装 Local；
 8. Local 模型缺失时按快捷键；
 9. Cloud key 无效和 rate limit；
-10. README 的实际安装步骤与 release 包一致。
+10. Local 转写 hang -> 自动重试 -> pending History -> 稍后成功恢复；
+11. 快速连续录音时只有一个 Local CLI，文字仍按录音顺序插入；
+12. 转写处理中切换 provider，当前 session 路由不变，下一次录音才使用新 provider；
+13. 多屏幕/混合 DPI 下 input prompt 仍出现在焦点应用所在屏幕；
+14. macOS 首次 Accessibility 授权的 prompt、系统设置、drag cloud、授权后隐藏完整闭环；
+15. Windows release 包 raw audio IPC 可用且转写时不弹 console window；
+16. README 的实际安装步骤与 release 包一致。
 
-## 15. 成功标准
+Node 验证至少运行：
+
+```bash
+node --test src/views/input-prompt.test.mjs
+node --test scripts/ipc-contract.test.mjs
+node --test src/views/vad-decision.test.mjs
+```
+
+Rust 验证至少运行：
+
+```bash
+cd src-tauri
+cargo test
+cargo check
+```
+
+这些自动测试不能替代 macOS 多屏/Accessibility 和 Windows release 包真机验证。
+
+## 15. 实施顺序与相邻设计
+
+本设计跨配置、录音路由、窗口行为和信息架构，必须按可独立回归的顺序实施：
+
+1. **锁定 `v1.8.1` 回归基线**：先运行现有 Rust/Node tests，确认 pending recovery、session guards、raw IPC、跨屏定位和 Accessibility cloud 都是绿的；
+2. **补 Local 默认化 release gates**：provider 验证、session provider 绑定、全局 Local 并发门、完整 child lifecycle timeout；
+3. **删除 translation 单独路径**：先改 Rust hotkey/route/config tests，再改 raw IPC 和 input prompt fixtures，保持每一步可运行；
+4. **实现 fresh config 与 readiness 语义**：`fresh_config_for`、允许未 ready 的 Local intent、`engineReady`；
+5. **重构产品 UI**：三阶段 onboarding、Settings 的 Local/Cloud 两层结构、首页和托盘降噪，同时接回原有 Accessibility flow；
+6. **收敛 Dictionary、i18n 和 README**；
+7. **完成自动验证与真机矩阵**，最后才允许发布 local-first 默认。
+
+每个阶段应有自己的测试和提交；不能先大面积删除 UI/翻译字符串，再依靠最后一次 build 猜测哪些 reliability 行为被破坏。
+
+另有一份待复核草案：
+
+```text
+docs/superpowers/specs/2026-07-22-local-asr-long-audio-chunking-design.md
+```
+
+它处理长录音分段和 release 后尾延迟，不属于本轮产品收敛。两份设计的关系是：
+
+- 先完成本设计的单一路由 raw IPC 与 immutable session provider，长音频草案再基于新 contract rebase；
+- 长音频实现必须先通过 WKWebView AudioWorklet/RealTimeVAD spike，不能仅凭静态代码假设可行；
+- 长音频前端即使有 serial chunk queue，后端全局 Local 并发门仍必须保留，因为普通听写、自动重试和 History 重转写可从其他入口并发；
+- 后续若扩展 `local-transcription-partial` 的 `sessionId/chunkIndex`，必须继续遵守 stale-session UI ownership，旧 partial 不得显示在新录音上；
+- 在长音频设计单独获批前，本轮不修改该草案，也不在 README 宣称无限长度或 streaming transcription。
+
+## 16. 成功标准
 
 - Apple Silicon fresh install 在任何时刻都不会显示或保存用户未选择的 OpenAI 默认；
 - 模型下载前、中、后 provider 始终保持 Local；
@@ -469,12 +636,19 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 - Groq/OpenAI 只在 Cloud mode 内出现；
 - 现有用户 provider、keys、history 和模型资产全部保留；
 - README、onboarding、Settings 和运行时行为对 Local-first 的表述一致。
+- `v1.8.1` 的 Accessibility drag cloud、跨屏 input prompt、hang retry/pending recovery、顺序插入和 Windows raw IPC 无回归；
+- 同一时刻最多运行一个 Local ASR CLI，取消和 hard timeout 覆盖排队与完整子进程生命周期；
+- provider 在一次 recording session 中不可变，未知 provider 不会触发 OpenAI 或其他云端 fallback。
 
-## 16. 预计涉及文件
+## 17. 预计涉及文件
+
+预计直接修改：
 
 - `src-tauri/src/settings.rs`
+- `src-tauri/src/state.rs`
 - `src-tauri/src/hotkey.rs`
 - `src-tauri/src/commands.rs`
+- `src-tauri/src/local_asr.rs`
 - `src-tauri/src/tray.rs`
 - `src-tauri/src/lib.rs`
 - `src/views/ipc-bridge.js`
@@ -484,9 +658,27 @@ README 从“开发项目 + 三个 provider 功能列表”调整为产品优先
 - `src/views/settings.html`
 - `src/views/settings.css`
 - `src/views/settings.js`
+- `src/views/input-prompt.html`
 - `src/views/input-prompt.css`
 - `src/views/input-prompt.js`
+- `src/views/input-prompt.test.mjs`
 - `src/views/i18n.js`
 - `scripts/ipc-contract.test.mjs`
 - 相关 Rust/Node/static smoke tests
 - `README.md`
+
+必须纳入回归验证，但本设计原则上不重写其核心实现：
+
+- `src-tauri/src/history.rs`
+- `src-tauri/src/ax_cloud.rs`
+- `src-tauri/src/platform/drag_cloud.rs`
+- `src-tauri/src/platform/mod.rs`
+- `src-tauri/src/platform/macos.rs`
+- `src-tauri/src/platform/fallback.rs`
+- `src-tauri/tauri.conf.json`
+- `src/views/ax-cloud.html`
+- `src/views/ax-cloud.css`
+- `src/views/ax-cloud.js`
+- `src/views/vad-decision.test.mjs`
+
+待复核的 long-audio 草案不属于本次改动清单。
