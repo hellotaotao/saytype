@@ -595,6 +595,12 @@ fn dispatch_action(app: &AppHandle, action: Action) {
   match action {
     Action::Start { translate_mode } => {
       log::info!("hotkey:dispatch start translate_mode={translate_mode}");
+      if !translate_mode {
+        // The audio does not reach Rust until recording stops. Refresh an
+        // already-warm local worker now so a long dictation cannot cross the
+        // idle deadline and lose the model before it is needed.
+        crate::local_asr::keep_resident_worker_warm();
+      }
       if let Some(window) = app.get_webview_window("input-prompt") {
         if let Some(target) = position_input_prompt(&window) {
           wait_for_position(&window, target);

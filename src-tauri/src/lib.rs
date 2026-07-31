@@ -202,11 +202,17 @@ pub fn run() {
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
     .run(|_app_handle, _event| {
+      if matches!(
+        &_event,
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+      ) {
+        local_asr::shutdown_resident_worker();
+      }
       // macOS: clicking the Dock icon (or relaunching the app) when no window
       // is visible — e.g. after starting minimized — should bring the main
       // window back, matching standard macOS behavior.
       #[cfg(target_os = "macos")]
-      if let tauri::RunEvent::Reopen { .. } = _event {
+      if let tauri::RunEvent::Reopen { .. } = &_event {
         tray::show_main_window(_app_handle);
       }
     });

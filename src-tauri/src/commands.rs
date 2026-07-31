@@ -121,6 +121,9 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
   }
 
   broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
+  if config.provider != crate::local_asr::LOCAL_PROVIDER {
+    crate::local_asr::shutdown_resident_worker();
+  }
   Ok(true)
 }
 
@@ -203,6 +206,9 @@ pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), Stri
   switch_provider(&mut config, provider);
   settings::write_config(&config).map_err(stringify_error)?;
   broadcast_settings_updates(app, &config).map_err(stringify_error)?;
+  if provider != crate::local_asr::LOCAL_PROVIDER {
+    crate::local_asr::shutdown_resident_worker();
+  }
   Ok(())
 }
 

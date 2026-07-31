@@ -15,13 +15,17 @@ sherpa 版设计见本文件 git 历史)。
   照旧插入;将来的 insights/待办提取/润色交给云端大模型(TODO.md #1 方向不变;
   llama.cpp 落地后本地润色的边际成本极低,已在 TODO.md #1 记录触发条件)。
 - **"轻"的守护**:模型与推理二进制都不进安装包(启用时按需下载);推理在**独立子进程**
-  里进行,转写结束进程即退——SayType 常驻内存与今天完全相同,连"闲置卸载"逻辑都不需要。
+  里进行。**2026-07-30 性能修订**:利用 b9960 原生 chat mode 在连续听写之间保温,
+  转写完成后开始 60 秒 idle timer;期间开始新一轮本地听写会刷新 timer,避免用户正在
+  录音时 worker 到期。若原本没有 warm worker,录音开始不会主动预加载。连续空闲
+  60 秒后自动杀进程并释放约 1.3GB;取消、切换到云端、删除模型和退出应用也会杀
+  worker。chat 协议异常时自动退回原来的一次性子进程路径。
 
 ## 引擎选型(已拍板:llama.cpp 子进程;两轮真机实测)
 
 | 候选 | 结论 |
 |---|---|
-| **llama.cpp 子进程**(官方 `ggml-org/Qwen3-ASR-0.6B-GGUF` Q8_0,`llama-mtmd-cli` 每次转写起一个子进程,用完即退) | ✅ **选它**。M4 实测:Metal 解码 RTF 0.05–0.18(sherpa CPU ~0.30),加载仅 0.2–0.33s(热缓存),峰值 RSS ~1.34GB 恒定且转写间隙归零,**CPU 满载时性能不受影响**(Metal 不与 CPU 争抢——实测机器 load 125 时 sherpa 劣化 2–6 倍、llama 纹丝不动)。取消 = 杀子进程,比库内推理干净。 |
+| **llama.cpp 子进程**(官方 `ggml-org/Qwen3-ASR-0.6B-GGUF` Q8_0,`llama-mtmd-cli` chat worker,60 秒 idle retirement) | ✅ **选它**。M4 实测:Metal 解码 RTF 0.05–0.18(sherpa CPU ~0.30),峰值 RSS ~1.34GB 恒定,**CPU 满载时性能不受影响**。M1 实测每次新进程约有 0.99s 模型加载成本;b9960 的 `/audio` chat 命令可在同一进程连续转写,两段固定音频总耗时 4.56s,对照独立进程约 5.64s。取消 = 杀 worker;协议失败 = 一次性进程 fallback。 |
 | sherpa-onnx 进程内(官方 Rust crate,int8) | ❌ 降级为备选。spike 已验证可用(质量达标、API 零偏差),但 CPU-only:RTF ~0.30、解码峰值 2.1GB、常驻 1.6GB 需自管闲置卸载、机器忙时严重劣化。撤退路线保留:git 历史里有完整 sherpa 版计划。 |
 | antirez/qwen-asr(纯 C + BLAS) | ❌ BF16-only 静态内存 2.77 GiB、无 Windows |
 | second-state/qwen3_asr_rs(纯 Rust) | ❌ 底层 libtorch/MLX,动态库巨大不利打包 |
@@ -72,7 +76,7 @@ release 均有)。Win/Linux 上 CPU 解码没有 Metal 红利(速度约回到 sh
 
 ### 2. 新模块 `src-tauri/src/local_asr.rs`
 
-职责三件(比 sherpa 版少了"引擎生命周期"整块——没有常驻、没有预加载、没有闲置卸载):
+职责三件(仍由子进程隔离模型;增加一个短时保温生命周期):
 
 1. **资产清单与就绪检查**:app data dir 下 `local-asr/`——`models/` 放两个 GGUF
    (精确字节数 + sha256 校验),`bin/<llama-build>/` 放解压后的 `llama-mtmd-cli`
@@ -82,10 +86,12 @@ release 均有)。Win/Linux 上 CPU 解码没有 Metal 红利(速度约回到 sh
    llama.cpp release zip(GitHub,锁定 build,sha256 校验后解压到 `bin/<build>/`,
    unix 置可执行位)。由我们的 app 下载 → 无浏览器 quarantine 属性 → 无 Gatekeeper
    拦截问题;二进制不进安装包,安装包体积不变。
-3. **子进程转写**:`transcribe_wav(wav_bytes, cancel) -> Result<String>`——写临时 WAV
-   文件 → `tokio::process` 起 `llama-mtmd-cli`(`-c 2048`、`-p "a"`,kill_on_drop)→
-   取消即杀进程 → 解析 stdout(剥 `language <lang><asr_text>` 前缀,实现时以真实输出
-   样本写单测)→ 清理临时文件(错误路径也清)。超时兜底(如 120s)防挂死。
+3. **子进程转写**:`transcribe_wav(wav_bytes) -> Result<String>`——写临时 WAV →
+   复用同 context size 的 chat worker(`/clear`→`/audio <path>`→`a`)→解析 stdout
+   (剥 `language <lang><asr_text>` 前缀)→清理临时文件。`--fit off` 避免每次重复
+   device fitting;local-only semaphore 保证全入口最多一个 Metal decode。worker 空闲
+   60 秒卸载;取消会因 `kill_on_drop` 杀掉正在运行的 worker。chat 协议错误或超时后
+   丢弃 worker,并用原有 `--audio ... -p "a"` 一次性子进程重试,保留详细 stderr 诊断。
 
 ### 3. 转写路径(`commands.rs` 改动最小化)
 
