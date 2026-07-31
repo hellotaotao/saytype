@@ -9,6 +9,12 @@
     0 8px 20px rgba(0, 0, 0, 0.3),
     0 0 0 1px rgba(99, 102, 241, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  /* Recording box stepped back while the transcription bubble is up: no glow,
+     no downward drop — so the bubble (which keeps its own strong shadow) reads
+     as the front-most layer. Applied via body.has-transcription. */
+  --prompt-shadow-recording-dimmed: 0 1px 8px rgba(0, 0, 0, 0.16),
+    0 0 0 1px rgba(99, 102, 241, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
   --prompt-shadow-hover: 0 12px 30px rgba(0, 0, 0, 0.35),
     0 0 0 1px rgba(255, 255, 255, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
@@ -34,9 +40,13 @@
   --wave-bar-shadow-active: 0 0 8px rgba(99, 102, 241, 0.4);
   --mic-glow-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
   --mic-glow-shadow-strong: 0 0 20px rgba(99, 102, 241, 0.8);
-  --prompt-transcription-bg: linear-gradient(135deg, rgba(20, 25, 40, 0.9), rgba(35, 45, 65, 0.9));
-  --prompt-transcription-border: rgba(255, 255, 255, 0.1);
-  --prompt-transcription-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  --prompt-transcription-bg: linear-gradient(135deg, rgba(24, 30, 48, 0.98), rgba(40, 50, 74, 0.98));
+  --prompt-transcription-border: rgba(255, 255, 255, 0.16);
+  /* Lifts the streamed-text bubble to the visual front: an upward-casting
+     shadow that falls over the dimmed prompt box above it, plus a deeper drop
+     shadow beneath. Pairs with --prompt-shadow-recording-dimmed. */
+  --prompt-transcription-shadow: 0 -4px 16px rgba(0, 0, 0, 0.26),
+    0 12px 26px rgba(0, 0, 0, 0.34);
   --recording-dot-start: #f59e0b;
   --recording-dot-end: #d97706;
   --recording-dot-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
@@ -59,6 +69,9 @@
     0 10px 26px rgba(25, 33, 30, 0.18),
     0 0 0 1px rgba(68, 115, 109, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --prompt-shadow-recording-dimmed: 0 1px 8px rgba(25, 33, 30, 0.14),
+    0 0 0 1px rgba(68, 115, 109, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
   --prompt-shadow-hover: 0 14px 32px rgba(25, 33, 30, 0.2),
     0 0 0 1px rgba(40, 52, 46, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
@@ -85,8 +98,9 @@
   --mic-glow-shadow: 0 0 10px rgba(76, 123, 117, 0.35);
   --mic-glow-shadow-strong: 0 0 18px rgba(76, 123, 117, 0.5);
   --prompt-transcription-bg: linear-gradient(135deg, rgba(247, 244, 239, 0.98), rgba(232, 240, 235, 0.98));
-  --prompt-transcription-border: rgba(40, 52, 46, 0.12);
-  --prompt-transcription-shadow: 0 6px 16px rgba(25, 33, 30, 0.12);
+  --prompt-transcription-border: rgba(40, 52, 46, 0.14);
+  --prompt-transcription-shadow: 0 -3px 14px rgba(25, 33, 30, 0.16),
+    0 12px 26px rgba(25, 33, 30, 0.22);
   --recording-dot-start: #c99b5a;
   --recording-dot-end: #a97433;
   --recording-dot-shadow: 0 0 8px rgba(201, 155, 90, 0.4);
@@ -132,6 +146,9 @@ body {
   opacity: 0;
   transform: translateY(20px) scale(0.95);
   position: relative;
+  /* Below .transcription-text so the box's drop shadow never bleeds over the
+     transcription bubble that hangs beneath it (the bubble sets z-index: 2). */
+  z-index: 1;
   overflow: hidden;
 }
 
@@ -144,6 +161,15 @@ body {
   height: 90px;
   box-shadow: var(--prompt-shadow-recording);
   background: var(--prompt-bg-recording);
+}
+
+/* Layering inversion: while the transcription bubble is up (JS sets
+   body.has-transcription), the prompt box drops its glow/shadow and steps
+   back, so the streamed-text bubble beneath it reads as the front-most layer.
+   The box keeps .recording all through transcription, so this is scoped to it;
+   more specific than :hover, so it wins there too. */
+body.has-transcription .input-prompt.recording {
+  box-shadow: var(--prompt-shadow-recording-dimmed);
 }
 
 .left-section {
@@ -335,19 +361,25 @@ body {
 }
 
 .transcription-text {
-  /* Positioned against the window (body is the 460x190 viewport), NOT inside
+  /* Positioned against the window (body is the 460x244 viewport), NOT inside
      .input-prompt — that box has overflow:hidden and would clip this bubble
-     entirely (it did, for every release until now). The 80px box is centered,
-     so its bottom edge sits at calc(50% + 40px); start just below it and cap
-     the height to what fits inside the window (~2 lines). JS keeps scrollTop
-     pinned to the bottom so the newest streamed text is what shows. */
+     entirely (it did, for every release until now). The recording box is 90px
+     and centered, so its bottom edge sits at calc(50% + 45px); start ~8px below
+     that so the bubble clears the box's drop shadow instead of sitting inside
+     it (a 1px gap used to let that shadow bleed over the bubble's top), and cap
+     the height to 3 lines — which fits the 244px window. z-index above
+     .input-prompt is belt-and-suspenders: the bubble is already later in the
+     DOM, but the box's semi-transparent-friendly shadow made layering explicit
+     worthwhile. JS keeps scrollTop pinned to the bottom so the newest streamed
+     text is what shows. */
   position: absolute;
-  top: calc(50% + 46px);
+  top: calc(50% + 53px);
   left: 50%;
   transform: translateX(-50%);
   width: 360px;
   box-sizing: border-box;
-  max-height: 46px; /* 6+6 padding + the inner scroller's 34px */
+  z-index: 2;
+  max-height: 63px; /* 6+6 padding + the inner scroller's 51px */
   color: var(--prompt-text);
   font-size: 13px;
   font-weight: 500;
@@ -366,11 +398,11 @@ body {
   line-height: 17px;
 }
 
-/* The scrolling viewport inside the bubble: exactly two 17px lines. JS pins
+/* The scrolling viewport inside the bubble: exactly three 17px lines. JS pins
    scrollTop to the bottom so the newest streamed text shows, and toggles
    .scrolled when older lines are hidden above. */
 .transcription-text-inner {
-  max-height: 34px;
+  max-height: 51px;
   overflow: hidden;
 }
 

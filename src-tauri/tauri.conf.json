@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SayType",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "identifier": "com.tao.saytype",
   "build": {
     "frontendDist": "../src/views",
@@ -46,7 +46,7 @@
         "title": "Voice Input",
         "url": "input-prompt.html",
         "width": 460,
-        "height": 190,
+        "height": 244,
         "visible": false,
         "resizable": false,
         "decorations": false,

@@ -622,7 +622,7 @@ const PROMPT_BOTTOM_MARGIN: f64 = 100.0;
 
 /// Fallback prompt size, used only if the window can't report its own — matches
 /// the `input-prompt` dimensions in `tauri.conf.json`.
-const PROMPT_FALLBACK_SIZE: (f64, f64) = (460.0, 190.0);
+const PROMPT_FALLBACK_SIZE: (f64, f64) = (460.0, 244.0);
 
 /// Upper bound on how long `wait_for_position` will hold the prompt back. Well
 /// past the measured 0.4–4.9ms so it never trips in practice, but small enough
@@ -801,7 +801,9 @@ mod tests {
   // `Monitor` hands those back as *physical* pixels, which is what the inputs
   // here are. Getting the scale division wrong is silent and catastrophic: the
   // 2x screens would place the prompt at x≈9210 / x≈-4350, i.e. nowhere.
-  const PROMPT_SIZE: (f64, f64) = (460.0, 190.0);
+  // Mirrors PROMPT_FALLBACK_SIZE / the input-prompt window in tauri.conf.json;
+  // only the height feeds the y assertions below (x is width-driven).
+  const PROMPT_SIZE: (f64, f64) = (460.0, 244.0);
 
   #[test]
   fn one_x_screen_is_unchanged_by_the_scale_division() {
@@ -815,7 +817,7 @@ mod tests {
         height: 1440.0
       }
     );
-    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (1490.0, 1150.0));
+    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (1490.0, 1096.0));
   }
 
   #[test]
@@ -831,7 +833,7 @@ mod tests {
         height: 1440.0
       }
     );
-    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (4490.0, 1150.0));
+    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (4490.0, 1096.0));
   }
 
   #[test]
@@ -846,7 +848,7 @@ mod tests {
         height: 1440.0
       }
     );
-    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (-1510.0, 1150.0));
+    assert_eq!(prompt_origin(screen, PROMPT_SIZE), (-1510.0, 1096.0));
   }
 
   #[test]
