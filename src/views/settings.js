@@ -1,3 +1,4 @@
+(function () {
 let ipc = null;
 let initI18n = () => "en";
 let setLanguage = () => "en";
@@ -42,6 +43,11 @@ let shortcutSyncBound = false;
 let themeSyncBound = false;
 let pendingAccessibilityRecheck = false;
 let accessibilityRecheckTimer = null;
+let settingsInitialized = false;
+let settingsDirty = false;
+let activeSettingsTab = "voice-input";
+
+const SETTINGS_TABS = ["voice-input", "transcription", "app"];
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -162,10 +168,10 @@ function toggleApiKeyVisibility(provider) {
 
 // --- Local model panel (provider "local") ---
 let localModelState = "absent"; // absent | partial | downloading | ready
-// Whether the running download was started from THIS window. Gates the
+// Whether the running download was started from this Settings page. Gates the
 // "switch to local?" prompt on ready: a download driven by the onboarding
-// wizard (main window) auto-switches there — a hidden settings window must
-// not pop a second, competing dialog.
+// onboarding wizard auto-switches there, so Settings must not show a second,
+// competing dialog.
 let localModelDownloadStartedHere = false;
 let localModelSyncBound = false;
 let updatesPanelBound = false;
@@ -252,7 +258,7 @@ async function handleLocalModelAction() {
   }
 }
 
-// Download finished in this window → offer (don't force) the switch to the
+// Download finished from this page → offer (don't force) the switch to the
 // local engine; the backend save + broadcast keeps every window in sync.
 async function offerSwitchToLocal() {
   if (currentSettings?.provider === "local") {
@@ -321,17 +327,17 @@ function setupLocalModelSync() {
     }
   });
 
-  // Tray "Engine → Local" (or the home switcher) clicked before the assets
-  // exist: the backend opens this window and asks us to show the download
-  // panel, which lives behind the provider select's "local" option.
-  ipc.on("open-local-model-panel", () => {
-    const providerSelect = document.getElementById("providerSelect");
-    setSelectValue(providerSelect, "local", "groq");
-    updateModelOptions("local");
-    toggleApiKeyVisibility("local");
-    void refreshLocalModelStatus();
+}
+
+function revealLocalModelPanel() {
+  const providerSelect = document.getElementById("providerSelect");
+  setSelectValue(providerSelect, "local", "groq");
+  updateModelOptions("local");
+  toggleApiKeyVisibility("local");
+  void refreshLocalModelStatus();
+  window.setTimeout(() => {
     document.getElementById("localModelItem")?.scrollIntoView({ block: "center" });
-  });
+  }, 0);
 }
 
 function renderUpdateStatus(status) {
@@ -426,11 +432,29 @@ function toggleKeyReveal(button) {
 }
 
 function markDirty() {
+  settingsDirty = true;
   document.getElementById("unsavedHint")?.classList.remove("hidden");
+  const saveButton = document.getElementById("saveSettingsButton");
+  const discardButton = document.getElementById("discardSettingsButton");
+  if (saveButton) {
+    saveButton.disabled = false;
+  }
+  if (discardButton) {
+    discardButton.disabled = false;
+  }
 }
 
 function clearDirty() {
+  settingsDirty = false;
   document.getElementById("unsavedHint")?.classList.add("hidden");
+  const saveButton = document.getElementById("saveSettingsButton");
+  const discardButton = document.getElementById("discardSettingsButton");
+  if (saveButton) {
+    saveButton.disabled = true;
+  }
+  if (discardButton) {
+    discardButton.disabled = true;
+  }
 }
 
 function setSelectValue(element, value, fallback) {
@@ -461,22 +485,48 @@ function handleUiLanguageChange(event) {
   void refreshUpdateStatus();
 }
 
-function handleSidebarClick(event) {
-  const item = event.currentTarget;
-  document.querySelectorAll(".sidebar-item").forEach((node) => {
-    node.classList.remove("active");
-  });
-  item.classList.add("active");
+function activateSettingsTab(tabName, focus = false) {
+  const target = SETTINGS_TABS.includes(tabName) ? tabName : "voice-input";
+  activeSettingsTab = target;
 
-  const target = item.getAttribute("data-section");
-  document.querySelectorAll(".content-section").forEach((section) => {
-    section.classList.remove("active");
+  document.querySelectorAll("[data-settings-tab]").forEach((tab) => {
+    const active = tab.getAttribute("data-settings-tab") === target;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) {
+      tab.focus();
+    }
   });
 
-  const content = document.getElementById(`section-${target}`);
-  if (content) {
-    content.classList.add("active");
+  document.querySelectorAll(".settings-panel").forEach((panel) => {
+    const active = panel.id === `settings-panel-${target}`;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+}
+
+function handleSettingsTabClick(event) {
+  activateSettingsTab(event.currentTarget.getAttribute("data-settings-tab"));
+}
+
+function handleSettingsTabKeydown(event) {
+  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "Home" && event.key !== "End") {
+    return;
   }
+  event.preventDefault();
+  const current = SETTINGS_TABS.indexOf(activeSettingsTab);
+  let next = current;
+  if (event.key === "ArrowRight") {
+    next = (current + 1) % SETTINGS_TABS.length;
+  } else if (event.key === "ArrowLeft") {
+    next = (current - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+  } else if (event.key === "Home") {
+    next = 0;
+  } else if (event.key === "End") {
+    next = SETTINGS_TABS.length - 1;
+  }
+  activateSettingsTab(SETTINGS_TABS[next], true);
 }
 
 function bindEventHandlers() {
@@ -489,7 +539,7 @@ function bindEventHandlers() {
   const providerSelect = document.getElementById("providerSelect");
   const checkPermissionButton = document.getElementById("checkPermission");
   const checkAccessibilityButton = document.getElementById("checkAccessibility");
-  const closeSettingsButton = document.getElementById("closeSettingsButton");
+  const discardSettingsButton = document.getElementById("discardSettingsButton");
   const saveSettingsButton = document.getElementById("saveSettingsButton");
   const uiLanguageSelect = document.getElementById("uiLanguageSelect");
   const themeSelect = document.getElementById("themeSelect");
@@ -501,8 +551,8 @@ function bindEventHandlers() {
   checkAccessibilityButton?.addEventListener("click", () => {
     void handleAccessibilityPermission();
   });
-  closeSettingsButton?.addEventListener("click", () => {
-    void cancelSettings();
+  discardSettingsButton?.addEventListener("click", () => {
+    void discardSettings();
   });
   saveSettingsButton?.addEventListener("click", () => {
     void saveSettings();
@@ -521,25 +571,27 @@ function bindEventHandlers() {
     void handleLocalModelDelete();
   });
 
-  // Any edit to a control marks the page dirty so the unsaved hint shows.
-  // Programmatic value changes during loadSettings() don't fire these events.
-  const mainContent = document.querySelector(".main-content");
-  mainContent?.addEventListener("input", markDirty);
-  mainContent?.addEventListener("change", markDirty);
+  // Only edits inside Settings mark the draft dirty. History search and the
+  // dictionary live in the same main window and must not affect this state.
+  const settingsPage = document.querySelector("#settings-page");
+  settingsPage?.addEventListener("input", markDirty);
+  settingsPage?.addEventListener("change", markDirty);
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
+    if (
+      event.key === "Escape" &&
+      settingsDirty &&
+      document.getElementById("settings-page")?.classList.contains("active")
+    ) {
       event.preventDefault();
-      void cancelSettings();
+      void discardSettings();
     }
   });
 
-  // This window is created once at startup (hidden) and only shown/hidden
-  // after, so the permission state rendered at bootstrap goes stale — e.g. an
-  // Accessibility grant made in the onboarding wizard used to show as red
-  // here until the manual check button was clicked. Refresh quietly whenever
-  // the window comes to front; the debounced gated recheck stays for the
-  // guided flow, where the TCC grant can land a beat after refocus.
+  // Permission state can change while another main-window page is active or
+  // while System Settings is in front. Refresh quietly whenever the app comes
+  // back; the debounced gated recheck stays for the guided flow, where the TCC
+  // grant can land a beat after refocus.
   window.addEventListener("focus", () => {
     void refreshAccessibilityQuietly();
     scheduleAccessibilityRecheck();
@@ -551,15 +603,16 @@ function bindEventHandlers() {
     }
   });
 
-  // Live sync while this window sits hidden: the backend broadcasts on every
-  // real Accessibility state change (wizard grant, main-window rechecks), so
-  // re-render straight away instead of waiting for the next show.
+  // The backend broadcasts every real Accessibility state change (wizard
+  // grant, main-window rechecks), so re-render without waiting for the next
+  // visit to Settings.
   ipc.on("accessibility-permission-changed", () => {
     void refreshAccessibilityQuietly();
   });
 
-  document.querySelectorAll(".sidebar-item").forEach((item) => {
-    item.addEventListener("click", handleSidebarClick);
+  document.querySelectorAll("[data-settings-tab]").forEach((tab) => {
+    tab.addEventListener("click", handleSettingsTabClick);
+    tab.addEventListener("keydown", handleSettingsTabKeydown);
   });
 
   pageEventsBound = true;
@@ -786,9 +839,9 @@ async function loadSettings() {
 
   try {
     currentSettings = await ipc.invoke("get-settings");
-    // Raw API keys come from a dedicated command — get_settings no longer ships
-    // them (only a hasApiKey flag), so they're never sent to the main /
-    // input-prompt windows. Only this settings window fetches them, to edit.
+    // Raw API keys come from a dedicated command — get_settings never ships
+    // them to general readers. The main window fetches them only because it now
+    // owns the Settings editor; input-prompt and other windows stay blocked.
     // Shares fate with the get-settings call above: if the config is readable
     // for one it is for the other, so this won't leave the key fields blank
     // (which a subsequent Save would persist as cleared keys).
@@ -873,83 +926,89 @@ async function saveSettings() {
     await ipc.invoke("save-settings", settings);
     currentSettings = settings;
     clearDirty();
-    await closeSettings();
+    const saveButton = document.getElementById("saveSettingsButton");
+    if (saveButton) {
+      saveButton.textContent = translate("settings.saved");
+      window.setTimeout(() => {
+        saveButton.textContent = translate("settings.save");
+      }, 1400);
+    }
   } catch (error) {
     console.error("Failed to save settings:", error);
     alert(translate("settings.saveError"));
   }
 }
 
-async function cancelSettings() {
-  // Revert any unsaved edits — control values plus the live theme/language
-  // preview — back to the last saved settings, then hide the window.
+async function discardSettings() {
+  // Revert unsaved controls plus the live theme/language preview. Settings is
+  // now a normal page, so discarding stays on the page instead of closing it.
   try {
     await loadSettings();
   } catch (error) {
-    console.error("Failed to revert settings on cancel:", error);
+    console.error("Failed to discard settings changes:", error);
   }
   clearDirty();
-  await closeSettings();
 }
 
-async function closeSettings() {
-  try {
-    await initializeDependencies();
-    await ipc.invoke("close-settings");
-  } catch (error) {
-    console.error("Failed to close settings:", error);
-  }
-}
-
-window.closeSettings = closeSettings;
-window.cancelSettings = cancelSettings;
-window.saveSettings = saveSettings;
-if (typeof document !== "undefined" && document.documentElement) {
-  document.documentElement.setAttribute("data-settings-handlers-exposed", "1");
-}
-
-async function bootstrapSettingsPage() {
-  // The entry script runs twice (the <script> tag plus the Rust on-page-load
-  // injection); guard so the page is only bootstrapped once.
-  if (window.__sayTypeSettingsStarted) {
+async function initializeSettingsPage() {
+  if (settingsInitialized) {
     return;
   }
-  window.__sayTypeSettingsStarted = true;
 
+  await initializeDependencies();
+  bindEventHandlers();
+  setupShortcutSync();
+  setupThemeSync();
+  setupLocalModelSync();
+  void setupUpdatesPanel();
+  await loadSettings();
+  activateSettingsTab(activeSettingsTab);
+  settingsInitialized = true;
+  document.documentElement.setAttribute("data-settings-bootstrap-complete", "1");
+}
+
+async function showSettings(target = null) {
+  const wasInitialized = settingsInitialized;
   try {
-    if (document?.documentElement) {
-      document.documentElement.setAttribute("data-settings-bootstrap-started", "1");
+    await initializeSettingsPage();
+    if (wasInitialized && !settingsDirty) {
+      await loadSettings();
     }
-    await initializeDependencies();
-    bindEventHandlers();
-    setupShortcutSync();
-    setupThemeSync();
-    setupLocalModelSync();
-    void setupUpdatesPanel();
-    await loadSettings();
-    if (document?.documentElement) {
-      document.documentElement.setAttribute("data-settings-bootstrap-complete", "1");
+
+    if (target === "local-model") {
+      activateSettingsTab("transcription");
+      revealLocalModelPanel();
+      return;
     }
+
+    activateSettingsTab(SETTINGS_TABS.includes(target) ? target : activeSettingsTab);
   } catch (error) {
     console.error("Failed to initialize settings page:", error);
-    if (document?.documentElement) {
-      document.documentElement.setAttribute(
-        "data-settings-bootstrap-error",
-        String(error?.message || error)
-      );
-    }
-    applyTheme("elegant");
-    const fallbackI18n = window.SayTypeI18n;
-    if (fallbackI18n && typeof fallbackI18n.initI18n === "function") {
-      fallbackI18n.initI18n("auto");
-    }
+    document.documentElement.setAttribute(
+      "data-settings-bootstrap-error",
+      String(error?.message || error)
+    );
   }
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => {
-    void bootstrapSettingsPage();
-  }, { once: true });
-} else {
-  void bootstrapSettingsPage();
+async function confirmLeave() {
+  if (!settingsDirty) {
+    return true;
+  }
+  if (!window.confirm(translate("settings.discardConfirm"))) {
+    return false;
+  }
+  await discardSettings();
+  return true;
 }
+
+window.SayTypeSettings = {
+  show: showSettings,
+  confirmLeave,
+  hasUnsavedChanges: () => settingsDirty,
+  save: saveSettings,
+  discard: discardSettings,
+};
+
+document.documentElement.setAttribute("data-settings-handlers-exposed", "1");
+})();

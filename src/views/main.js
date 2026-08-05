@@ -120,7 +120,7 @@ async function initializeMainPage() {
 function bindEvents() {
   watchSystemTheme();
 
-  // Cmd+, (macOS standard "Preferences" shortcut) opens the settings window.
+  // Cmd+, (macOS standard "Preferences" shortcut) opens the Settings page.
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
       event.preventDefault();
@@ -183,7 +183,7 @@ function bindEvents() {
     renderObLocal();
   });
 
-  // Wizard-page-5 download progress. The settings window renders the same
+  // Wizard-page-5 download progress. The Settings page renders the same
   // event on its own panel; here it only matters while the wizard is up.
   ipc.on("local-model-download-progress", (_event, payload) => {
     if (!payload) {
@@ -256,6 +256,10 @@ function bindEvents() {
       return;
     }
     applyTheme(payload.theme);
+  });
+
+  ipc.on("open-settings-page", (_event, target) => {
+    openSettings(typeof target === "string" ? target : null);
   });
 }
 
@@ -773,7 +777,7 @@ let obAdvanceTimer = null;
 // download state mirrors get-local-model-status; obLocalStartedHere marks a
 // download the user started from THIS wizard — clicking Download already
 // expresses "use local", so its completion selects the engine without asking
-// again (the settings window prompts instead for downloads started there).
+// again (the Settings page prompts instead for downloads started there).
 let obLocalStatus = null; // { state, downloadedBytes, totalBytes } | null
 let obLocalStartedHere = false;
 let obLocalError = "";
@@ -1725,7 +1729,15 @@ async function saveDictionary() {
 
 /* ---------- Navigation & misc ---------- */
 
-function showPage(pageId) {
+async function showPage(pageId, options = {}) {
+  const activePage = document.querySelector(".page.active")?.id;
+  if (activePage === "settings-page" && pageId !== "settings") {
+    const canLeave = await window.SayTypeSettings?.confirmLeave?.();
+    if (canLeave === false) {
+      return false;
+    }
+  }
+
   document.querySelectorAll(".page").forEach((page) => {
     page.classList.remove("active");
   });
@@ -1739,10 +1751,14 @@ function showPage(pageId) {
   if (pageId === "history") {
     renderHistory();
   }
+  if (pageId === "settings") {
+    await window.SayTypeSettings?.show?.(options.settingsTarget || null);
+  }
+  return !!page;
 }
 
-function openSettings() {
-  ipc.invoke("open-settings");
+function openSettings(target = null) {
+  void showPage("settings", { settingsTarget: target });
 }
 
 // Help = replay the onboarding wizard. It covers everything the old shortcut

@@ -27,21 +27,6 @@
         "titleBarStyle": "Visible"
       },
       {
-        "label": "settings",
-        "title": "Settings - SayType",
-        "url": "settings.html",
-        "width": 900,
-        "height": 750,
-        "visible": false,
-        "center": true,
-        "resizable": false,
-        "decorations": true,
-        "titleBarStyle": "Visible",
-        "shadow": true,
-        "focus": false,
-        "parent": "main"
-      },
-      {
         "label": "input-prompt",
         "title": "Voice Input",
         "url": "input-prompt.html",

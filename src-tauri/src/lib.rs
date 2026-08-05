@@ -13,7 +13,6 @@ mod updater;
 use tauri::{webview::PageLoadEvent, Manager, WindowEvent};
 
 const MAIN_ENTRY_SCRIPT: &str = include_str!("../../src/views/main.js");
-const SETTINGS_ENTRY_SCRIPT: &str = include_str!("../../src/views/settings.js");
 const INPUT_PROMPT_ENTRY_SCRIPT: &str = include_str!("../../src/views/input-prompt.js");
 const AX_CLOUD_ENTRY_SCRIPT: &str = include_str!("../../src/views/ax-cloud.js");
 
@@ -47,7 +46,6 @@ pub fn run() {
 
       let entry_injection = match label.as_str() {
         "main" => Some(("data-main-js-ran", MAIN_ENTRY_SCRIPT)),
-        "settings" => Some(("data-settings-js-ran", SETTINGS_ENTRY_SCRIPT)),
         "input-prompt" => Some(("data-input-prompt-js-ran", INPUT_PROMPT_ENTRY_SCRIPT)),
         "ax-cloud" => Some(("data-ax-cloud-js-ran", AX_CLOUD_ENTRY_SCRIPT)),
         _ => None,
@@ -82,7 +80,7 @@ pub fn run() {
     .on_window_event(|window, event| {
       if let WindowEvent::CloseRequested { api, .. } = event {
         let label = window.label();
-        if label == "main" || label == "settings" {
+        if label == "main" {
           api.prevent_close();
           let _ = window.hide();
         }
@@ -144,15 +142,6 @@ pub fn run() {
         }
       }
 
-      // Tauri creates the settings window visible on launch despite its
-      // visible:false config — it's the only window with parent:"main", and
-      // such child windows don't reliably honor visible:false. Nothing calls
-      // open_settings, so force-hide it here; it then only appears when the
-      // user actually opens Settings (button / Cmd+, / tray).
-      if let Some(settings_window) = app.get_webview_window("settings") {
-        let _ = settings_window.hide();
-      }
-
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -161,8 +150,6 @@ pub fn run() {
       commands::save_settings,
       commands::get_app_version,
       commands::get_build_info,
-      commands::open_settings,
-      commands::close_settings,
       commands::hide_input_prompt,
       commands::cleanup_microphone,
       commands::cancel_transcription,

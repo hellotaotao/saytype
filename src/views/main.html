@@ -7,6 +7,7 @@
   <title>SayType</title>
   <link rel="stylesheet" href="material-icons.css">
   <link rel="stylesheet" href="main.css">
+  <link rel="stylesheet" href="settings.css">
 </head>
 <body>
   <!-- First-launch onboarding wizard: a full-window takeover shown while
@@ -175,7 +176,7 @@
     </div>
 
     <div class="sidebar-footer">
-      <button class="nav-item" onclick="openSettings()">
+      <button class="nav-item" data-page="settings" onclick="openSettings()">
         <span class="nav-item-icon material-icons">settings</span>
         <span data-i18n="sidebar.settings">Settings</span>
       </button>
@@ -259,10 +260,342 @@
         </div>
       </div>
     </div>
+
+    <!-- Settings Page -->
+    <div id="settings-page" class="page">
+      <div class="welcome settings-header">
+        <h1 data-i18n="settings.pageTitle">Settings</h1>
+        <p data-i18n="settings.pageSubtitle">Voice input, transcription, and app preferences</p>
+      </div>
+
+      <div class="settings-tabs" role="tablist" aria-label="Settings sections" data-i18n="settings.tabsAria" data-i18n-attr="aria-label">
+        <button class="settings-tab active" id="settings-tab-voice-input" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-voice-input" tabindex="0" data-settings-tab="voice-input">
+          <span class="material-icons">keyboard_voice</span>
+          <span data-i18n="settings.section.voiceInput">Voice Input</span>
+        </button>
+        <button class="settings-tab" id="settings-tab-transcription" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-transcription" tabindex="-1" data-settings-tab="transcription">
+          <span class="material-icons">tune</span>
+          <span data-i18n="settings.section.transcription">Transcription</span>
+        </button>
+        <button class="settings-tab" id="settings-tab-app" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-app" tabindex="-1" data-settings-tab="app">
+          <span class="material-icons">desktop_mac</span>
+          <span data-i18n="settings.section.app">App</span>
+        </button>
+      </div>
+
+      <div class="settings-panels">
+        <section id="settings-panel-voice-input" class="settings-panel active" role="tabpanel" aria-labelledby="settings-tab-voice-input">
+          <div class="setting-group">
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.recordingShortcut.title">Recording shortcut</div>
+                <div class="setting-description" data-i18n="settings.recordingShortcut.description">
+                  Choose your preferred hold-to-record shortcut. Translation stays Shift + Alt.
+                </div>
+              </div>
+              <div class="setting-control">
+                <select class="input shortcut-select" id="shortcutSelect" title="Select recording shortcut" data-i18n="settings.recordingShortcut.selectTitle" data-i18n-attr="title">
+                  <option value="Ctrl+Shift">Ctrl + Shift</option>
+                  <option value="Ctrl+Alt">Ctrl + Alt</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.transcriptionLanguage.title">Set default language</div>
+                <div class="setting-description" data-i18n="settings.transcriptionLanguage.description">
+                  Choose the default language for voice transcription.
+                </div>
+              </div>
+              <div class="setting-control">
+                <select class="input language-select" id="languageSelect" title="Select default language for transcription" data-i18n="settings.transcriptionLanguage.selectTitle" data-i18n-attr="title">
+                  <option value="auto" data-i18n="settings.transcriptionLanguage.auto">Auto-detect</option>
+                  <option value="en">English</option>
+                  <option value="zh">中文 (Chinese)</option>
+                  <option value="ja">日本語 (Japanese)</option>
+                  <option value="ko">한국어 (Korean)</option>
+                  <option value="es">Español (Spanish)</option>
+                  <option value="fr">Français (French)</option>
+                  <option value="de">Deutsch (German)</option>
+                  <option value="it">Italiano (Italian)</option>
+                  <option value="pt">Português (Portuguese)</option>
+                  <option value="ru">Русский (Russian)</option>
+                  <option value="ar">العربية (Arabic)</option>
+                  <option value="hi">हिन्दी (Hindi)</option>
+                  <option value="th">ไทย (Thai)</option>
+                  <option value="vi">Tiếng Việt (Vietnamese)</option>
+                  <option value="nl">Nederlands (Dutch)</option>
+                  <option value="pl">Polski (Polish)</option>
+                  <option value="sv">Svenska (Swedish)</option>
+                  <option value="da">Dansk (Danish)</option>
+                  <option value="no">Norsk (Norwegian)</option>
+                  <option value="fi">Suomi (Finnish)</option>
+                  <option value="tr">Türkçe (Turkish)</option>
+                  <option value="he">עברית (Hebrew)</option>
+                  <option value="cs">Čeština (Czech)</option>
+                  <option value="sk">Slovenčina (Slovak)</option>
+                  <option value="uk">Українська (Ukrainian)</option>
+                  <option value="bg">Български (Bulgarian)</option>
+                  <option value="hr">Hrvatski (Croatian)</option>
+                  <option value="sr">Српски (Serbian)</option>
+                  <option value="sl">Slovenščina (Slovenian)</option>
+                  <option value="et">Eesti (Estonian)</option>
+                  <option value="lv">Latviešu (Latvian)</option>
+                  <option value="lt">Lietuvių (Lithuanian)</option>
+                  <option value="ro">Română (Romanian)</option>
+                  <option value="hu">Magyar (Hungarian)</option>
+                  <option value="mt">Malti (Maltese)</option>
+                  <option value="is">Íslenska (Icelandic)</option>
+                  <option value="ga">Gaeilge (Irish)</option>
+                  <option value="cy">Cymraeg (Welsh)</option>
+                  <option value="eu">Euskera (Basque)</option>
+                  <option value="ca">Català (Catalan)</option>
+                  <option value="gl">Galego (Galician)</option>
+                  <option value="af">Afrikaans</option>
+                  <option value="sw">Kiswahili (Swahili)</option>
+                  <option value="am">አማርኛ (Amharic)</option>
+                  <option value="az">Azərbaycan (Azerbaijani)</option>
+                  <option value="be">Беларуская (Belarusian)</option>
+                  <option value="bn">বাংলা (Bengali)</option>
+                  <option value="bs">Bosanski (Bosnian)</option>
+                  <option value="my">မြန်မာ (Burmese)</option>
+                  <option value="km">ខ្មែរ (Khmer)</option>
+                  <option value="ka">ქართული (Georgian)</option>
+                  <option value="gu">ગુજરાતી (Gujarati)</option>
+                  <option value="ha">Hausa</option>
+                  <option value="haw">ʻŌlelo Hawaiʻi (Hawaiian)</option>
+                  <option value="id">Bahasa Indonesia (Indonesian)</option>
+                  <option value="jw">Basa Jawa (Javanese)</option>
+                  <option value="kn">ಕನ್ನಡ (Kannada)</option>
+                  <option value="kk">Қазақ (Kazakh)</option>
+                  <option value="ky">Кыргыз (Kyrgyz)</option>
+                  <option value="lo">ລາວ (Lao)</option>
+                  <option value="mk">Македонски (Macedonian)</option>
+                  <option value="ml">മലയാളം (Malayalam)</option>
+                  <option value="mr">मराठी (Marathi)</option>
+                  <option value="mn">Монгол (Mongolian)</option>
+                  <option value="ne">नेपाली (Nepali)</option>
+                  <option value="ps">پښتو (Pashto)</option>
+                  <option value="fa">فارسی (Persian)</option>
+                  <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
+                  <option value="si">සිංහල (Sinhala)</option>
+                  <option value="sd">سنڌي (Sindhi)</option>
+                  <option value="so">Soomaali (Somali)</option>
+                  <option value="su">Basa Sunda (Sundanese)</option>
+                  <option value="tg">Тоҷикӣ (Tajik)</option>
+                  <option value="ta">தமிழ் (Tamil)</option>
+                  <option value="tt">Татар (Tatar)</option>
+                  <option value="te">తెలుగు (Telugu)</option>
+                  <option value="tk">Türkmen (Turkmen)</option>
+                  <option value="ur">اردو (Urdu)</option>
+                  <option value="ug">ئۇيغۇر (Uyghur)</option>
+                  <option value="uz">O'zbek (Uzbek)</option>
+                  <option value="yo">Yorùbá (Yoruba)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.microphone.title">Microphone Permission</div>
+                <div class="setting-description" data-i18n="settings.microphone.description">
+                  Current status of microphone access permission.
+                </div>
+              </div>
+              <div class="setting-control">
+                <div id="permissionStatus" class="permission-status">
+                  <span data-i18n="settings.permission.checking">Checking...</span>
+                </div>
+                <button class="btn btn-secondary" id="checkPermission" data-i18n="settings.checkPermission">
+                  Check Permission
+                </button>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.accessibility.title">Accessibility Permission</div>
+                <div class="setting-description" data-i18n="settings.accessibility.description">
+                  Required for global hotkeys and automatic text insertion.
+                </div>
+              </div>
+              <div class="setting-control">
+                <div id="accessibilityStatus" class="permission-status">
+                  <span data-i18n="settings.permission.checking">Checking...</span>
+                </div>
+                <button class="btn btn-secondary" id="checkAccessibility" data-i18n="settings.checkPermission">
+                  Check Permission
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings-panel-transcription" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-transcription" hidden>
+          <div class="setting-group">
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.apiProvider.title">API Provider</div>
+                <div class="setting-description" data-i18n="settings.apiProvider.description">
+                  Choose transcription API service.
+                </div>
+              </div>
+              <div class="setting-control">
+                <select class="input provider-select" id="providerSelect" title="Select API provider" data-i18n="settings.apiProvider.selectTitle" data-i18n-attr="title">
+                  <option value="groq">Groq</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="local">Local · Qwen3-ASR</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.apiKey.title">API Key</div>
+                <div class="setting-description" data-i18n="settings.apiKey.description">
+                  Enter your API key for selected provider.
+                </div>
+              </div>
+              <div class="setting-control">
+                <div class="api-key-field hidden" id="apiKeyFieldGroq">
+                  <input type="password" class="input api-key-input" id="apiKeyGroq" placeholder="Groq API key" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n="settings.apiKey.groqPlaceholder" data-i18n-attr="placeholder" />
+                  <button type="button" class="reveal-btn material-icons" data-target="apiKeyGroq" aria-label="Show key" title="Show key" data-i18n="settings.apiKey.reveal" data-i18n-attr="aria-label,title">visibility</button>
+                </div>
+                <div class="api-key-field hidden" id="apiKeyFieldOpenAI">
+                  <input type="password" class="input api-key-input" id="apiKeyOpenAI" placeholder="OpenAI API key" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n="settings.apiKey.openaiPlaceholder" data-i18n-attr="placeholder" />
+                  <button type="button" class="reveal-btn material-icons" data-target="apiKeyOpenAI" aria-label="Show key" title="Show key" data-i18n="settings.apiKey.reveal" data-i18n-attr="aria-label,title">visibility</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.model.title">Model Selection</div>
+                <div class="setting-description" data-i18n="settings.model.description">
+                  Select transcription model.
+                </div>
+              </div>
+              <div class="setting-control">
+                <select class="input model-select" id="modelSelect" title="Select transcription model" data-i18n="settings.model.selectTitle" data-i18n-attr="title">
+                  <option value="whisper-large-v3-turbo">Whisper Large V3 Turbo (Faster) · ★ Recommended</option>
+                  <option value="whisper-large-v3">Whisper Large V3 (Standard)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item hidden" id="localModelItem">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.localModel.title">Local model</div>
+                <div class="setting-description" id="localModelStatus"></div>
+              </div>
+              <div class="setting-control">
+                <progress id="localModelProgress" class="hidden" max="1000" value="0"></progress>
+                <button class="btn btn-secondary" id="localModelActionBtn" type="button"></button>
+                <button class="btn btn-secondary hidden" id="localModelDeleteBtn" type="button"></button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings-panel-app" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-app" hidden>
+          <div class="setting-group">
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.uiLanguage.title">Interface language</div>
+                <div class="setting-description" data-i18n="settings.uiLanguage.description">
+                  Choose the language used in the app UI.
+                </div>
+              </div>
+              <div class="setting-control">
+                <select class="input language-select" id="uiLanguageSelect" title="Select interface language" data-i18n="settings.uiLanguage.selectTitle" data-i18n-attr="title">
+                  <option value="auto" data-i18n="settings.uiLanguage.auto">Auto (System)</option>
+                  <option value="en" data-i18n="settings.uiLanguage.english">English</option>
+                  <option value="zh" data-i18n="settings.uiLanguage.chinese">中文 (简体)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.theme.title">Theme</div>
+                <div class="setting-description" data-i18n="settings.theme.description">
+                  Choose the visual style of the app.
+                </div>
+              </div>
+              <div class="setting-control">
+                <select class="input theme-select" id="themeSelect" title="Select interface theme" data-i18n="settings.theme.selectTitle" data-i18n-attr="title">
+                  <option value="auto" data-i18n="settings.theme.option.auto">Auto (match system)</option>
+                  <option value="midnight" data-i18n="settings.theme.option.midnight">Dark</option>
+                  <option value="elegant" data-i18n="settings.theme.option.elegant">Light</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.autoLaunch.title">Start with system</div>
+                <div class="setting-description" data-i18n="settings.autoLaunch.description">
+                  Automatically start SayType when your computer starts up.
+                </div>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input type="checkbox" id="autoLaunchCheck" aria-label="Start with system" data-i18n="settings.autoLaunch.aria" data-i18n-attr="aria-label">
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.startMinimized.title">Start minimized</div>
+                <div class="setting-description" data-i18n="settings.startMinimized.description">
+                  When starting with system, hide the main window and run in the background.
+                </div>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input type="checkbox" id="startMinimizedCheck" aria-label="Start minimized" data-i18n="settings.startMinimized.aria" data-i18n-attr="aria-label">
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.updates.title">Software updates</div>
+                <div class="setting-description" data-i18n="settings.updates.description">
+                  New versions download in the background; you choose when to restart.
+                </div>
+              </div>
+              <div class="setting-control">
+                <div id="updateStatus" class="permission-status"></div>
+                <button class="btn btn-secondary" id="checkUpdatesBtn" data-i18n="settings.updates.check">
+                  Check for updates
+                </button>
+                <button class="btn btn-primary hidden" id="installUpdateBtn" data-i18n="settings.updates.restart">
+                  Restart to update
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="save-section">
+        <span id="unsavedHint" class="unsaved-hint hidden" data-i18n="settings.unsaved">Unsaved changes</span>
+        <button class="btn-secondary" id="discardSettingsButton" type="button" disabled>
+          <span data-i18n="settings.discard">Discard changes</span>
+        </button>
+        <button class="btn" id="saveSettingsButton" type="button" data-i18n="settings.save" disabled>Save</button>
+      </div>
+    </div>
   </div>
 
   <script src="ipc-bridge.js"></script>
   <script src="i18n.js"></script>
   <script src="main.js"></script>
+  <script src="settings.js"></script>
 </body>
 </html>

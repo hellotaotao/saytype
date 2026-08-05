@@ -18,8 +18,6 @@
     "save-settings": "save_settings",
     "get-app-version": "get_app_version",
     "get-build-info": "get_build_info",
-    "open-settings": "open_settings",
-    "close-settings": "close_settings",
     "hide-input-prompt": "hide_input_prompt",
     "cleanup-microphone": "cleanup_microphone",
     "cancel-transcription": "cancel_transcription",

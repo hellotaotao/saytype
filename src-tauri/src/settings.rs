@@ -104,7 +104,7 @@ impl Default for AppConfig {
 pub struct SettingsPayload {
   /// Whether the selected provider has a usable key. The raw keys are NOT in
   /// this payload — get_settings is read by every window (main, input-prompt),
-  /// and only the settings window needs the actual keys (via get_api_keys).
+  /// and only the Settings editor in the main window needs the actual keys.
   pub has_api_key: bool,
   pub shortcut: String,
   pub translate_shortcut: String,

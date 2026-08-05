@@ -57,14 +57,13 @@ pub struct ApiKeys {
   pub api_key_openai: String,
 }
 
-// The raw API keys, kept out of get_settings so the secrets are only ever sent
-// to the window that edits them (settings) — not to every window that reads
-// general settings (main, input-prompt). Enforced by the label check below,
-// not just calling convention.
+// The raw API keys stay out of get_settings. The main window is the only
+// editor now that Settings is one of its pages; input-prompt and auxiliary
+// windows remain blocked by the label check below.
 #[tauri::command]
 pub fn get_api_keys(window: tauri::WebviewWindow) -> Result<ApiKeys, String> {
-  if window.label() != "settings" {
-    return Err("get_api_keys is only available to the settings window".into());
+  if window.label() != "main" {
+    return Err("get_api_keys is only available to the main Settings page".into());
   }
   let config = settings::read_config().map_err(stringify_error)?;
   Ok(ApiKeys {
@@ -128,9 +127,8 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
 }
 
 // Marks the first-launch onboarding wizard as done (finished or skipped). A
-// dedicated read-modify-write command instead of save_settings because the
-// latter takes a FULL AppConfig — building that in the main window would
-// require shipping the API keys to it, which get_api_keys deliberately avoids.
+// dedicated read-modify-write command keeps the wizard independent from the
+// full Settings form and its secret fields.
 #[tauri::command]
 pub fn set_onboarding_completed() -> Result<bool, String> {
   log::info!("command:set_onboarding_completed");
@@ -219,19 +217,23 @@ pub fn set_provider(app: AppHandle, provider: String) -> Result<bool, String> {
   Ok(true)
 }
 
-// Every "local isn't downloaded yet" guide (tray submenu, home switcher)
-// funnels here: bring up Settings and have it reveal the model download panel.
-#[tauri::command]
-pub fn open_local_model_panel(app: AppHandle) -> Result<(), String> {
-  log::info!("command:open_local_model_panel");
-  if let Some(window) = app.get_webview_window("settings") {
+fn show_main_settings(app: &AppHandle, target: &str) -> Result<(), String> {
+  if let Some(window) = app.get_webview_window("main") {
     window.show().map_err(stringify_error)?;
+    window.unminimize().map_err(stringify_error)?;
     window.set_focus().map_err(stringify_error)?;
   }
   app
-    .emit_to("settings", "open-local-model-panel", ())
-    .map_err(stringify_error)?;
-  Ok(())
+    .emit_to("main", "open-settings-page", target)
+    .map_err(stringify_error)
+}
+
+// Every "local isn't downloaded yet" guide (tray submenu, home switcher)
+// funnels here: show the main Settings page and reveal the model panel.
+#[tauri::command]
+pub fn open_local_model_panel(app: AppHandle) -> Result<(), String> {
+  log::info!("command:open_local_model_panel");
+  show_main_settings(&app, "local-model")
 }
 
 #[tauri::command]
@@ -267,30 +269,9 @@ pub fn get_build_info() -> BuildInfo {
   }
 }
 
-#[tauri::command]
 pub fn open_settings(app: AppHandle) -> Result<(), String> {
   log::info!("command:open_settings");
-  if let Some(window) = app.get_webview_window("settings") {
-    window.show().map_err(stringify_error)?;
-    window.set_focus().map_err(stringify_error)?;
-  }
-  Ok(())
-}
-
-#[tauri::command]
-pub fn close_settings(app: AppHandle) -> Result<(), String> {
-  log::info!("command:close_settings");
-  if let Some(window) = app.get_webview_window("settings") {
-    window.hide().map_err(stringify_error)?;
-  }
-
-  if let Some(window) = app.get_webview_window("main") {
-    if window.is_visible().unwrap_or(false) {
-      let _ = window.set_focus();
-    }
-  }
-
-  Ok(())
+  show_main_settings(&app, "voice-input")
 }
 
 #[tauri::command]
@@ -726,7 +707,7 @@ pub fn save_dictionary(text: String) -> Result<bool, String> {
   Ok(true)
 }
 
-// --- Local ASR asset management (settings window) ---
+// --- Local ASR asset management (Settings page) ---
 
 #[tauri::command]
 pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {

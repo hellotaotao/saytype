@@ -24,7 +24,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     .show_menu_on_left_click(false)
     .on_menu_event(|app, event| match event.id.as_ref() {
       "show" => show_main_window(app),
-      "settings" => show_settings_window(app),
+      "settings" => show_settings_page(app),
       "install-update" => {
         if let Err(error) = crate::updater::install_pending_and_restart(app) {
           log::error!("tray:install-update-failed error={error}");
@@ -59,10 +59,9 @@ pub fn show_main_window(app: &AppHandle) {
   }
 }
 
-fn show_settings_window(app: &AppHandle) {
-  if let Some(window) = app.get_webview_window("settings") {
-    let _ = window.show();
-    let _ = window.set_focus();
+fn show_settings_page(app: &AppHandle) {
+  if let Err(error) = crate::commands::open_settings(app.clone()) {
+    log::error!("tray:open-settings error={error}");
   }
 }
 
