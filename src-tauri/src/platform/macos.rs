@@ -382,7 +382,9 @@ const K_AX_VALUE_CGSIZE: u32 = 2;
 
 /// AX calls are synchronous round-trips to the target app's run loop, so a
 /// wedged app would otherwise stall the caller for the 6s default — on the
-/// hotkey thread that delay lands *before* the recording window appears.
+/// hotkey thread that delay lands *before* the recording window appears. The
+/// focused-window lookup can make four round-trips, so keep each one short and
+/// fall back to the cursor screen rather than spending about a second here.
 ///
 /// NOTE: setting this on the *system-wide* element sets it *process-globally*
 /// (Apple's documented behavior), so it also caps the `focused_element_accepts_text`
@@ -390,7 +392,7 @@ const K_AX_VALUE_CGSIZE: u32 = 2;
 /// as `Unanswerable`, which the guard already treats as "allow", so a slow app
 /// can never cause a valid insertion to be blocked — it only stops a wedged app
 /// from freezing the insert path for six seconds.
-const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.25;
+const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.05;
 
 /// Center of the frontmost app's focused window, in the global top-left-origin
 /// **logical point** space — the same space `CGDisplayBounds` uses, so the
@@ -550,6 +552,14 @@ mod tests {
   #[test]
   fn successful_query_yields_element_to_inspect() {
     assert_eq!(classify_focus_query(0, true), FocusQuery::Element);
+  }
+
+  #[test]
+  fn each_ax_round_trip_stays_within_the_hotkey_startup_budget() {
+    assert!(
+      AX_QUERY_TIMEOUT_SECONDS <= 0.05,
+      "each AX query may run four times before the prompt is shown"
+    );
   }
 
   #[test]

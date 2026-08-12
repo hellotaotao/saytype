@@ -118,3 +118,31 @@ test("new Settings page labels exist in both locales", () => {
     assert.ok(i18nJs.includes(value), `missing i18n entry: ${value}`);
   }
 });
+
+test("App settings contains a collapsed diagnostic log viewer with refresh and copy", () => {
+  const app = sectionSource("settings-panel-app");
+  const details = app.match(/<details\b[^>]*id="diagnosticLogPanel"[^>]*>/)?.[0] || "";
+
+  assert.ok(details, "diagnostic log details is missing");
+  assert.doesNotMatch(details, /\sopen(?:\s|=|>)/, "diagnostic log details must start collapsed");
+  assert.match(app, /id="diagnosticLogContent"[^>]*readonly/);
+  assert.match(app, /id="refreshDiagnosticLogBtn"/);
+  assert.match(app, /id="copyDiagnosticLogBtn"/);
+  assert.match(settingsJs, /diagnosticLogPanel.*addEventListener\("toggle"/s);
+  assert.match(settingsJs, /invoke\("get-diagnostic-log"\)/);
+  assert.match(settingsJs, /invoke\("copy-to-clipboard",\s*content/s);
+  assert.match(settingsCss, /\.diagnostic-log-content/);
+
+  for (const value of [
+    'title: "Diagnostic logs"',
+    'copy: "Copy all"',
+    'title: "\\u8bca\\u65ad\\u65e5\\u5fd7"',
+    'copy: "\\u590d\\u5236\\u5168\\u90e8"',
+  ]) {
+    assert.ok(i18nJs.includes(value), `missing diagnostics i18n entry: ${value}`);
+  }
+
+  assert.match(commandsRs, /pub fn get_diagnostic_log/);
+  assert.match(commandsRs, /window\.label\(\) != "main"/);
+  assert.match(commandsRs, /join\("SayType\.log"\)/);
+});

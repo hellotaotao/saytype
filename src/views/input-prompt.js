@@ -85,6 +85,29 @@ function hasMeaningfulText(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function nonNegativeMilliseconds(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+function normalizeRecordingStartPayload(payload, receivedAtUnixMs = Date.now()) {
+  if (!payload || typeof payload !== "object") {
+    return {
+      translateMode: !!payload,
+      nativeMs: 0,
+      eventDeliveryMs: 0,
+    };
+  }
+
+  const dispatchedAtUnixMs = Number(payload.dispatchedAtUnixMs);
+  return {
+    translateMode: !!payload.translateMode,
+    nativeMs: nonNegativeMilliseconds(Number(payload.nativeMs)),
+    eventDeliveryMs: Number.isFinite(dispatchedAtUnixMs)
+      ? nonNegativeMilliseconds(receivedAtUnixMs - dispatchedAtUnixMs)
+      : 0,
+  };
+}
+
 // Extracts a human-readable message from a Tauri command rejection, which may
 // be a raw string (Result<_, String>) or an Error.
 function errorMessage(error) {
@@ -151,6 +174,7 @@ class VoiceInputPrompt {
     this.actualHideTimerId = null;
     this.recordShortcut = DEFAULT_RECORD_SHORTCUT;
     this.translateShortcut = DEFAULT_TRANSLATE_SHORTCUT;
+    this.pageStartedAt = performance.now();
 
     this.promptElement = document.getElementById("inputPrompt");
     this.promptText = document.getElementById("promptText");
@@ -256,14 +280,15 @@ class VoiceInputPrompt {
     });
 
     // Listen for start recording from main process
-    ipc.on("start-recording", async (event, translateMode = false) => {
+    ipc.on("start-recording", async (event, payload = false) => {
       if (this.isRecording || this.starting) {
         return;
       }
+      const startupTiming = normalizeRecordingStartPayload(payload);
       this.stopRequested = false;
-      this.translateMode = translateMode;
+      this.translateMode = startupTiming.translateMode;
       this.updateModelBadge();
-      await this.startRecording();
+      await this.startRecording(startupTiming);
     });
 
     // Listen for stop recording from main process
@@ -684,9 +709,10 @@ class VoiceInputPrompt {
     this.scheduleHidePrompt(2800);
   }
 
-  async startRecording() {
+  async startRecording(startupTiming = {}) {
     if (this.isRecording || this.starting) return;
 
+    const startupStartedAt = performance.now();
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
     this.clearInsertFailedUi();
@@ -698,6 +724,7 @@ class VoiceInputPrompt {
         this.showApiKeyRequired();
         return;
       }
+      const preflightReadyAt = performance.now();
 
       // Do NOT reveal the prompt during "starting": the window appearing is the
       // signal users act on, and if it shows before the mic is actually open
@@ -714,6 +741,7 @@ class VoiceInputPrompt {
       // launch prime keeps the first dictation fast despite the fresh open.
       // On macOS, microphone/Accessibility permissions are handled by the OS and the Rust backend.
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      const microphoneReadyAt = performance.now();
 
       if (this.stopRequested) {
         this.mediaStream = stream;
@@ -791,6 +819,27 @@ class VoiceInputPrompt {
       this.isRecording = true;
       this.startWaveAnimation();
       this.startRecordingTimer();
+
+      const setupReadyAt = performance.now();
+      requestAnimationFrame((paintedAt) => {
+        const nativeMs = nonNegativeMilliseconds(Number(startupTiming.nativeMs));
+        const eventDeliveryMs = nonNegativeMilliseconds(Number(startupTiming.eventDeliveryMs));
+        const frontendMs = nonNegativeMilliseconds(paintedAt - startupStartedAt);
+        void ipc.invoke("report-recording-startup", {
+          recordingNumber: sessionId,
+          uptimeMs: nonNegativeMilliseconds(startupStartedAt - this.pageStartedAt),
+          nativeMs,
+          eventDeliveryMs,
+          preflightMs: nonNegativeMilliseconds(preflightReadyAt - startupStartedAt),
+          microphoneMs: nonNegativeMilliseconds(microphoneReadyAt - preflightReadyAt),
+          setupMs: nonNegativeMilliseconds(setupReadyAt - microphoneReadyAt),
+          renderMs: nonNegativeMilliseconds(paintedAt - setupReadyAt),
+          frontendMs,
+          endToEndMs: nativeMs + eventDeliveryMs + frontendMs,
+        }).catch((error) => {
+          if (isDev) console.warn("Failed to report recording startup timing:", error);
+        });
+      });
 
       if (this.stopRequested) {
         this.stopRecording();

@@ -176,6 +176,10 @@ let localModelDownloadStartedHere = false;
 let localModelSyncBound = false;
 let updatesPanelBound = false;
 let currentAppVersion = "";
+let diagnosticLogPanelBound = false;
+let diagnosticLogLoaded = false;
+let diagnosticLogLoading = false;
+let currentDiagnosticLog = null;
 
 function formatGB(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
@@ -418,6 +422,131 @@ async function setupUpdatesPanel() {
   await refreshUpdateStatus();
 }
 
+function formatDiagnosticLogSize(bytes) {
+  const size = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function renderDiagnosticLog(result) {
+  const contentElement = document.getElementById("diagnosticLogContent");
+  const statusElement = document.getElementById("diagnosticLogStatus");
+  const copyButton = document.getElementById("copyDiagnosticLogBtn");
+  if (!contentElement || !statusElement || !copyButton) {
+    return;
+  }
+
+  currentDiagnosticLog = result;
+  const content = typeof result?.content === "string" ? result.content : "";
+  contentElement.value = content;
+  copyButton.disabled = !content;
+  if (!content) {
+    statusElement.textContent = translate("settings.diagnostics.empty");
+    return;
+  }
+
+  const language = currentSettings?.uiLanguage;
+  const locale = language === "zh" ? "zh-CN" : language === "en" ? "en-US" : undefined;
+  const modifiedAt = Number(result.modifiedAtUnixMs);
+  const time = modifiedAt > 0 ? new Date(modifiedAt).toLocaleString(locale) : "—";
+  statusElement.textContent = translate(
+    result.truncated ? "settings.diagnostics.truncated" : "settings.diagnostics.loaded",
+    {
+      size: formatDiagnosticLogSize(Number(result.sizeBytes)),
+      time,
+    }
+  );
+}
+
+async function refreshDiagnosticLog() {
+  if (!ipc || diagnosticLogLoading) {
+    return;
+  }
+
+  const statusElement = document.getElementById("diagnosticLogStatus");
+  const refreshButton = document.getElementById("refreshDiagnosticLogBtn");
+  const copyButton = document.getElementById("copyDiagnosticLogBtn");
+  diagnosticLogLoading = true;
+  if (statusElement) {
+    statusElement.textContent = translate("settings.diagnostics.loading");
+  }
+  if (refreshButton) {
+    refreshButton.disabled = true;
+  }
+  if (copyButton) {
+    copyButton.disabled = true;
+  }
+
+  try {
+    const result = await ipc.invoke("get-diagnostic-log");
+    diagnosticLogLoaded = true;
+    renderDiagnosticLog(result);
+  } catch (error) {
+    if (statusElement) {
+      statusElement.textContent = translate("settings.diagnostics.loadError", {
+        message: String(error),
+      });
+    }
+  } finally {
+    diagnosticLogLoading = false;
+    if (refreshButton) {
+      refreshButton.disabled = false;
+    }
+    if (copyButton) {
+      copyButton.disabled = !document.getElementById("diagnosticLogContent")?.value;
+    }
+  }
+}
+
+async function copyDiagnosticLog() {
+  const content = document.getElementById("diagnosticLogContent")?.value || "";
+  const statusElement = document.getElementById("diagnosticLogStatus");
+  if (!content || !statusElement) {
+    return;
+  }
+
+  try {
+    await ipc.invoke("copy-to-clipboard", content, null);
+    statusElement.textContent = translate("settings.diagnostics.copied");
+  } catch (error) {
+    statusElement.textContent = translate("settings.diagnostics.copyError", {
+      message: String(error),
+    });
+  }
+}
+
+function setupDiagnosticLogPanel() {
+  if (diagnosticLogPanelBound) {
+    return;
+  }
+  const panel = document.getElementById("diagnosticLogPanel");
+  if (!panel) {
+    return;
+  }
+
+  panel.addEventListener("toggle", () => {
+    if (panel.open && !diagnosticLogLoaded) {
+      void refreshDiagnosticLog();
+    }
+  });
+  document.getElementById("refreshDiagnosticLogBtn")?.addEventListener("click", () => {
+    void refreshDiagnosticLog();
+  });
+  document.getElementById("copyDiagnosticLogBtn")?.addEventListener("click", () => {
+    void copyDiagnosticLog();
+  });
+  diagnosticLogPanelBound = true;
+
+  if (panel.open) {
+    void refreshDiagnosticLog();
+  }
+}
+
 function toggleKeyReveal(button) {
   const input = document.getElementById(button.getAttribute("data-target"));
   if (!input) {
@@ -480,6 +609,9 @@ function handleThemeChange(event) {
 function handleUiLanguageChange(event) {
   setLanguage(event.target.value);
   applyI18n(document);
+  if (currentDiagnosticLog) {
+    renderDiagnosticLog(currentDiagnosticLog);
+  }
   void checkMicrophonePermissionStatus();
   void checkAccessibilityStatus();
   void refreshUpdateStatus();
@@ -960,6 +1092,7 @@ async function initializeSettingsPage() {
   setupShortcutSync();
   setupThemeSync();
   setupLocalModelSync();
+  setupDiagnosticLogPanel();
   void setupUpdatesPanel();
   await loadSettings();
   activateSettingsTab(activeSettingsTab);

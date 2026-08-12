@@ -1,12 +1,13 @@
 use crate::settings::{DEFAULT_RECORD_SHORTCUT, TRANSLATE_SHORTCUT};
 use rdev::Key;
+use serde::Serialize;
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 #[cfg(target_os = "macos")]
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager};
 
 // Recording starts the instant the modifier combo is down — there is no startup
@@ -17,6 +18,15 @@ pub const CANCEL_THRESHOLD: Duration = Duration::from_millis(500);
 // After the combo is released we still wait briefly before stopping, so a small
 // stagger between the two modifier keys lifting doesn't clip the audio tail.
 pub const STOP_DEBOUNCE: Duration = Duration::from_millis(250);
+const SLOW_NATIVE_STARTUP: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordingStartEvent {
+  translate_mode: bool,
+  dispatched_at_unix_ms: u64,
+  native_ms: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortcut {
@@ -594,20 +604,61 @@ fn is_input_prompt_visible(app: &AppHandle) -> bool {
 fn dispatch_action(app: &AppHandle, action: Action) {
   match action {
     Action::Start { translate_mode } => {
+      let startup_started = Instant::now();
       log::info!("hotkey:dispatch start translate_mode={translate_mode}");
+      let worker_started = Instant::now();
       if !translate_mode {
         // The audio does not reach Rust until recording stops. Refresh an
         // already-warm local worker now so a long dictation cannot cross the
         // idle deadline and lose the model before it is needed.
         crate::local_asr::keep_resident_worker_warm();
       }
+      let worker_elapsed = worker_started.elapsed();
+      let position_started = Instant::now();
+      let mut show_elapsed = Duration::ZERO;
       if let Some(window) = app.get_webview_window("input-prompt") {
         if let Some(target) = position_input_prompt(&window) {
           wait_for_position(&window, target);
         }
+        let show_started = Instant::now();
         let _ = window.show();
+        show_elapsed = show_started.elapsed();
       }
-      let _ = app.emit("start-recording", translate_mode);
+      let position_elapsed = position_started.elapsed().saturating_sub(show_elapsed);
+      let native_elapsed = startup_started.elapsed();
+      let payload = RecordingStartEvent {
+        translate_mode,
+        dispatched_at_unix_ms: SystemTime::now()
+          .duration_since(UNIX_EPOCH)
+          .unwrap_or_default()
+          .as_millis()
+          .try_into()
+          .unwrap_or(u64::MAX),
+        native_ms: native_elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+      };
+      let emit_started = Instant::now();
+      let _ = app.emit("start-recording", payload);
+      let emit_elapsed = emit_started.elapsed();
+      let total_elapsed = startup_started.elapsed();
+      if total_elapsed >= SLOW_NATIVE_STARTUP {
+        log::warn!(
+          "hotkey:startup-slow worker_ms={} position_ms={} show_ms={} emit_ms={} total_ms={}",
+          worker_elapsed.as_millis(),
+          position_elapsed.as_millis(),
+          show_elapsed.as_millis(),
+          emit_elapsed.as_millis(),
+          total_elapsed.as_millis()
+        );
+      } else {
+        log::info!(
+          "hotkey:startup-ready worker_ms={} position_ms={} show_ms={} emit_ms={} total_ms={}",
+          worker_elapsed.as_millis(),
+          position_elapsed.as_millis(),
+          show_elapsed.as_millis(),
+          emit_elapsed.as_millis(),
+          total_elapsed.as_millis()
+        );
+      }
     }
     Action::Stop => {
       log::info!("hotkey:dispatch stop");
@@ -795,6 +846,20 @@ mod tests {
       Shortcut::parse(DEFAULT_RECORD_SHORTCUT).unwrap(),
       Shortcut::parse(TRANSLATE_SHORTCUT).unwrap(),
     )
+  }
+
+  #[test]
+  fn recording_start_event_uses_camel_case_wire_fields() {
+    let event = RecordingStartEvent {
+      translate_mode: true,
+      dispatched_at_unix_ms: 1_000,
+      native_ms: 80,
+    };
+    let wire = serde_json::to_value(event).unwrap();
+
+    assert_eq!(wire["translateMode"], true);
+    assert_eq!(wire["dispatchedAtUnixMs"], 1_000);
+    assert_eq!(wire["nativeMs"], 80);
   }
 
   // The three displays below are a real, measured setup (mixed 1x/2x), captured

@@ -5,15 +5,45 @@ use crate::settings::{self, AppConfig, SettingsPayload, TRANSLATE_SHORTCUT};
 use crate::state::AppState;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 const MAX_AUDIO_SIZE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 1_000_000;
+const SLOW_RECORDING_STARTUP_MS: u64 = 500;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingStartupTiming {
+  pub recording_number: u64,
+  pub uptime_ms: u64,
+  pub native_ms: u64,
+  pub event_delivery_ms: u64,
+  pub preflight_ms: u64,
+  pub microphone_ms: u64,
+  pub setup_ms: u64,
+  pub render_ms: u64,
+  pub frontend_ms: u64,
+  pub end_to_end_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticLog {
+  pub content: String,
+  pub size_bytes: u64,
+  pub modified_at_unix_ms: u64,
+  pub truncated: bool,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +76,111 @@ pub fn get_settings() -> Result<SettingsPayload, String> {
   settings::read_config()
     .map(|config| SettingsPayload::from_config(&config))
     .map_err(stringify_error)
+}
+
+fn read_diagnostic_log_file(path: &Path) -> Result<DiagnosticLog, String> {
+  let mut file = match File::open(path) {
+    Ok(file) => file,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+      return Ok(DiagnosticLog {
+        content: String::new(),
+        size_bytes: 0,
+        modified_at_unix_ms: 0,
+        truncated: false,
+      });
+    }
+    Err(error) => return Err(stringify_error(error)),
+  };
+  let metadata = file.metadata().map_err(stringify_error)?;
+  let size_bytes = metadata.len();
+  let truncated = size_bytes > MAX_DIAGNOSTIC_LOG_BYTES;
+  let start = size_bytes.saturating_sub(MAX_DIAGNOSTIC_LOG_BYTES);
+  file.seek(SeekFrom::Start(start)).map_err(stringify_error)?;
+
+  let mut bytes = Vec::with_capacity((size_bytes - start) as usize);
+  (&mut file)
+    .take(MAX_DIAGNOSTIC_LOG_BYTES)
+    .read_to_end(&mut bytes)
+    .map_err(stringify_error)?;
+  if truncated {
+    let first_complete_line = bytes
+      .iter()
+      .position(|byte| *byte == b'\n')
+      .map(|index| index + 1)
+      .unwrap_or(bytes.len());
+    bytes.drain(..first_complete_line);
+  }
+
+  let modified_at_unix_ms = metadata
+    .modified()
+    .ok()
+    .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+    .and_then(|duration| duration.as_millis().try_into().ok())
+    .unwrap_or(0);
+
+  Ok(DiagnosticLog {
+    content: String::from_utf8_lossy(&bytes).into_owned(),
+    size_bytes,
+    modified_at_unix_ms,
+    truncated,
+  })
+}
+
+#[tauri::command]
+pub fn get_diagnostic_log(
+  window: tauri::WebviewWindow,
+  app: AppHandle,
+) -> Result<DiagnosticLog, String> {
+  if window.label() != "main" {
+    return Err("diagnostic logs are only available to the main Settings page".into());
+  }
+  let path = app
+    .path()
+    .app_log_dir()
+    .map_err(stringify_error)?
+    .join("SayType.log");
+  read_diagnostic_log_file(&path)
+}
+
+#[tauri::command]
+pub fn report_recording_startup(
+  window: tauri::WebviewWindow,
+  timing: RecordingStartupTiming,
+) -> Result<(), String> {
+  if window.label() != "input-prompt" {
+    return Err("recording startup timing is only accepted from input-prompt".into());
+  }
+
+  if timing.end_to_end_ms >= SLOW_RECORDING_STARTUP_MS {
+    log::warn!(
+      "recording-startup:slow number={} uptime_ms={} native_ms={} delivery_ms={} preflight_ms={} microphone_ms={} setup_ms={} render_ms={} frontend_ms={} end_to_end_ms={}",
+      timing.recording_number,
+      timing.uptime_ms,
+      timing.native_ms,
+      timing.event_delivery_ms,
+      timing.preflight_ms,
+      timing.microphone_ms,
+      timing.setup_ms,
+      timing.render_ms,
+      timing.frontend_ms,
+      timing.end_to_end_ms
+    );
+  } else {
+    log::info!(
+      "recording-startup:ready number={} uptime_ms={} native_ms={} delivery_ms={} preflight_ms={} microphone_ms={} setup_ms={} render_ms={} frontend_ms={} end_to_end_ms={}",
+      timing.recording_number,
+      timing.uptime_ms,
+      timing.native_ms,
+      timing.event_delivery_ms,
+      timing.preflight_ms,
+      timing.microphone_ms,
+      timing.setup_ms,
+      timing.render_ms,
+      timing.frontend_ms,
+      timing.end_to_end_ms
+    );
+  }
+  Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -589,10 +724,10 @@ pub fn dismiss_ax_cloud(app: AppHandle) {
   crate::ax_cloud::dismiss(&app);
 }
 
-// Explicit, user-initiated clipboard write — used ONLY by the input-prompt's
-// "insertion failed → click Copy" affordance. The per-OS mechanism (pbcopy on
-// macOS) lives behind `platform::copy_to_clipboard`. There is still no
-// AUTOMATIC clipboard touch anywhere — this only fires on a real button click.
+// Explicit, user-initiated clipboard write, used by the input-prompt's failed
+// insertion affordance and Settings' diagnostic-log copy button. The per-OS
+// mechanism (pbcopy on macOS) lives behind `platform::copy_to_clipboard`.
+// There is still no automatic clipboard touch anywhere.
 #[tauri::command]
 pub fn copy_to_clipboard(text: String, shape: Option<String>) -> Result<bool, String> {
   log::warn!(
@@ -1203,6 +1338,61 @@ pub fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn recording_startup_timing_uses_camel_case_wire_fields() {
+    let timing = RecordingStartupTiming {
+      recording_number: 7,
+      uptime_ms: 3_600_000,
+      native_ms: 80,
+      event_delivery_ms: 300,
+      preflight_ms: 10,
+      microphone_ms: 150,
+      setup_ms: 10,
+      render_ms: 10,
+      frontend_ms: 180,
+      end_to_end_ms: 560,
+    };
+    let wire = serde_json::to_value(&timing).unwrap();
+
+    assert_eq!(wire["recordingNumber"], 7);
+    assert_eq!(wire["eventDeliveryMs"], 300);
+    assert_eq!(wire["endToEndMs"], 560);
+  }
+
+  #[test]
+  fn diagnostic_log_reader_returns_content_and_metadata() {
+    let path = std::env::temp_dir().join(format!(
+      "saytype-diagnostic-log-{}-{}.log",
+      std::process::id(),
+      Utc::now().timestamp_micros()
+    ));
+    std::fs::write(&path, "first line\nsecond line\n").unwrap();
+
+    let result = read_diagnostic_log_file(&path).unwrap();
+
+    assert_eq!(result.content, "first line\nsecond line\n");
+    assert_eq!(result.size_bytes, 23);
+    assert!(result.modified_at_unix_ms > 0);
+    assert!(!result.truncated);
+    std::fs::remove_file(path).unwrap();
+  }
+
+  #[test]
+  fn missing_diagnostic_log_is_an_empty_success() {
+    let path = std::env::temp_dir().join(format!(
+      "saytype-missing-diagnostic-log-{}-{}.log",
+      std::process::id(),
+      Utc::now().timestamp_micros()
+    ));
+
+    let result = read_diagnostic_log_file(&path).unwrap();
+
+    assert!(result.content.is_empty());
+    assert_eq!(result.size_bytes, 0);
+    assert_eq!(result.modified_at_unix_ms, 0);
+    assert!(!result.truncated);
+  }
 
   // --- Build info: channel fail-safe + wire shape ---
 

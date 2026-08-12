@@ -57,6 +57,7 @@ function loadVoiceInputPrompt(options = {}) {
       };
     },
   };
+  Object.assign(window, options.window || {});
   const context = vm.createContext({
     ArrayBuffer,
     Blob,
@@ -64,7 +65,7 @@ function loadVoiceInputPrompt(options = {}) {
     DataView,
     document,
     navigator: {},
-    performance,
+    performance: options.performance || performance,
     requestAnimationFrame: options.requestAnimationFrame || (() => 1),
     cancelAnimationFrame: options.cancelAnimationFrame || (() => {}),
     setInterval: options.setInterval || setInterval,
@@ -73,14 +74,17 @@ function loadVoiceInputPrompt(options = {}) {
     clearTimeout: options.clearTimeout || clearTimeout,
     Uint8Array,
     window,
+    ...(options.globals || {}),
   });
 
   vm.runInContext(
-    `${source}\n;globalThis.__VoiceInputPrompt = VoiceInputPrompt;`,
+    `${source}\n;globalThis.__VoiceInputPrompt = VoiceInputPrompt;\n;globalThis.__normalizeRecordingStartPayload = typeof normalizeRecordingStartPayload === "function" ? normalizeRecordingStartPayload : null;`,
     context,
     { filename: sourcePath }
   );
 
+  context.__VoiceInputPrompt.normalizeRecordingStartPayload =
+    context.__normalizeRecordingStartPayload;
   return context.__VoiceInputPrompt;
 }
 
@@ -159,6 +163,114 @@ test("a hide timer still hides the prompt when the app remains idle", () => {
 
   assert.equal(hideCalls, 1);
   assert.equal(prompt.hidePromptTimerId, null);
+});
+
+test("start event timing includes native work and renderer delivery delay", () => {
+  const VoiceInputPrompt = loadVoiceInputPrompt();
+  const normalize = VoiceInputPrompt.normalizeRecordingStartPayload;
+
+  assert.equal(typeof normalize, "function");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalize({
+      translateMode: true,
+      dispatchedAtUnixMs: 1000,
+      nativeMs: 80,
+    }, 1300))),
+    {
+      translateMode: true,
+      nativeMs: 80,
+      eventDeliveryMs: 300,
+    }
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalize(false, 1300))),
+    {
+      translateMode: false,
+      nativeMs: 0,
+      eventDeliveryMs: 0,
+    }
+  );
+});
+
+test("recording startup reports native, delivery, microphone, and first-paint timing", async () => {
+  const calls = [];
+  const clock = [1000, 1010, 1160, 1170];
+  const stream = {};
+  class FakeAudioContext {
+    createMediaStreamSource() {
+      return { connect() {} };
+    }
+
+    createAnalyser() {
+      return { fftSize: 0 };
+    }
+  }
+  class FakeMediaRecorder {
+    static isTypeSupported() {
+      return true;
+    }
+
+    constructor() {
+      this.state = "inactive";
+    }
+
+    start() {
+      this.state = "recording";
+    }
+  }
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, payload) {
+      calls.push([command, payload]);
+      return Promise.resolve(null);
+    },
+    performance: { now: () => clock.shift() },
+    requestAnimationFrame(callback) {
+      callback(1550);
+      return 1;
+    },
+    window: { AudioContext: FakeAudioContext },
+    globals: {
+      MediaRecorder: FakeMediaRecorder,
+      navigator: { mediaDevices: { getUserMedia: async () => stream } },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    pageStartedAt: 0,
+    translateMode: false,
+    stopRequested: false,
+    activeRecordingSession: null,
+    mediaStream: null,
+    mediaRecorder: null,
+    audioChunks: [],
+    promptElement: { classList: { add() {} } },
+    promptText: { textContent: "" },
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    clearTranscriptionPreview() {},
+    updateModelBadge() {},
+    hasUsableApiKey: async () => true,
+    startWaveAnimation() {},
+    startRecordingTimer() {},
+  });
+  await prompt.startRecording({ nativeMs: 80, eventDeliveryMs: 300 });
+  await Promise.resolve();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[
+    "report-recording-startup",
+    {
+      recordingNumber: 1,
+      uptimeMs: 1000,
+      nativeMs: 80,
+      eventDeliveryMs: 300,
+      preflightMs: 10,
+      microphoneMs: 150,
+      setupMs: 10,
+      renderMs: 380,
+      frontendMs: 550,
+      endToEndMs: 930,
+    },
+  ]]);
 });
 
 test("a failed old transcription cannot repaint or hide a newer recording", async () => {

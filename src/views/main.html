@@ -579,6 +579,41 @@
                 </button>
               </div>
             </div>
+
+            <div class="setting-item diagnostic-log-item">
+              <details id="diagnosticLogPanel" class="diagnostic-log-panel">
+                <summary>
+                  <div class="setting-info">
+                    <div class="setting-title" data-i18n="settings.diagnostics.title">Diagnostic logs</div>
+                    <div class="setting-description" data-i18n="settings.diagnostics.description">
+                      View and copy the local log used to investigate performance problems.
+                    </div>
+                  </div>
+                </summary>
+                <div class="diagnostic-log-body">
+                  <div class="diagnostic-log-toolbar">
+                    <div id="diagnosticLogStatus" class="diagnostic-log-status" role="status" aria-live="polite"></div>
+                    <div class="diagnostic-log-actions">
+                      <button class="btn btn-secondary" id="refreshDiagnosticLogBtn" type="button" data-i18n="settings.diagnostics.refresh">
+                        Refresh
+                      </button>
+                      <button class="btn btn-secondary" id="copyDiagnosticLogBtn" type="button" data-i18n="settings.diagnostics.copy" disabled>
+                        Copy all
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    id="diagnosticLogContent"
+                    class="diagnostic-log-content"
+                    readonly
+                    spellcheck="false"
+                    aria-label="Diagnostic log content"
+                    data-i18n="settings.diagnostics.contentAria"
+                    data-i18n-attr="aria-label"
+                  ></textarea>
+                </div>
+              </details>
+            </div>
           </div>
         </section>
       </div>

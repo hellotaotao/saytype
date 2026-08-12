@@ -14,6 +14,8 @@
 
   const tauriCommands = {
     "get-settings": "get_settings",
+    "report-recording-startup": "report_recording_startup",
+    "get-diagnostic-log": "get_diagnostic_log",
     "get-api-keys": "get_api_keys",
     "save-settings": "save_settings",
     "get-app-version": "get_app_version",
@@ -56,6 +58,7 @@
   };
 
   const tauriArgs = {
+    "report-recording-startup": [["timing"]],
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
     "read-debug-audio": [["id"]],

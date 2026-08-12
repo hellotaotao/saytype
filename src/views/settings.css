@@ -111,6 +111,97 @@
   text-align: right;
 }
 
+#settings-page .diagnostic-log-item {
+  display: block;
+}
+
+#settings-page .diagnostic-log-panel {
+  width: 100%;
+}
+
+#settings-page .diagnostic-log-panel summary {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 46px;
+  padding-right: 34px;
+  list-style: none;
+  cursor: pointer;
+}
+
+#settings-page .diagnostic-log-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+#settings-page .diagnostic-log-panel summary::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: translateY(-70%) rotate(45deg);
+  transition: transform 0.15s;
+}
+
+#settings-page .diagnostic-log-panel[open] summary::after {
+  transform: translateY(-30%) rotate(225deg);
+}
+
+#settings-page .diagnostic-log-panel summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 5px;
+  border-radius: 6px;
+}
+
+#settings-page .diagnostic-log-body {
+  padding-top: 16px;
+}
+
+#settings-page .diagnostic-log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+#settings-page .diagnostic-log-status {
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#settings-page .diagnostic-log-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+#settings-page .diagnostic-log-content {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: 280px;
+  padding: 12px;
+  resize: vertical;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  outline: none;
+  background: var(--input-bg);
+  color: var(--app-text);
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+#settings-page .diagnostic-log-content:focus {
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 3px var(--accent-soft-bg);
+}
+
 #settings-page .input {
   box-sizing: border-box;
   width: 220px;
@@ -333,12 +424,18 @@
   #settings-page .api-key-field {
     width: 100%;
   }
+
+  #settings-page .diagnostic-log-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .settings-tab,
   #settings-page .switch .slider,
   #settings-page .switch .slider::before,
+  #settings-page .diagnostic-log-panel summary::after,
   #localModelProgress::-webkit-progress-value {
     transition: none;
   }
