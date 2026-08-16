@@ -1,6 +1,6 @@
 {
   "name": "saytype",
-  "version": "1.8.5",
+  "version": "1.8.6",
   "description": "Voice input method software built with Tauri",
   "scripts": {
     "start": "tauri dev",
@@ -11,6 +11,7 @@
     "build:mac:install": "node scripts/bump-dev-build.js && CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin --install",
     "build:win": "node scripts/bump-dev-build.js && tauri build --target x86_64-pc-windows-msvc",
     "build:linux": "node scripts/bump-dev-build.js && tauri build --target x86_64-unknown-linux-gnu",
+    "build:llama-runtime:mac-arm64": "node scripts/build-patched-llama.mjs --platform darwin --arch arm64",
     "tauri": "tauri"
   },
   "keywords": [

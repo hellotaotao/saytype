@@ -1,0 +1,28 @@
+name: Build local ASR runtime
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-arm64:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout SayType
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Build patched llama runtime
+        run: npm run build:llama-runtime:mac-arm64
+
+      - name: Upload runtime and checksum metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-b9960-saytype-reset-v1-macos-arm64
+          if-no-files-found: error
+          path: artifacts/local-asr-runtime/*

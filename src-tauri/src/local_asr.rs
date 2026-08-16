@@ -28,7 +28,18 @@ pub const LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
 /// Pinned llama.cpp release. Must stay ≥ b9173 (Qwen3-ASR repetition fix,
 /// ggml-org/llama.cpp#22357). Upgrading requires re-verifying CLI flags,
 /// stdout format, all sha256s, and a real-dictation regression.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const LLAMA_BUILD: &str = "b9960-saytype-reset-v1";
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 pub const LLAMA_BUILD: &str = "b9960";
+
+/// Upstream b9960 keeps an mtmd media batch past the lifetime of its chunks,
+/// which can reuse the previous audio embedding in a resident process. Only
+/// the maintained Apple Silicon runtime has the per-audio ownership patch.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const RESIDENT_RUNTIME_SAFE: bool = true;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+const RESIDENT_RUNTIME_SAFE: bool = false;
 
 pub struct Asset {
   /// Final location under local_asr_dir(); doubles as the download's .part
@@ -36,6 +47,8 @@ pub struct Asset {
   pub rel_path: &'static str,
   /// Try in order (mirror fallback); byte-identical across sources.
   pub urls: &'static [&'static str],
+  /// A runtime carried inside the app instead of fetched from the network.
+  pub bundled: Option<&'static [u8]>,
   pub size: u64,
   pub sha256: &'static str,
 }
@@ -50,6 +63,7 @@ pub const MODEL_ASSETS: &[Asset] = &[
       "https://modelscope.cn/models/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/master/Qwen3-ASR-0.6B-Q8_0.gguf",
       "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/Qwen3-ASR-0.6B-Q8_0.gguf",
     ],
+    bundled: None,
     size: 804_749_248,
     sha256: "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
   },
@@ -59,6 +73,7 @@ pub const MODEL_ASSETS: &[Asset] = &[
       "https://modelscope.cn/models/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/master/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
       "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
     ],
+    bundled: None,
     size: 214_392_480,
     sha256: "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
   },
@@ -69,12 +84,13 @@ pub const MODEL_ASSETS: &[Asset] = &[
 // zip -- rel_path/urls reflect each asset's actual file extension.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static MAC_ZIP: Asset = Asset {
-  rel_path: "llama-macos-arm64.tar.gz",
-  urls: &[
-    "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-macos-arm64.tar.gz",
-  ],
-  size: 10_734_569,
-  sha256: "7a8c6b6ae3395e15b5cc330ed2938cc0aa4510905db1189658fd022035734b48",
+  rel_path: "llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz",
+  urls: &[],
+  bundled: Some(include_bytes!(
+    "../resources/local-asr/llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz"
+  )),
+  size: 3_749_143,
+  sha256: "c052347572440bb64d7889931019327df3ef100185bbfae30a731b3af19ffe77",
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn llama_zip_asset() -> &'static Asset {
@@ -90,6 +106,7 @@ static MAC_ZIP: Asset = Asset {
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-macos-x64.tar.gz",
   ],
+  bundled: None,
   size: 11_007_527,
   sha256: "d42000ae003fd61d7db50997af0e80f421524e30b534856c66573d064a478c1d",
 };
@@ -104,6 +121,7 @@ static WIN_ZIP: Asset = Asset {
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-win-cpu-x64.zip",
   ],
+  bundled: None,
   size: 18_209_357,
   sha256: "795333e29cedf9f9ef9ae91324bfa423e338d39d75cc63a8dd76d1686c32ced6",
 };
@@ -118,6 +136,7 @@ static LINUX_ZIP: Asset = Asset {
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-ubuntu-x64.tar.gz",
   ],
+  bundled: None,
   size: 15_819_482,
   sha256: "542732e344420ff904c1d72acfeef6341f509232c5d131809421943235a818a2",
 };
@@ -143,6 +162,12 @@ pub fn cli_path(base: &Path) -> PathBuf {
   bin_dir(base).join(name)
 }
 
+fn models_ready_at(dir: &Path) -> bool {
+  MODEL_ASSETS.iter().all(|a| {
+    fs::metadata(dir.join(a.rel_path)).map(|m| m.len() == a.size).unwrap_or(false)
+  })
+}
+
 fn local_asr_command(program: PathBuf) -> tokio::process::Command {
   let mut command = tokio::process::Command::new(program);
   #[cfg(target_os = "windows")]
@@ -158,9 +183,7 @@ fn local_asr_command(program: PathBuf) -> tokio::process::Command {
 /// Cheap readiness: every GGUF at its exact size, plus the extracted CLI
 /// present (executable on unix). sha256 is verified once at download time.
 pub fn assets_ready_at(dir: &Path) -> bool {
-  let models_ok = MODEL_ASSETS.iter().all(|a| {
-    fs::metadata(dir.join(a.rel_path)).map(|m| m.len() == a.size).unwrap_or(false)
-  });
+  let models_ok = models_ready_at(dir);
   let cli = cli_path(dir);
   let cli_ok = fs::metadata(&cli).map(|m| m.is_file()).unwrap_or(false)
     && is_executable(&cli);
@@ -168,7 +191,14 @@ pub fn assets_ready_at(dir: &Path) -> bool {
 }
 
 pub fn assets_ready() -> bool {
-  local_asr_dir().map(|d| assets_ready_at(&d)).unwrap_or(false)
+  local_asr_dir()
+    .map(|d| {
+      if let Err(error) = ensure_bundled_runtime_at(&d) {
+        log::warn!("failed to install bundled local ASR runtime: {error}");
+      }
+      assets_ready_at(&d)
+    })
+    .unwrap_or(false)
 }
 
 #[cfg(unix)]
@@ -281,6 +311,7 @@ static LOCAL_INFERENCE: Semaphore = Semaphore::const_new(1);
 static RESIDENT_WORKER: Mutex<Option<ResidentWorker>> = Mutex::new(None);
 static RESIDENT_GENERATION: AtomicU64 = AtomicU64::new(0);
 static RESIDENT_EPOCH: AtomicU64 = AtomicU64::new(0);
+static BUNDLED_RUNTIME_INSTALL: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static RESIDENT_STARTS: AtomicU64 = AtomicU64::new(0);
 
@@ -507,6 +538,10 @@ pub fn keep_resident_worker_warm() -> bool {
 }
 
 fn park_resident_worker(mut worker: ResidentWorker) {
+  if !RESIDENT_RUNTIME_SAFE {
+    let _ = worker.child.start_kill();
+    return;
+  }
   if worker.epoch != RESIDENT_EPOCH.load(Ordering::Relaxed) {
     let _ = worker.child.start_kill();
     return;
@@ -602,6 +637,7 @@ async fn transcribe_wav_inner(
   }
 
   let base = local_asr_dir()?;
+  ensure_bundled_runtime_at(&base).map_err(anyhow::Error::msg)?;
   if !assets_ready_at(&base) {
     anyhow::bail!("LOCAL_MODEL_MISSING: local model assets are missing or incomplete");
   }
@@ -811,13 +847,53 @@ pub struct ModelStatus {
 
 pub fn model_status(downloading: bool) -> ModelStatus {
   match local_asr_dir() {
-    Ok(dir) => model_status_at(&dir, downloading),
+    Ok(dir) => {
+      if let Err(error) = ensure_bundled_runtime_at(&dir) {
+        log::warn!("failed to install bundled local ASR runtime: {error}");
+      }
+      model_status_at(&dir, downloading)
+    }
     Err(_) => ModelStatus {
       state: "absent".into(),
       downloaded_bytes: 0,
       total_bytes: total_download_bytes(),
     },
   }
+}
+
+fn ensure_bundled_runtime_at(dir: &Path) -> Result<(), String> {
+  let asset = llama_zip_asset();
+  let Some(bytes) = asset.bundled else { return Ok(()) };
+  if !models_ready_at(dir) || (fs::metadata(cli_path(dir)).map(|m| m.is_file()).unwrap_or(false)
+    && is_executable(&cli_path(dir)))
+  {
+    return Ok(());
+  }
+
+  let _install = BUNDLED_RUNTIME_INSTALL.lock().map_err(|e| e.to_string())?;
+  if fs::metadata(cli_path(dir)).map(|m| m.is_file()).unwrap_or(false)
+    && is_executable(&cli_path(dir))
+  {
+    return Ok(());
+  }
+  if bytes.len() as u64 != asset.size {
+    return Err(format!("bundled runtime size mismatch: {} != {}", bytes.len(), asset.size));
+  }
+  let hash = format!("{:x}", sha2::Sha256::digest(bytes));
+  if hash != asset.sha256 {
+    return Err("bundled runtime sha256 mismatch".into());
+  }
+
+  let archive_path = dir.join(asset.rel_path);
+  let part_path = dir.join(format!("{}.part", asset.rel_path));
+  if let Some(parent) = archive_path.parent() {
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+  }
+  fs::write(&part_path, bytes).map_err(|e| e.to_string())?;
+  fs::rename(&part_path, &archive_path).map_err(|e| e.to_string())?;
+  extract_llama_archive(dir)?;
+  let _ = fs::remove_file(archive_path);
+  Ok(())
 }
 
 fn model_status_at(dir: &Path, downloading: bool) -> ModelStatus {
@@ -893,6 +969,7 @@ pub async fn download_model(app: tauri::AppHandle, cancel: CancellationToken) ->
     emit_progress(&app, "downloading", done, None);
   }
 
+  ensure_bundled_runtime_at(&dir)?;
   let zip = llama_zip_asset();
   if !(fs::metadata(cli_path(&dir)).map(|m| m.is_file()).unwrap_or(false) && is_executable(&cli_path(&dir))) {
     let zip_final = dir.join(zip.rel_path);
@@ -1130,12 +1207,41 @@ mod tests {
     for a in MODEL_ASSETS.iter().chain(std::iter::once(llama_zip_asset())) {
       assert_eq!(a.sha256.len(), 64, "{} sha256 must be real", a.rel_path);
       assert!(a.size > 0, "{} size must be real", a.rel_path);
-      assert!(!a.urls.is_empty());
+      assert!(!a.urls.is_empty() || a.bundled.is_some());
     }
     let total = total_download_bytes();
     // ~1.02GB models + a 10-80MB zip
     assert!(total > 1_020_000_000 && total < 1_150_000_000, "total = {total}");
     assert_ne!(LLAMA_BUILD, "<FILL-STEP-1>");
+  }
+
+  #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+  #[test]
+  fn bundled_runtime_matches_the_pinned_manifest() {
+    let asset = llama_zip_asset();
+    let bytes = asset.bundled.expect("Apple Silicon runtime must be bundled");
+    assert_eq!(LLAMA_BUILD, "b9960-saytype-reset-v1");
+    assert!(RESIDENT_RUNTIME_SAFE);
+    assert_eq!(bytes.len() as u64, asset.size);
+    assert_eq!(format!("{:x}", sha2::Sha256::digest(bytes)), asset.sha256);
+  }
+
+  #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+  #[test]
+  fn bundled_runtime_migrates_an_existing_model_without_a_download() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path();
+    for asset in MODEL_ASSETS {
+      let path = dir.join(asset.rel_path);
+      fs::create_dir_all(path.parent().unwrap()).unwrap();
+      fs::File::create(path).unwrap().set_len(asset.size).unwrap();
+    }
+    assert!(!assets_ready_at(dir));
+
+    ensure_bundled_runtime_at(dir).unwrap();
+
+    assert!(assets_ready_at(dir));
+    assert!(!dir.join(llama_zip_asset().rel_path).exists());
   }
 
   #[test]

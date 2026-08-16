@@ -1,6 +1,7 @@
 node_modules/
 .vscode/
 dist/
+artifacts/local-asr-runtime/
 TODO.md
 example/
 .claude/settings.local.json

@@ -1,0 +1,91 @@
+diff --git a/tools/mtmd/mtmd-cli.cpp b/tools/mtmd/mtmd-cli.cpp
+index 8704ea7..6e33c39 100644
+--- a/tools/mtmd/mtmd-cli.cpp
++++ b/tools/mtmd/mtmd-cli.cpp
+@@ -87,8 +87,6 @@ struct mtmd_cli_context {
+     mtmd::bitmaps bitmaps;
+     std::vector<mtmd_helper::video_ptr> videos;
+ 
+-    mtmd::batch_ptr mbatch;
+-
+     // chat template
+     common_chat_templates_ptr tmpls;
+     std::vector<common_chat_msg> chat_history;
+@@ -257,6 +255,10 @@ static int eval_message(mtmd_cli_context & ctx, common_chat_msg & msg) {
+     if (g_is_interrupted) return 0;
+ 
+     mtmd::input_chunks chunks(mtmd_input_chunks_init());
++    // A batch only owns embeddings for chunks created by this eval_message()
++    // call. Keeping it on the resident context leaves dangling chunk pointers
++    // after the call returns and can reuse a previous audio embedding.
++    mtmd::batch_ptr mbatch;
+     auto bitmaps_c_ptr = ctx.bitmaps.c_ptr();
+     int32_t res = mtmd_tokenize(ctx.ctx_vision.get(),
+                         chunks.ptr.get(), // output
+@@ -296,8 +298,8 @@ static int eval_message(mtmd_cli_context & ctx, common_chat_msg & msg) {
+         } else {
+             // media chunk: try to get embd from existing batch, or create a new batch
+             float * embd = nullptr;
+-            if (ctx.mbatch) {
+-                embd = mtmd_batch_get_output_embd(ctx.mbatch.get(), chunk);
++            if (mbatch) {
++                embd = mtmd_batch_get_output_embd(mbatch.get(), chunk);
+ 
+                 if (embd) {
+                     LOG_DBG("found embd for media chunk %zu in existing batch\n", i);
+@@ -308,8 +310,8 @@ static int eval_message(mtmd_cli_context & ctx, common_chat_msg & msg) {
+ 
+             if (!embd) {
+                 // create and encode a new batch with as many media chunks as possible
+-                ctx.mbatch.reset(mtmd_batch_init(ctx.ctx_vision.get()));
+-                res = mtmd_batch_add_chunk(ctx.mbatch.get(), chunk);
++                mbatch.reset(mtmd_batch_init(ctx.ctx_vision.get()));
++                res = mtmd_batch_add_chunk(mbatch.get(), chunk);
+                 GGML_ASSERT(res == 0); // first chunk must always succeed
+ 
+                 int n_added = 1;
+@@ -320,7 +322,7 @@ static int eval_message(mtmd_cli_context & ctx, common_chat_msg & msg) {
+                     if (next_type == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+                         break; // text chunk splits the batch
+                     }
+-                    res = mtmd_batch_add_chunk(ctx.mbatch.get(), next_chunk);
++                    res = mtmd_batch_add_chunk(mbatch.get(), next_chunk);
+                     if (res != 0) {
+                         break; // batch full or incompatible
+                     }
+@@ -329,14 +331,14 @@ static int eval_message(mtmd_cli_context & ctx, common_chat_msg & msg) {
+ 
+                 int64_t time_start = ggml_time_ms();
+                 LOG_INF("encoding mtmd batch, n_chunks = %d (done = %zu, total = %zu)\n", n_added, i, n_chunks);
+-                res = mtmd_batch_encode(ctx.mbatch.get());
++                res = mtmd_batch_encode(mbatch.get());
+                 if (res != 0) {
+                     LOG_ERR("Failed to encode mtmd batch, res = %d\n", res);
+                     return 1;
+                 }
+                 LOG_INF("mtmd batch encoding done in %d ms\n", (int)(ggml_time_ms() - time_start));
+ 
+-                embd = mtmd_batch_get_output_embd(ctx.mbatch.get(), chunk);
++                embd = mtmd_batch_get_output_embd(mbatch.get(), chunk);
+             }
+ 
+             GGML_ASSERT(embd != nullptr);
+@@ -473,6 +475,7 @@ int main(int argc, char ** argv) {
+         }
+         LOG("\n   /clear           clear the chat history");
+         LOG("\n   /quit or /exit   exit the program");
++        LOG("\n   saytype-session-reset-v1");
+         LOG("\n");
+ 
+         std::string content;
+@@ -495,6 +498,10 @@ int main(int argc, char ** argv) {
+             if (line == "/clear") {
+                 ctx.n_past = 0;
+                 ctx.chat_history.clear();
++                ctx.bitmaps.entries.clear();
++                ctx.videos.clear();
++                common_sampler_reset(ctx.smpl);
++                content.clear();
+                 llama_memory_clear(llama_get_memory(ctx.lctx), true);
+                 if (eval_system_prompt_if_present()) {
+                     return 1;

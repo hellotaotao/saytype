@@ -1,0 +1,10 @@
+{
+  "upstreamRepository": "https://github.com/ggml-org/llama.cpp.git",
+  "upstreamRef": "b9960",
+  "upstreamCommit": "a935fbffe1a3d31509c325c116454ab5d56b2eb8",
+  "runtimeId": "b9960-saytype-reset-v1",
+  "resetContract": "saytype-session-reset-v1",
+  "patches": [
+    "patches/0001-reset-per-audio-state.patch"
+  ]
+}
