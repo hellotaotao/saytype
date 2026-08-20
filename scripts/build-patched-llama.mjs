@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { assertRelocatableRpaths, smokeTestRelocated } from "./lib/runtime-relocation.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = path.join(repoRoot, "vendor/llama.cpp/runtime.json");
@@ -103,6 +104,18 @@ function copyRuntimeFiles(buildBin, stageDir, platform) {
   }
 }
 
+// CMake links build-tree binaries against an absolute RPATH pointing back at
+// the build directory. Staging those files verbatim yields a runtime that only
+// works while that build directory still exists -- once the temp build tree is
+// cleaned, every transcription dies in dyld with "Library not loaded". Build
+// with a loader-relative RPATH instead, so the staged directory resolves its
+// own dylibs wherever SayType extracts it.
+function relocatableRpathArgs(platform) {
+  if (platform === "win32") return []; // Windows resolves DLLs next to the .exe.
+  const origin = platform === "darwin" ? "@loader_path" : "$ORIGIN";
+  return ["-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON", `-DCMAKE_INSTALL_RPATH=${origin}`];
+}
+
 function sha256(filePath) {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
@@ -147,6 +160,7 @@ const configureArgs = [
   "-DLLAMA_BUILD_SERVER=OFF",
   "-DLLAMA_CURL=OFF",
 ];
+configureArgs.push(...relocatableRpathArgs(targetPlatform));
 if (targetPlatform === "darwin") {
   configureArgs.push(`-DCMAKE_TOOLCHAIN_FILE=${writeMacToolchain(sourceDir, targetArch, workDir)}`);
   configureArgs.push("-DGGML_METAL=ON");
@@ -160,6 +174,16 @@ const buildBin = buildBinCandidates.find((candidate) => existsSync(candidate));
 if (!buildBin) throw new Error(`Build output directory is missing under ${buildDir}`);
 copyRuntimeFiles(buildBin, stageDir, targetPlatform);
 cpSync(path.join(sourceDir, "LICENSE"), path.join(stageDir, "LICENSE"));
+assertRelocatableRpaths(stageDir, targetPlatform);
+const canRunTarget = targetPlatform === process.platform
+  && targetArch === architectureLabel(process.arch);
+const smokeTest = canRunTarget
+  ? smokeTestRelocated({
+      stageDir,
+      probeDir: path.join(workDir, "relocated"),
+      platform: targetPlatform,
+    })
+  : "skipped (cross-build)";
 
 const extension = targetPlatform === "win32" ? "zip" : "tar.gz";
 const archiveName = `llama-${manifest.runtimeId}-bin-${label}-${targetArch}.${extension}`;
@@ -178,6 +202,7 @@ const metadata = {
   platform: label,
   arch: targetArch,
   archive: archiveName,
+  relocatedSmokeTest: smokeTest,
   size: lstatSync(archivePath).size,
   sha256: sha256(archivePath),
 };

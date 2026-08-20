@@ -26,13 +26,39 @@ The build script:
 
 1. fetches the exact upstream commit;
 2. verifies and applies the maintained patch;
-3. builds only `llama-mtmd-cli` and its runtime libraries;
-4. writes an archive and SHA-256 metadata under
+3. builds only `llama-mtmd-cli` and its runtime libraries, linked against a
+   loader-relative RPATH;
+4. verifies the staged files are relocatable (see below);
+5. writes an archive and SHA-256 metadata under
    `artifacts/local-asr-runtime/`.
 
 After reviewing a new artifact, copy it to `src-tauri/resources/local-asr/`,
 update the size and SHA-256 in `src-tauri/src/local_asr.rs`, and run the
 contract, Rust, and real two-audio resident smoke tests.
+
+## Relocatability
+
+The staged runtime has to resolve its own libraries. CMake links build-tree
+binaries against an absolute RPATH pointing back at the build directory, so a
+runtime staged verbatim keeps working only while that directory survives. The
+first `b9960-saytype-reset-v1` archive shipped that way: it ran fine off
+`/private/tmp/saytype-llama-maintained-build/build/bin` for weeks, and once
+macOS cleaned that path every local transcription failed with `resident
+llama-mtmd-cli did not reach its initial prompt` (the child was aborting in
+dyld with `Library not loaded`, on a stderr the resident spawn discards).
+
+So the build sets `CMAKE_INSTALL_RPATH=@loader_path` and then checks two
+things after staging: that no Mach-O in the archive keeps an absolute rpath,
+and that a copy of the stage directory, launched from somewhere else, loads
+every `libllama`/`libggml`/`libmtmd` image out of that copy
+(`DYLD_PRINT_LIBRARIES`). The second check depends on the first — while the
+build directory is still present, a binary with an absolute rpath launches
+happily from anywhere, which is why "it runs" was never evidence here.
+
+On the app side, `local_asr.rs` stamps `bin/<runtimeId>/.saytype-runtime-sha256`
+with the archive hash at extraction and re-extracts when it does not match.
+Without that, rebuilding an archive under an existing runtime id leaves the old
+extraction in place on every machine that already has it.
 
 ## Platform policy
 

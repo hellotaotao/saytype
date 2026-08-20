@@ -89,8 +89,8 @@ static MAC_ZIP: Asset = Asset {
   bundled: Some(include_bytes!(
     "../resources/local-asr/llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz"
   )),
-  size: 3_749_143,
-  sha256: "c052347572440bb64d7889931019327df3ef100185bbfae30a731b3af19ffe77",
+  size: 3_750_185,
+  sha256: "1b525488d330701fa17ef34670db3619fa67be8ecb1db9b1b68551877a4930f1",
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn llama_zip_asset() -> &'static Asset {
@@ -160,6 +160,28 @@ pub fn bin_dir(base: &Path) -> PathBuf {
 pub fn cli_path(base: &Path) -> PathBuf {
   let name = if cfg!(target_os = "windows") { "llama-mtmd-cli.exe" } else { "llama-mtmd-cli" };
   bin_dir(base).join(name)
+}
+
+/// Records which bundled/downloaded archive produced the extracted runtime.
+/// The CLI merely being present is not proof it is the *current* one: a runtime
+/// id can be rebuilt in place (b9960-saytype-reset-v1 shipped once with a
+/// machine-specific rpath that died with the build directory), and without this
+/// stamp a stale extraction would survive the very update that fixes it.
+fn runtime_stamp_path(base: &Path) -> PathBuf {
+  bin_dir(base).join(".saytype-runtime-sha256")
+}
+
+fn write_runtime_stamp(base: &Path) {
+  let _ = fs::write(runtime_stamp_path(base), llama_zip_asset().sha256);
+}
+
+fn installed_runtime_is_current(base: &Path) -> bool {
+  let cli = cli_path(base);
+  fs::metadata(&cli).map(|m| m.is_file()).unwrap_or(false)
+    && is_executable(&cli)
+    && fs::read_to_string(runtime_stamp_path(base))
+      .map(|stamp| stamp.trim() == llama_zip_asset().sha256)
+      .unwrap_or(false)
 }
 
 fn models_ready_at(dir: &Path) -> bool {
@@ -653,45 +675,56 @@ async fn transcribe_wav_inner(
 
   let ctx_size = ctx_size_for_wav(wav_bytes.len());
   let cached = RESIDENT_WORKER.lock().unwrap().take();
-  let mut worker = if let Some(mut cached) = cached {
-    if cached.ctx_size == ctx_size && cached.is_running() {
-      cached
-    } else {
-      drop(cached);
-      ResidentWorker::spawn(&base, ctx_size).await?
-    }
-  } else {
-    ResidentWorker::spawn(&base, ctx_size).await?
+  let reusable = cached.and_then(|mut cached| {
+    let usable = cached.ctx_size == ctx_size && cached.is_running();
+    usable.then_some(cached)
+  });
+  // A worker that never reaches its chat prompt must not fail the dictation:
+  // fall through to the one-shot path, which captures the child's stderr and
+  // so reports the real cause (a broken runtime install, an unreadable model)
+  // instead of the opaque "did not reach its initial prompt".
+  let started_worker = match reusable {
+    Some(worker) => Some(worker),
+    None => match ResidentWorker::spawn(&base, ctx_size).await {
+      Ok(worker) => Some(worker),
+      Err(error) => {
+        log::warn!("local-asr: resident worker could not start, falling back to one-shot: {error:#}");
+        None
+      }
+    },
   };
-  worker.epoch = lease_epoch;
-  let resident_started = std::time::Instant::now();
-  match tokio::time::timeout(
-    TRANSCRIBE_TIMEOUT,
-    worker.transcribe(&tmp_path, wav_bytes.len(), &mut on_partial),
-  ).await {
-    Ok(Ok(text)) => {
-      park_resident_worker(worker);
-      log::info!(
-        "local ASR: decoded {} KB wav in {:.2}s ({} chars, resident)",
-        wav_bytes.len() / 1024,
-        resident_started.elapsed().as_secs_f32(),
-        text.chars().count()
-      );
-      return Ok(text);
+
+  if let Some(mut worker) = started_worker {
+    worker.epoch = lease_epoch;
+    let resident_started = std::time::Instant::now();
+    match tokio::time::timeout(
+      TRANSCRIBE_TIMEOUT,
+      worker.transcribe(&tmp_path, wav_bytes.len(), &mut on_partial),
+    ).await {
+      Ok(Ok(text)) => {
+        park_resident_worker(worker);
+        log::info!(
+          "local ASR: decoded {} KB wav in {:.2}s ({} chars, resident)",
+          wav_bytes.len() / 1024,
+          resident_started.elapsed().as_secs_f32(),
+          text.chars().count()
+        );
+        return Ok(text);
+      }
+      Ok(Err(error)) => {
+        log::warn!("local-asr: resident worker failed, retrying one-shot: {error:#}");
+      }
+      Err(_) => {
+        log::warn!(
+          "local-asr: resident worker timed out after {}s, retrying one-shot",
+          TRANSCRIBE_TIMEOUT.as_secs()
+        );
+      }
     }
-    Ok(Err(error)) => {
-      log::warn!("local-asr: resident worker failed, retrying one-shot: {error:#}");
-    }
-    Err(_) => {
-      log::warn!(
-        "local-asr: resident worker timed out after {}s, retrying one-shot",
-        TRANSCRIBE_TIMEOUT.as_secs()
-      );
-    }
+    // `worker` is deliberately not returned to the cache after any protocol
+    // failure. kill_on_drop terminates it so the one-shot retry starts clean.
+    drop(worker);
   }
-  // `worker` is deliberately not returned to the cache after any protocol
-  // failure. kill_on_drop terminates it so the one-shot retry starts clean.
-  drop(worker);
 
   // Compatibility fallback: preserve the original one-process-per-clip path
   // and its detailed stderr diagnostics if chat mode ever drifts in a future
@@ -864,16 +897,12 @@ pub fn model_status(downloading: bool) -> ModelStatus {
 fn ensure_bundled_runtime_at(dir: &Path) -> Result<(), String> {
   let asset = llama_zip_asset();
   let Some(bytes) = asset.bundled else { return Ok(()) };
-  if !models_ready_at(dir) || (fs::metadata(cli_path(dir)).map(|m| m.is_file()).unwrap_or(false)
-    && is_executable(&cli_path(dir)))
-  {
+  if !models_ready_at(dir) || installed_runtime_is_current(dir) {
     return Ok(());
   }
 
   let _install = BUNDLED_RUNTIME_INSTALL.lock().map_err(|e| e.to_string())?;
-  if fs::metadata(cli_path(dir)).map(|m| m.is_file()).unwrap_or(false)
-    && is_executable(&cli_path(dir))
-  {
+  if installed_runtime_is_current(dir) {
     return Ok(());
   }
   if bytes.len() as u64 != asset.size {
@@ -1043,6 +1072,7 @@ fn extract_llama_archive(base: &Path) -> Result<(), String> {
   if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
     return Err("archive did not contain llama-mtmd-cli".into());
   }
+  write_runtime_stamp(base);
   Ok(())
 }
 
@@ -1066,6 +1096,7 @@ fn extract_llama_archive(base: &Path) -> Result<(), String> {
   if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
     return Err("archive did not contain llama-mtmd-cli".into());
   }
+  write_runtime_stamp(base);
   Ok(())
 }
 
@@ -1242,6 +1273,36 @@ mod tests {
 
     assert!(assets_ready_at(dir));
     assert!(!dir.join(llama_zip_asset().rel_path).exists());
+  }
+
+  #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+  #[test]
+  fn a_stale_runtime_extraction_is_replaced_by_the_bundled_archive() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path();
+    for asset in MODEL_ASSETS {
+      let path = dir.join(asset.rel_path);
+      fs::create_dir_all(path.parent().unwrap()).unwrap();
+      fs::File::create(path).unwrap().set_len(asset.size).unwrap();
+    }
+    ensure_bundled_runtime_at(dir).unwrap();
+    let cli = cli_path(dir);
+    let fresh_len = fs::metadata(&cli).unwrap().len();
+    assert_eq!(fs::read_to_string(runtime_stamp_path(dir)).unwrap(), llama_zip_asset().sha256);
+
+    // What a rebuilt archive under an unchanged runtime id meets on a machine
+    // that already extracted the old one: the CLI is present and executable, so
+    // nothing but the stamp can tell the app those files are stale.
+    fs::write(&cli, b"stale").unwrap();
+    fs::write(runtime_stamp_path(dir), "0".repeat(64)).unwrap();
+    ensure_bundled_runtime_at(dir).unwrap();
+    assert_eq!(fs::metadata(&cli).unwrap().len(), fresh_len, "stamp mismatch must re-extract");
+
+    // An extraction predating the stamp counts as stale for the same reason.
+    fs::write(&cli, b"stale").unwrap();
+    fs::remove_file(runtime_stamp_path(dir)).unwrap();
+    ensure_bundled_runtime_at(dir).unwrap();
+    assert_eq!(fs::metadata(&cli).unwrap().len(), fresh_len, "missing stamp must re-extract");
   }
 
   #[test]

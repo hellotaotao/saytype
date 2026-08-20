@@ -217,6 +217,11 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   unchanged and cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs +
   per-platform llama.cpp zip, ~1GB under `<app-data>/local-asr/`), the resumable
   sha256-gated downloader, and the stdout parser (`language <lang><asr_text>` prefix).
+  The extracted runtime is stamped with the archive's sha256
+  (`bin/<LLAMA_BUILD>/.saytype-runtime-sha256`) and re-extracted on mismatch — the CLI
+  merely being present says nothing about *which* archive produced it, so without the
+  stamp a rebuilt archive under an unchanged runtime id never reaches a machine that
+  already extracted the old one.
   stdout is **pumped incrementally, not `wait_with_output()`** — the CLI emits the
   transcript token-by-token, so `transcribe_wav` forwards the text-so-far to the
   input-prompt window (`local-transcription-partial`, throttled 100ms). Both pipes
