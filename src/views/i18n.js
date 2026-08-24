@@ -207,6 +207,7 @@
         permission: {
           checking: "Checking...",
           granted: "✅ Granted",
+          notDetermined: "Microphone access has not been requested yet",
           denied: "❌ Denied — please enable in System Settings",
           restricted: "❌ Restricted by system policy",
           error: "❌ Error checking permission",
@@ -569,6 +570,7 @@
         permission: {
           checking: "检查中...",
           granted: "✅ 已授权",
+          notDetermined: "尚未请求麦克风权限",
           denied: "❌ 已拒绝 — 请在系统设置中开启",
           restricted: "❌ 受系统策略限制",
           error: "❌ 检查权限出错",

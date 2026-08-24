@@ -164,6 +164,9 @@ class VoiceInputPrompt {
     this.cancelledShortPress = false;
     this.cancelInProgress = false;
     this.transcriptionInProgressCount = 0;
+    this.activeTranscriptionSessionIds = new Set();
+    this.cancelledTranscriptionSessionIds = new Set();
+    this.localTranscriptionTail = Promise.resolve();
     this.recordingSessionId = 0;
     this.activeRecordingSession = null;
     this.pendingInsertionOrder = [];
@@ -212,6 +215,13 @@ class VoiceInputPrompt {
       return;
     }
     try {
+      // The hidden input window loads before onboarding. Query the native TCC
+      // state first so prewarming never becomes the action that triggers the
+      // first permission prompt behind the onboarding UI.
+      const permission = await ipc.invoke("check-microphone-permission");
+      if (permission?.status !== "granted") {
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       stream.getTracks().forEach((track) => track.stop());
     } catch (error) {
@@ -245,6 +255,13 @@ class VoiceInputPrompt {
         return;
       }
       if (this.transcriptionInProgressCount <= 0) {
+        return;
+      }
+      if (
+        this.isRecording ||
+        this.starting ||
+        Number(payload.sessionId) !== this.recordingSessionId
+      ) {
         return;
       }
       this.setTranscriptionPreview(text);
@@ -546,7 +563,13 @@ class VoiceInputPrompt {
       // (re)started in the meantime, firing now would tear down the live mic
       // and clear the insertion queue — drop the stale hide instead. (Any
       // legitimate hide during recording is a direct hidePrompt() call.)
-      if (this.isRecording || this.starting) {
+      if (
+        this.isRecording ||
+        this.starting ||
+        this.transcriptionInProgressCount > 0 ||
+        this.pendingInsertionOrder.length > 0 ||
+        this.isFlushingInsertQueue
+      ) {
         return;
       }
       this.hidePrompt();
@@ -680,6 +703,16 @@ class VoiceInputPrompt {
     this.pendingInsertionsById.clear();
   }
 
+  async acquireLocalTranscriptionSlot() {
+    const previous = this.localTranscriptionTail || Promise.resolve();
+    let release = null;
+    this.localTranscriptionTail = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    return release;
+  }
+
   async hasUsableApiKey() {
     try {
       const settings = await ipc.invoke("get-settings");
@@ -712,6 +745,10 @@ class VoiceInputPrompt {
   async startRecording(startupTiming = {}) {
     if (this.isRecording || this.starting) return;
 
+    // A prior Escape may have cancelled an older transcription without hiding
+    // the prompt yet. A new recording is a fresh operation and must not inherit
+    // that cancellation state when stopRecording decides whether to process it.
+    this.cancelInProgress = false;
     const startupStartedAt = performance.now();
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
@@ -900,13 +937,41 @@ class VoiceInputPrompt {
     this.stopRecordingTimer();
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
-    this.clearPendingInsertions();
     // Dismiss the insert-failed affordance immediately so Esc shows a clean
     // "Cancelled", not the Copy button + amber glow lingering for ~300ms.
     this.clearInsertFailedUi();
 
+    // A live recording is always the operation Escape refers to, even while an
+    // older session is still transcribing. Cancelling the backend first would
+    // leave the new MediaRecorder session unmarked and let its partial clip run
+    // through transcription after the mic tracks stop.
+    if (this.isRecording) {
+      this.cancelledShortPress = true;
+      if (this.activeRecordingSession) {
+        this.activeRecordingSession.cancelledShortPress = true;
+      }
+      this.stopRecording();
+      return;
+    }
+
+    // getUserMedia may still be resolving. stopRequested makes startRecording
+    // release the stream as soon as it arrives instead of creating a session.
+    if (this.starting) {
+      this.stopRequested = true;
+      this.promptText.textContent = t("inputPrompt.cancelled");
+      this.statusText.textContent = "";
+      return;
+    }
+
     if (this.transcriptionInProgressCount > 0) {
-      ipc.invoke("cancel-transcription").catch(() => {});
+      const sessionId = this.activeTranscriptionSessionIds.size
+        ? Math.max(...this.activeTranscriptionSessionIds)
+        : null;
+      if (sessionId !== null) {
+        this.cancelledTranscriptionSessionIds.add(sessionId);
+        this.removePendingInsertion(sessionId);
+      }
+      ipc.invoke("cancel-transcription", sessionId).catch(() => {});
       this.promptText.textContent = t("inputPrompt.cancelled");
       this.statusText.textContent = "";
       this.cleanup();
@@ -915,12 +980,7 @@ class VoiceInputPrompt {
       return;
     }
 
-    if (this.isRecording) {
-      this.cancelledShortPress = true;
-      this.stopRecording();
-      return;
-    }
-
+    this.clearPendingInsertions();
     this.promptText.textContent = t("inputPrompt.cancelled");
     this.statusText.textContent = "";
     this.cleanup();
@@ -995,7 +1055,7 @@ class VoiceInputPrompt {
   // waits its turn rather than jumping ahead — recording order is preserved.
   // Only after the retry also fails does the caller's catch give up (drop the
   // session, surface the failure). Deterministic errors rethrow immediately.
-  async transcribeWithRetry(uploadBuffer, translateMode, uploadMime) {
+  async transcribeWithRetry(uploadBuffer, translateMode, uploadMime, sessionId) {
     const MAX_ATTEMPTS = 2; // original + one retry
     for (let attempt = 1; ; attempt++) {
       try {
@@ -1003,7 +1063,8 @@ class VoiceInputPrompt {
           "transcribe-audio",
           uploadBuffer,
           translateMode,
-          uploadMime
+          uploadMime,
+          sessionId
         );
       } catch (error) {
         if (
@@ -1046,11 +1107,16 @@ class VoiceInputPrompt {
     // a re-transcribable pending entry — see the hang-recovery branch below.
     let uploadBuffer = null;
     let uploadMime = mimeType || "audio/webm";
+    let releaseLocalTranscriptionSlot = null;
 
     this.transcriptionInProgressCount += 1;
+    this.activeTranscriptionSessionIds.add(sessionId);
     this.updateStatusText();
     try {
-      if (cancelledShortPress) {
+      if (
+        cancelledShortPress ||
+        this.cancelledTranscriptionSessionIds.has(sessionId)
+      ) {
         this.removePendingInsertion(sessionId);
         if (allowUi()) {
           this.cancelledShortPress = false;
@@ -1073,10 +1139,6 @@ class VoiceInputPrompt {
         return;
       }
 
-      const audioBlob = new Blob(chunks, {
-        type: mimeType || "audio/webm", // Use actual recording format
-      });
-
       // Neural VAD gate: if the clip contains no speech, skip transcription
       // entirely (no API call, no history) and reuse the no-speech UI. When
       // speech IS present, prefer the gate's head/tail-trimmed 16 kHz WAV —
@@ -1088,6 +1150,22 @@ class VoiceInputPrompt {
       // from the VAD path, and fall back to a plain decode+encode if the VAD
       // itself fails. Translate mode goes to a cloud API, which takes any format.
       const useLocalWav = this.currentProvider === "local" && !translateMode;
+      if (useLocalWav) {
+        // Keep the full local pipeline single-flight, not just the stateful VAD
+        // call. Waiting sessions retain only compressed MediaRecorder chunks;
+        // they do not each hold decoded PCM, a WAV copy, and a queued native
+        // request while llama.cpp is already using its model-sized memory.
+        releaseLocalTranscriptionSlot = await this.acquireLocalTranscriptionSlot();
+        if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
+          this.removePendingInsertion(sessionId);
+          return;
+        }
+      }
+
+      const audioBlob = new Blob(chunks, {
+        type: mimeType || "audio/webm", // Use actual recording format
+      });
+
       try {
         if (window.SayTypeVadGate) {
           const verdict = await window.SayTypeVadGate.analyze(audioBlob, { forceWav: useLocalWav });
@@ -1124,6 +1202,11 @@ class VoiceInputPrompt {
         }
       }
 
+      if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
+        this.removePendingInsertion(sessionId);
+        return;
+      }
+
       // Send the raw bytes as a Uint8Array so the IPC bridge ships them as the
       // octet-stream body (not a JSON number array). translateMode/mime go
       // along as headers — see ipc-bridge.js (tauriRawBody).
@@ -1134,7 +1217,8 @@ class VoiceInputPrompt {
       const transcription = await this.transcribeWithRetry(
         uploadBuffer,
         translateMode,
-        uploadMime // The upload's actual MIME type (WAV when trimmed)
+        uploadMime, // The upload's actual MIME type (WAV when trimmed)
+        sessionId
       );
 
       if (transcription && transcription.trim()) {
@@ -1207,6 +1291,11 @@ class VoiceInputPrompt {
         }
       }
     } finally {
+      if (releaseLocalTranscriptionSlot) {
+        releaseLocalTranscriptionSlot();
+      }
+      this.cancelledTranscriptionSessionIds.delete(sessionId);
+      this.activeTranscriptionSessionIds.delete(sessionId);
       this.transcriptionInProgressCount = Math.max(0, this.transcriptionInProgressCount - 1);
       // Only refresh status when concurrent transcriptions are still running.
       // If count reached 0, the try/catch or flushPendingInsertions have already

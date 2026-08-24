@@ -153,6 +153,35 @@ pub fn local_asr_dir() -> Result<PathBuf> {
   Ok(crate::settings::app_data_dir()?.join("local-asr"))
 }
 
+fn remove_legacy_dir(path: &Path) -> Result<()> {
+  match fs::remove_dir_all(path) {
+    Ok(()) => {
+      log::info!("local-asr: removed legacy assets at {}", path.display());
+      Ok(())
+    }
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    Err(error) => Err(error)
+      .with_context(|| format!("failed to remove legacy assets at {}", path.display())),
+  }
+}
+
+fn cleanup_legacy_assets_at(app_data: &Path) -> Result<()> {
+  // The pre-GGUF spike stored three ONNX graphs here. No current code reads
+  // this exact directory; leaving it behind costs roughly another model copy.
+  remove_legacy_dir(&app_data.join("models/qwen3-asr-0.6b-int8"))?;
+
+  // Apple Silicon moved from the unpatched upstream runtime to a request-local
+  // build. On platforms where b9960 is still current, keep it untouched.
+  if LLAMA_BUILD != "b9960" {
+    remove_legacy_dir(&app_data.join("local-asr/bin/b9960"))?;
+  }
+  Ok(())
+}
+
+pub fn cleanup_legacy_assets() -> Result<()> {
+  cleanup_legacy_assets_at(&crate::settings::app_data_dir()?)
+}
+
 pub fn bin_dir(base: &Path) -> PathBuf {
   base.join("bin").join(LLAMA_BUILD)
 }
@@ -191,15 +220,20 @@ fn models_ready_at(dir: &Path) -> bool {
 }
 
 fn local_asr_command(program: PathBuf) -> tokio::process::Command {
-  let mut command = tokio::process::Command::new(program);
+  let command = tokio::process::Command::new(program);
   #[cfg(target_os = "windows")]
   {
+    let mut command = command;
     // llama-mtmd-cli is a console executable. Without CREATE_NO_WINDOW,
     // Windows opens a terminal for every transcription and may steal focus
     // from the app that should receive the resulting text.
     command.creation_flags(0x0800_0000);
+    command
   }
-  command
+  #[cfg(not(target_os = "windows"))]
+  {
+    command
+  }
 }
 
 /// Cheap readiness: every GGUF at its exact size, plus the extracted CLI
@@ -622,7 +656,18 @@ const PARTIAL_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 /// progress only* — the whole clip is still encoded before the first token, so
 /// total latency and peak memory are unchanged; it is not streaming ASR (the
 /// model is encoder-decoder and cannot be).
-pub async fn transcribe_wav(app: Option<&tauri::AppHandle>, wav_bytes: &[u8]) -> Result<String> {
+fn partial_event_payload(session_id: Option<u64>, text: &str) -> serde_json::Value {
+  serde_json::json!({
+    "sessionId": session_id,
+    "text": text,
+  })
+}
+
+pub async fn transcribe_wav(
+  app: Option<&tauri::AppHandle>,
+  session_id: Option<u64>,
+  wav_bytes: &[u8],
+) -> Result<String> {
   transcribe_wav_inner(wav_bytes, |text| {
     let Some(app) = app else { return };
     // Broadcast, NOT emit_to: the frontend registers its listener with
@@ -633,7 +678,7 @@ pub async fn transcribe_wav(app: Option<&tauri::AppHandle>, wav_bytes: &[u8]) ->
     // broadcast is harmless.
     let _ = app.emit(
       "local-transcription-partial",
-      serde_json::json!({ "text": text }),
+      partial_event_payload(session_id, text),
     );
   })
   .await
@@ -1374,6 +1419,43 @@ mod tests {
   }
 
   #[test]
+  fn partial_event_payload_includes_the_recording_session() {
+    let payload = partial_event_payload(Some(7), "hello");
+
+    assert_eq!(payload["sessionId"], 7);
+    assert_eq!(payload["text"], "hello");
+  }
+
+  #[test]
+  fn legacy_assets_are_removed_without_touching_current_models() {
+    let root = std::env::temp_dir().join(format!(
+      "saytype-legacy-assets-{}-{}",
+      std::process::id(),
+      TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let legacy_onnx = root.join("models/qwen3-asr-0.6b-int8");
+    let current_model = root.join("local-asr/models/Qwen3-ASR-0.6B-Q8_0.gguf");
+    let legacy_runtime = root.join("local-asr/bin/b9960");
+    let current_runtime = root.join("local-asr/bin").join(LLAMA_BUILD);
+    fs::create_dir_all(&legacy_onnx).unwrap();
+    fs::create_dir_all(current_model.parent().unwrap()).unwrap();
+    fs::create_dir_all(&legacy_runtime).unwrap();
+    fs::create_dir_all(&current_runtime).unwrap();
+    fs::write(legacy_onnx.join("encoder.int8.onnx"), b"old").unwrap();
+    fs::write(&current_model, b"current").unwrap();
+
+    cleanup_legacy_assets_at(&root).unwrap();
+
+    assert!(!legacy_onnx.exists());
+    assert!(current_model.exists());
+    assert!(current_runtime.exists());
+    if LLAMA_BUILD != "b9960" {
+      assert!(!legacy_runtime.exists());
+    }
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
   fn ctx_scales_with_clip_length_within_bounds() {
     // 16 kHz mono 16-bit WAV = 32000 bytes/s after a 44-byte header.
     let wav = |secs: f64| 44 + (secs * 32000.0) as usize;
@@ -1601,7 +1683,7 @@ mod tests {
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 0);
     let starts_before = RESIDENT_STARTS.load(Ordering::Relaxed);
-    let first = rt.block_on(transcribe_wav(None, &wav)).expect("first resident decode ok");
+    let first = rt.block_on(transcribe_wav(None, None, &wav)).expect("first resident decode ok");
     assert!(keep_resident_worker_warm(), "recording start should touch a warm worker");
     rt.block_on(async {
       tokio::time::sleep(Duration::from_millis(75)).await;
@@ -1614,7 +1696,7 @@ mod tests {
       RESIDENT_WORKER.lock().unwrap().is_some(),
       "the refreshed worker must survive beyond its original idle deadline"
     );
-    let second = rt.block_on(transcribe_wav(None, &wav)).expect("second resident decode ok");
+    let second = rt.block_on(transcribe_wav(None, None, &wav)).expect("second resident decode ok");
     assert_eq!(first, "", "silence must yield empty text");
     assert_eq!(second, "", "warm-worker silence must yield empty text");
     assert_eq!(

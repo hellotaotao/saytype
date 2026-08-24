@@ -5,9 +5,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+pub struct ActiveTranscription {
+  pub session_id: Option<u64>,
+  pub cancellation: CancellationToken,
+}
+
 pub struct AppState {
   pub hotkey: Mutex<Option<HotkeyHandle>>,
-  pub active_transcriptions: Mutex<HashMap<u64, CancellationToken>>,
+  pub active_transcriptions: Mutex<HashMap<u64, ActiveTranscription>>,
   pub next_transcription_id: AtomicU64,
   pub accessibility: Mutex<Option<bool>>,
   /// Shared HTTP client for transcription requests. Reused across calls so we

@@ -59,6 +59,7 @@
 
   const tauriArgs = {
     "report-recording-startup": [["timing"]],
+    "cancel-transcription": [["sessionId", "session_id"]],
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
     "read-debug-audio": [["id"]],
@@ -81,7 +82,7 @@
   const tauriRawBody = {
     "transcribe-audio": {
       body: 0, // args[0] = audio bytes (Uint8Array / ArrayBuffer)
-      headers: { "translate-mode": 1, "mime-type": 2 }, // args[1], args[2]
+      headers: { "translate-mode": 1, "mime-type": 2, "session-id": 3 },
     },
     "save-pending-transcription": {
       body: 0, // args[0] = audio bytes (the failed clip's WAV)

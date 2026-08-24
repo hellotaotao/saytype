@@ -2,7 +2,7 @@ use crate::hotkey;
 use crate::history;
 use crate::platform::{self, InsertResult};
 use crate::settings::{self, AppConfig, SettingsPayload, TRANSLATE_SHORTCUT};
-use crate::state::AppState;
+use crate::state::{ActiveTranscription, AppState};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -216,39 +216,34 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
     settings_input.shortcut,
     settings_input.ui_theme
   );
-  let existing = settings::read_config().map_err(stringify_error)?;
-  let mut config = settings_input;
-  config.dictionary = existing.dictionary;
-  // Like dictionary: the settings form never carries this flag, and a missing
-  // field deserializes to false — without this line every settings save would
-  // re-trigger the onboarding wizard.
-  config.onboarding_completed = existing.onboarding_completed;
-  config.translate_shortcut = TRANSLATE_SHORTCUT.into();
-  config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
-  settings::local_provider_selectable(&config.provider, crate::local_asr::assets_ready())
-    .map_err(stringify_error)?;
-  if config.provider == crate::local_asr::LOCAL_PROVIDER {
-    // The form's key fields are hidden for the local provider; keep the stored
-    // legacy key instead of clobbering it with the (empty) local selection.
-    config.api_key = existing.api_key.clone();
-  } else {
-    config.api_key = settings::selected_api_key(&config);
-  }
-
-  settings::write_config(&config).map_err(stringify_error)?;
-  // Only re-apply the login item when auto-launch actually changed. Re-running
-  // `launchctl load` on every save would spawn a duplicate instance (the agent
-  // is RunAtLoad), which is the root cause of the double-transcribe bug.
-  if settings::auto_launch_needs_update(existing.auto_launch, config.auto_launch) {
-    if let Err(error) = settings::update_auto_launch(config.auto_launch) {
-      // Re-persist with the flag reverted: the config write above already
-      // stored the new value, and leaving it there would make every future
-      // save of the same toggle skip the launchctl retry as "unchanged".
-      config.auto_launch = existing.auto_launch;
-      settings::write_config(&config).map_err(stringify_error)?;
-      return Err(stringify_error(error));
+  let config = settings::mutate_config(move |existing| {
+    let previous_auto_launch = existing.auto_launch;
+    let mut config = settings_input;
+    config.dictionary = existing.dictionary.clone();
+    // Like dictionary: the settings form never carries this flag, and a missing
+    // field deserializes to false — without this line every settings save would
+    // re-trigger the onboarding wizard.
+    config.onboarding_completed = existing.onboarding_completed;
+    config.translate_shortcut = TRANSLATE_SHORTCUT.into();
+    config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
+    settings::local_provider_selectable(&config.provider, crate::local_asr::assets_ready())
+      .map_err(anyhow::Error::msg)?;
+    if config.provider == crate::local_asr::LOCAL_PROVIDER {
+      // The form's key fields are hidden for the local provider; keep the stored
+      // legacy key instead of clobbering it with the (empty) local selection.
+      config.api_key = existing.api_key.clone();
+    } else {
+      config.api_key = settings::selected_api_key(&config);
     }
-  }
+    // Apply the login item before committing the matching config value. A
+    // launchctl failure now leaves the previous config intact instead of
+    // requiring a second compensating write.
+    if settings::auto_launch_needs_update(previous_auto_launch, config.auto_launch) {
+      settings::update_auto_launch(config.auto_launch)?;
+    }
+    *existing = config;
+    Ok(())
+  }).map_err(stringify_error)?;
 
   if let Some(handle) = state.hotkey.lock().unwrap().as_ref() {
     handle.update_shortcut(config.shortcut.clone());
@@ -267,9 +262,10 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
 #[tauri::command]
 pub fn set_onboarding_completed() -> Result<bool, String> {
   log::info!("command:set_onboarding_completed");
-  let mut config = settings::read_config().map_err(stringify_error)?;
-  config.onboarding_completed = true;
-  settings::write_config(&config).map_err(stringify_error)?;
+  settings::mutate_config(|config| {
+    config.onboarding_completed = true;
+    Ok(())
+  }).map_err(stringify_error)?;
   Ok(true)
 }
 
@@ -285,18 +281,18 @@ pub fn save_onboarding_api_key(app: AppHandle, provider: String, api_key: String
     return Err("API key is empty".into());
   }
 
-  let mut config = settings::read_config().map_err(stringify_error)?;
-  match provider.as_str() {
-    "groq" => config.api_key_groq = key,
-    "openai" => config.api_key_openai = key,
-    other => return Err(format!("Unknown provider: {other}")),
-  }
-  switch_provider(&mut config, &provider);
-  // Re-derive even when the provider didn't change: the key for the already
-  // selected provider may have just been (re)entered.
-  config.api_key = settings::selected_api_key(&config);
-
-  settings::write_config(&config).map_err(stringify_error)?;
+  let config = settings::mutate_config(|config| {
+    match provider.as_str() {
+      "groq" => config.api_key_groq = key,
+      "openai" => config.api_key_openai = key,
+      other => anyhow::bail!("Unknown provider: {other}"),
+    }
+    switch_provider(config, &provider);
+    // Re-derive even when the provider didn't change: the key for the already
+    // selected provider may have just been (re)entered.
+    config.api_key = settings::selected_api_key(config);
+    Ok(())
+  }).map_err(stringify_error)?;
   broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
   Ok(true)
 }
@@ -335,9 +331,10 @@ pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), Stri
     return Err(format!("Unknown provider: {provider}"));
   }
   settings::local_provider_selectable(provider, crate::local_asr::assets_ready())?;
-  let mut config = settings::read_config().map_err(stringify_error)?;
-  switch_provider(&mut config, provider);
-  settings::write_config(&config).map_err(stringify_error)?;
+  let config = settings::mutate_config(|config| {
+    switch_provider(config, provider);
+    Ok(())
+  }).map_err(stringify_error)?;
   broadcast_settings_updates(app, &config).map_err(stringify_error)?;
   if provider != crate::local_asr::LOCAL_PROVIDER {
     crate::local_asr::shutdown_resident_worker();
@@ -424,13 +421,28 @@ pub fn cleanup_microphone(app: AppHandle) -> Result<bool, String> {
   Ok(true)
 }
 
-#[tauri::command]
-pub fn cancel_transcription(state: State<'_, AppState>) -> Result<bool, String> {
+fn cancel_active_transcriptions(
+  active: &HashMap<u64, ActiveTranscription>,
+  session_id: Option<u64>,
+) -> bool {
   let mut cancelled = false;
-  for token in state.active_transcriptions.lock().unwrap().values() {
-    token.cancel();
+  for transcription in active.values() {
+    if session_id.is_some() && transcription.session_id != session_id {
+      continue;
+    }
+    transcription.cancellation.cancel();
     cancelled = true;
   }
+  cancelled
+}
+
+#[tauri::command]
+pub fn cancel_transcription(
+  state: State<'_, AppState>,
+  session_id: Option<u64>,
+) -> Result<bool, String> {
+  let active = state.active_transcriptions.lock().unwrap();
+  let cancelled = cancel_active_transcriptions(&active, session_id);
   Ok(cancelled)
 }
 
@@ -440,7 +452,7 @@ pub fn cancel_transcription(state: State<'_, AppState>) -> Result<bool, String> 
 /// panicking request would leave its stale token in the map forever, making
 /// cancel_transcription report "cancelled something" on an idle app.
 struct ActiveTranscriptionGuard<'a> {
-  map: &'a Mutex<HashMap<u64, CancellationToken>>,
+  map: &'a Mutex<HashMap<u64, ActiveTranscription>>,
   id: u64,
 }
 
@@ -483,6 +495,10 @@ pub async fn transcribe_audio(
     .filter(|value| !value.is_empty())
     .unwrap_or("audio/webm")
     .to_string();
+  let session_id = headers
+    .get("session-id")
+    .and_then(|value| value.to_str().ok())
+    .and_then(|value| value.parse::<u64>().ok());
 
   if audio_buffer.is_empty() {
     return Err("Audio buffer is empty".into());
@@ -504,7 +520,13 @@ pub async fn transcribe_audio(
     .active_transcriptions
     .lock()
     .unwrap()
-    .insert(request_id, cancellation.clone());
+    .insert(
+      request_id,
+      ActiveTranscription {
+        session_id,
+        cancellation: cancellation.clone(),
+      },
+    );
   let active_transcription = ActiveTranscriptionGuard {
     map: &state.active_transcriptions,
     id: request_id,
@@ -519,7 +541,9 @@ pub async fn transcribe_audio(
     _ = cancellation.cancelled() => Err(anyhow::anyhow!("TRANSCRIPTION_CANCELLED")),
     result = async {
       match &route {
-        TranscriptionRoute::Local => perform_local_transcription(&app, audio_buffer, &mime).await,
+        TranscriptionRoute::Local => {
+          perform_local_transcription(&app, audio_buffer, &mime, session_id).await
+        }
         TranscriptionRoute::Cloud { provider, api_key } => {
           perform_transcription_request(
             &state.http_client,
@@ -836,9 +860,10 @@ pub fn get_dictionary() -> Result<String, String> {
 
 #[tauri::command]
 pub fn save_dictionary(text: String) -> Result<bool, String> {
-  let mut config = settings::read_config().map_err(stringify_error)?;
-  config.dictionary = text;
-  settings::write_config(&config).map_err(stringify_error)?;
+  settings::mutate_config(|config| {
+    config.dictionary = text;
+    Ok(())
+  }).map_err(stringify_error)?;
   Ok(true)
 }
 
@@ -1044,7 +1069,7 @@ pub async fn save_pending_transcription(
 #[tauri::command]
 pub async fn retranscribe_pending(app: AppHandle, id: String) -> Result<String, String> {
   let (bytes, mime) = history::read_debug_audio(&id).map_err(stringify_error)?;
-  let raw = perform_local_transcription(&app, bytes, &mime)
+  let raw = perform_local_transcription(&app, bytes, &mime, None)
     .await
     .map_err(stringify_error)?;
   let text = crate::scrub::scrub_transcription(&raw);
@@ -1185,9 +1210,10 @@ async fn perform_local_transcription(
   app: &AppHandle,
   audio_buffer: Vec<u8>,
   mime_type: &str,
+  session_id: Option<u64>,
 ) -> Result<String> {
   ensure_wav_mime(mime_type)?;
-  crate::local_asr::transcribe_wav(Some(app), &audio_buffer).await.map_err(|err| {
+  crate::local_asr::transcribe_wav(Some(app), session_id, &audio_buffer).await.map_err(|err| {
     if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
       anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
     } else {
@@ -1478,7 +1504,10 @@ mod tests {
   #[test]
   fn transcription_guard_removes_its_entry_on_drop() {
     let map = Mutex::new(HashMap::new());
-    map.lock().unwrap().insert(7, CancellationToken::new());
+    map.lock().unwrap().insert(7, ActiveTranscription {
+      session_id: Some(7),
+      cancellation: CancellationToken::new(),
+    });
     {
       let _guard = ActiveTranscriptionGuard { map: &map, id: 7 };
     }
@@ -1490,7 +1519,10 @@ mod tests {
     // The whole point of the guard: a panic inside the transcription future
     // must not leave a stale token behind.
     let map = Mutex::new(HashMap::new());
-    map.lock().unwrap().insert(7, CancellationToken::new());
+    map.lock().unwrap().insert(7, ActiveTranscription {
+      session_id: Some(7),
+      cancellation: CancellationToken::new(),
+    });
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       let _guard = ActiveTranscriptionGuard { map: &map, id: 7 };
       panic!("simulated transcription panic");
@@ -1502,12 +1534,43 @@ mod tests {
   #[test]
   fn transcription_guard_only_removes_its_own_entry() {
     let map = Mutex::new(HashMap::new());
-    map.lock().unwrap().insert(7, CancellationToken::new());
-    map.lock().unwrap().insert(8, CancellationToken::new());
+    map.lock().unwrap().insert(7, ActiveTranscription {
+      session_id: Some(7),
+      cancellation: CancellationToken::new(),
+    });
+    map.lock().unwrap().insert(8, ActiveTranscription {
+      session_id: Some(8),
+      cancellation: CancellationToken::new(),
+    });
     drop(ActiveTranscriptionGuard { map: &map, id: 7 });
     let remaining = map.lock().unwrap();
     assert!(!remaining.contains_key(&7));
     assert!(remaining.contains_key(&8));
+  }
+
+  #[test]
+  fn targeted_cancellation_leaves_other_sessions_running() {
+    let first = CancellationToken::new();
+    let second = CancellationToken::new();
+    let mut active = HashMap::new();
+    active.insert(
+      1,
+      crate::state::ActiveTranscription {
+        session_id: Some(10),
+        cancellation: first.clone(),
+      },
+    );
+    active.insert(
+      2,
+      crate::state::ActiveTranscription {
+        session_id: Some(11),
+        cancellation: second.clone(),
+      },
+    );
+
+    assert!(cancel_active_transcriptions(&active, Some(11)));
+    assert!(!first.is_cancelled());
+    assert!(second.is_cancelled());
   }
 
   // --- Whisper + Chinese: the seed is injected, placed LAST ---

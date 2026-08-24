@@ -326,7 +326,7 @@ async function refreshReadiness() {
 async function checkMicOk() {
   try {
     const result = await ipc.invoke("check-microphone-permission");
-    return result.status === "granted" || result.status === "not-determined";
+    return result.status === "granted";
   } catch (error) {
     console.error("Failed to check microphone permission:", error);
     return false;

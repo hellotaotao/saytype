@@ -146,3 +146,22 @@ test("App settings contains a collapsed diagnostic log viewer with refresh and c
   assert.match(commandsRs, /window\.label\(\) != "main"/);
   assert.match(commandsRs, /join\("SayType\.log"\)/);
 });
+
+test("unrequested microphone permission is not reported as granted", () => {
+  assert.doesNotMatch(
+    mainJs,
+    /result\.status === "granted"\s*\|\|\s*result\.status === "not-determined"/
+  );
+  assert.doesNotMatch(
+    settingsJs,
+    /status === "granted"\s*\|\|\s*status === "not-determined"/
+  );
+  assert.match(
+    settingsJs,
+    /requestMicrophonePermission[\s\S]*navigator\.mediaDevices\.getUserMedia/
+  );
+  assert.match(
+    settingsJs,
+    /requestMicrophonePermission[\s\S]*open-microphone-settings/
+  );
+});

@@ -678,7 +678,7 @@ function bindEventHandlers() {
 
   providerSelect?.addEventListener("change", handleProviderChange);
   checkPermissionButton?.addEventListener("click", () => {
-    void checkMicrophonePermissionStatus();
+    void requestMicrophonePermission();
   });
   checkAccessibilityButton?.addEventListener("click", () => {
     void handleAccessibilityPermission();
@@ -883,10 +883,13 @@ async function checkMicrophonePermissionStatus() {
     const status = result.status;
     let ok = false;
 
-    if (status === "granted" || status === "not-determined") {
+    if (status === "granted") {
       statusElement.textContent = translate("settings.permission.granted");
       statusElement.className = "permission-status granted";
       ok = true;
+    } else if (status === "not-determined") {
+      statusElement.textContent = translate("settings.permission.notDetermined");
+      statusElement.className = "permission-status";
     } else if (status === "restricted") {
       statusElement.textContent = translate("settings.permission.restricted");
       statusElement.className = "permission-status denied";
@@ -901,6 +904,24 @@ async function checkMicrophonePermissionStatus() {
     statusElement.className = "permission-status denied";
     micButton?.classList.remove("hidden");
   }
+}
+
+async function requestMicrophonePermission() {
+  try {
+    const current = await ipc.invoke("check-microphone-permission");
+    if (current?.status === "denied" || current?.status === "restricted") {
+      await ipc.invoke("open-microphone-settings");
+    } else if (
+      current?.status !== "granted" &&
+      navigator.mediaDevices?.getUserMedia
+    ) {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    }
+  } catch (error) {
+    console.warn("Microphone permission action failed:", error);
+  }
+  await checkMicrophonePermissionStatus();
 }
 
 async function checkAccessibilityStatus() {

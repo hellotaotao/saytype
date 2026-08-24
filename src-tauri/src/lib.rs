@@ -119,6 +119,10 @@ pub fn run() {
       };
       app.handle().plugin(log_plugin)?;
 
+      if let Err(error) = local_asr::cleanup_legacy_assets() {
+        log::warn!("local-asr: legacy asset cleanup failed: {error:#}");
+      }
+
       // Auto-update: checks GitHub Releases' latest.json and verifies packages
       // against our minisign pubkey (docs/superpowers/specs/2026-07-13-auto-update-design.md).
       #[cfg(desktop)]

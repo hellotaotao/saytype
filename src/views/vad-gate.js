@@ -22,6 +22,17 @@
   const PAD_END_MS = 450;
   const MIN_TRIM_SAVINGS_MS = 500;
   let vadPromise = null;
+  let analysisTail = Promise.resolve();
+
+  // NonRealTimeVAD owns one stateful FrameProcessor. A later run resets that
+  // processor when it ends, so sharing the cached model across overlapping
+  // recordings is safe only when the whole analysis is single-flight. Keeping
+  // decode and WAV encoding inside the same queue also bounds peak PCM memory.
+  function runExclusive(task) {
+    const run = analysisTail.then(task, task);
+    analysisTail = run.catch(() => {});
+    return run;
+  }
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
@@ -79,53 +90,59 @@
   // opts.forceWav: the local ASR backend needs PCM WAV regardless of whether
   // trimming saves anything — encode even when the trim is skipped.
   async function analyze(blob, opts) {
-    const forceWav = !!(opts && opts.forceWav);
-    const vad = await getVad();
-    const pcm = await blobToPcm16k(blob);
-    const durationMs = (pcm.length / TARGET_RATE) * 1000;
-    const segments = [];
-    for await (const seg of vad.run(pcm, TARGET_RATE)) {
-      segments.push({ start: seg.start, end: seg.end });
-    }
-    const verdict = window.SayTypeVad.decideSpeech(segments, MIN_SPEECH_MS);
-    let wav = null;
-    let trimmedMs = 0;
-    if (verdict.speech) {
-      const range = window.SayTypeVad.trimRangeMs(segments, durationMs, {
-        padStartMs: PAD_START_MS,
-        padEndMs: PAD_END_MS,
-      });
-      if (window.SayTypeVad.shouldTrim(range, durationMs, MIN_TRIM_SAVINGS_MS)) {
-        const startSample = Math.max(0, Math.floor((range.startMs / 1000) * TARGET_RATE));
-        const endSample = Math.min(pcm.length, Math.ceil((range.endMs / 1000) * TARGET_RATE));
-        wav = window.SayTypeVad.encodeWavPcm16(pcm.subarray(startSample, endSample), TARGET_RATE);
-        trimmedMs = Math.round(durationMs - (range.endMs - range.startMs));
-      } else if (forceWav) {
-        wav = window.SayTypeVad.encodeWavPcm16(pcm, TARGET_RATE);
+    return runExclusive(async () => {
+      const forceWav = !!(opts && opts.forceWav);
+      const vad = await getVad();
+      const pcm = await blobToPcm16k(blob);
+      const durationMs = (pcm.length / TARGET_RATE) * 1000;
+      const segments = [];
+      for await (const seg of vad.run(pcm, TARGET_RATE)) {
+        segments.push({ start: seg.start, end: seg.end });
       }
-    }
-    return { speech: verdict.speech, totalSpeechMs: verdict.totalSpeechMs, durationMs, wav, trimmedMs };
+      const verdict = window.SayTypeVad.decideSpeech(segments, MIN_SPEECH_MS);
+      let wav = null;
+      let trimmedMs = 0;
+      if (verdict.speech) {
+        const range = window.SayTypeVad.trimRangeMs(segments, durationMs, {
+          padStartMs: PAD_START_MS,
+          padEndMs: PAD_END_MS,
+        });
+        if (window.SayTypeVad.shouldTrim(range, durationMs, MIN_TRIM_SAVINGS_MS)) {
+          const startSample = Math.max(0, Math.floor((range.startMs / 1000) * TARGET_RATE));
+          const endSample = Math.min(pcm.length, Math.ceil((range.endMs / 1000) * TARGET_RATE));
+          wav = window.SayTypeVad.encodeWavPcm16(pcm.subarray(startSample, endSample), TARGET_RATE);
+          trimmedMs = Math.round(durationMs - (range.endMs - range.startMs));
+        } else if (forceWav) {
+          wav = window.SayTypeVad.encodeWavPcm16(pcm, TARGET_RATE);
+        }
+      }
+      return { speech: verdict.speech, totalSpeechMs: verdict.totalSpeechMs, durationMs, wav, trimmedMs };
+    });
   }
 
   // Prewarm: load the wasm runtime + Silero model (and run one short silent
   // buffer to warm the inference path) so the first real recording doesn't pay
   // the ~0.5-1s init. Best-effort — any failure just falls back to lazy-loading.
   async function warmup() {
-    try {
-      const vad = await getVad();
-      const silence = new Float32Array(8000); // 0.5 s @ 16 kHz
-      for await (const seg of vad.run(silence, 16000)) { void seg; }
-    } catch (e) {
-      console.warn("VAD warmup failed; will lazy-load on first use:", e);
-    }
+    return runExclusive(async () => {
+      try {
+        const vad = await getVad();
+        const silence = new Float32Array(8000); // 0.5 s @ 16 kHz
+        for await (const seg of vad.run(silence, 16000)) { void seg; }
+      } catch (e) {
+        console.warn("VAD warmup failed; will lazy-load on first use:", e);
+      }
+    });
   }
 
   // Local-backend fallback: WAV without the VAD. Plain WebAudio decode +
   // resample (blobToPcm16k) doesn't depend on Silero/ort, so even when the
   // VAD path fails the local engine can still get its PCM.
   async function encodeFullWav(blob) {
-    const pcm = await blobToPcm16k(blob);
-    return window.SayTypeVad.encodeWavPcm16(pcm, TARGET_RATE);
+    return runExclusive(async () => {
+      const pcm = await blobToPcm16k(blob);
+      return window.SayTypeVad.encodeWavPcm16(pcm, TARGET_RATE);
+    });
   }
 
   window.SayTypeVadGate = { analyze, warmup, encodeFullWav };

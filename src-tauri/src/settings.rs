@@ -3,12 +3,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 pub const APP_IDENTIFIER: &str = "com.tao.saytype";
 pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const HISTORY_FILE_NAME: &str = "transcription-history.json";
 pub const DEFAULT_RECORD_SHORTCUT: &str = "Ctrl+Shift";
 pub const TRANSLATE_SHORTCUT: &str = "Shift+Alt";
+
+static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+fn config_lock() -> MutexGuard<'static, ()> {
+  CONFIG_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn default_language() -> String {
   "auto".into()
@@ -202,8 +209,21 @@ pub fn read_config_from_path(path: &Path) -> Result<AppConfig> {
   Ok(config)
 }
 
-pub fn write_config(config: &AppConfig) -> Result<()> {
-  write_config_to_path(&config_path()?, config)
+fn mutate_config_at(
+  path: &Path,
+  mutation: impl FnOnce(&mut AppConfig) -> Result<()>,
+) -> Result<AppConfig> {
+  let _guard = config_lock();
+  let mut config = read_config_from_path(path)?;
+  mutation(&mut config)?;
+  write_config_to_path(path, &config)?;
+  Ok(config)
+}
+
+pub fn mutate_config(
+  mutation: impl FnOnce(&mut AppConfig) -> Result<()>,
+) -> Result<AppConfig> {
+  mutate_config_at(&config_path()?, mutation)
 }
 
 pub fn write_config_to_path(path: &Path, config: &AppConfig) -> Result<()> {
@@ -398,6 +418,50 @@ mod tests {
     let read = read_config_from_path(&path).unwrap();
     assert_eq!(read.provider, "openai");
     assert_eq!(read.api_key_openai, "sk-test");
+  }
+
+  #[test]
+  fn concurrent_config_mutations_preserve_unrelated_fields() {
+    use std::sync::{Arc, Barrier};
+
+    let path = std::env::temp_dir().join(format!(
+      "saytype-config-mutation-{}-{}.json",
+      std::process::id(),
+      chrono::Utc::now().timestamp_micros()
+    ));
+    write_config_to_path(&path, &AppConfig::default()).unwrap();
+    let start = Arc::new(Barrier::new(3));
+
+    let first_path = path.clone();
+    let first_start = start.clone();
+    let first = std::thread::spawn(move || {
+      first_start.wait();
+      mutate_config_at(&first_path, |config| {
+        config.dictionary = "alpha".into();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        Ok(())
+      })
+      .unwrap();
+    });
+
+    let second_path = path.clone();
+    let second_start = start.clone();
+    let second = std::thread::spawn(move || {
+      second_start.wait();
+      mutate_config_at(&second_path, |config| {
+        config.ui_theme = "midnight".into();
+        Ok(())
+      })
+      .unwrap();
+    });
+
+    start.wait();
+    first.join().unwrap();
+    second.join().unwrap();
+    let config = read_config_from_path(&path).unwrap();
+    assert_eq!(config.dictionary, "alpha");
+    assert_eq!(config.ui_theme, "midnight");
+    std::fs::remove_file(path).unwrap();
   }
 
   #[test]

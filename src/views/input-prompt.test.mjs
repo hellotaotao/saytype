@@ -39,7 +39,7 @@ function loadVoiceInputPrompt(options = {}) {
     __sayTypeInputPromptStarted: true,
     __SAYTYPE_IPC__: {
       invoke: options.invoke || (async () => null),
-      on() {},
+      on: options.on || (() => {}),
     },
     SayTypeI18n: {
       initI18n() {},
@@ -56,6 +56,7 @@ function loadVoiceInputPrompt(options = {}) {
         addEventListener() {},
       };
     },
+    addEventListener() {},
   };
   Object.assign(window, options.window || {});
   const context = vm.createContext({
@@ -97,10 +98,14 @@ function createBarePrompt(VoiceInputPrompt, overrides = {}) {
       isFlushingInsertQueue: false,
       pendingInsertionOrder: [],
       pendingInsertionsById: new Map(),
+      activeTranscriptionSessionIds: new Set(),
+      cancelledTranscriptionSessionIds: new Set(),
+      localTranscriptionTail: Promise.resolve(),
       transcriptionInProgressCount: 0,
       recordingSessionId: 0,
       currentProvider: "openai",
       hidePromptTimerId: null,
+      promptText: { textContent: "" },
       statusText: { textContent: "", style: {} },
       updateStatusText() {},
       updateShortcutHint() {},
@@ -163,6 +168,129 @@ test("a hide timer still hides the prompt when the app remains idle", () => {
 
   assert.equal(hideCalls, 1);
   assert.equal(prompt.hidePromptTimerId, null);
+});
+
+test("a hide timer waits while an older transcription is still pending", () => {
+  let scheduledCallback = null;
+  let hideCalls = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    setTimeout(callback) {
+      scheduledCallback = callback;
+      return 42;
+    },
+    clearTimeout() {},
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    transcriptionInProgressCount: 1,
+    pendingInsertionOrder: [1],
+    hidePrompt() {
+      hideCalls += 1;
+    },
+  });
+
+  prompt.scheduleHidePrompt(100);
+  scheduledCallback();
+
+  assert.equal(hideCalls, 0);
+  assert.deepEqual(prompt.pendingInsertionOrder, [1]);
+  assert.equal(prompt.hidePromptTimerId, null);
+});
+
+test("Escape cancels the active recording before an older transcription", () => {
+  const invoked = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      invoked.push([command, ...args]);
+      return Promise.resolve(true);
+    },
+  });
+  const activeRecordingSession = { id: 2, cancelledShortPress: false };
+  let stopCalls = 0;
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    isRecording: true,
+    transcriptionInProgressCount: 1,
+    activeRecordingSession,
+    cancelInProgress: false,
+    stopRequested: false,
+    pendingInsertionOrder: [1, 2],
+    stopRecordingTimer() {},
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    stopWaveAnimation() {},
+    stopRecording() {
+      stopCalls += 1;
+      this.isRecording = false;
+    },
+  });
+
+  prompt.cancelRecording();
+
+  assert.equal(stopCalls, 1);
+  assert.equal(activeRecordingSession.cancelledShortPress, true);
+  assert.deepEqual(prompt.pendingInsertionOrder, [1, 2]);
+  assert.equal(invoked.some(([command]) => command === "cancel-transcription"), false);
+});
+
+test("Escape cancels only the latest transcription while preserving older work", () => {
+  const invoked = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      invoked.push([command, ...args]);
+      return Promise.resolve(true);
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    transcriptionInProgressCount: 2,
+    activeTranscriptionSessionIds: new Set([1, 2]),
+    cancelInProgress: false,
+    stopRequested: false,
+    pendingInsertionOrder: [1, 2],
+    pendingInsertionsById: new Map([[1, "older"]]),
+    stopRecordingTimer() {},
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    cleanup() {},
+    stopWaveAnimation() {},
+    scheduleHidePrompt() {},
+  });
+
+  prompt.cancelRecording();
+
+  assert.deepEqual(invoked, [["cancel-transcription", 2]]);
+  assert.equal(prompt.cancelledTranscriptionSessionIds.has(2), true);
+  assert.deepEqual(prompt.pendingInsertionOrder, [1]);
+  assert.equal(prompt.pendingInsertionsById.get(1), "older");
+});
+
+test("local partial text is shown only for the latest non-recording session", () => {
+  const handlers = new Map();
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    on(channel, handler) {
+      handlers.set(channel, handler);
+    },
+  });
+  const previews = [];
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 2,
+    transcriptionInProgressCount: 2,
+    transcriptionText: {},
+    setTranscriptionPreview(text) {
+      previews.push(text);
+    },
+    updateModelBadge() {},
+  });
+  prompt.setupEventListeners();
+  const onPartial = handlers.get("local-transcription-partial");
+
+  prompt.isRecording = true;
+  onPartial(null, { sessionId: 1, text: "old while recording" });
+  prompt.isRecording = false;
+  onPartial(null, { sessionId: 1, text: "old" });
+  onPartial(null, { sessionId: 2, text: "latest" });
+
+  assert.deepEqual(previews, ["latest"]);
 });
 
 test("start event timing includes native work and renderer delivery delay", () => {
@@ -237,6 +365,7 @@ test("recording startup reports native, delivery, microphone, and first-paint ti
   const prompt = createBarePrompt(VoiceInputPrompt, {
     pageStartedAt: 0,
     translateMode: false,
+    cancelInProgress: true,
     stopRequested: false,
     activeRecordingSession: null,
     mediaStream: null,
@@ -271,6 +400,56 @@ test("recording startup reports native, delivery, microphone, and first-paint ti
       endToEndMs: 930,
     },
   ]]);
+  assert.equal(prompt.cancelInProgress, false);
+});
+
+test("microphone priming does not trigger an unrequested permission prompt", async () => {
+  let microphoneOpens = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      assert.equal(command, "check-microphone-permission");
+      return Promise.resolve({ status: "not-determined" });
+    },
+    globals: {
+      navigator: {
+        mediaDevices: {
+          async getUserMedia() {
+            microphoneOpens += 1;
+            return { getTracks: () => [] };
+          },
+        },
+      },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt);
+
+  await prompt.primeMicrophone();
+
+  assert.equal(microphoneOpens, 0);
+});
+
+test("microphone priming still warms an already granted device", async () => {
+  let microphoneOpens = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke() {
+      return Promise.resolve({ status: "granted" });
+    },
+    globals: {
+      navigator: {
+        mediaDevices: {
+          async getUserMedia() {
+            microphoneOpens += 1;
+            return { getTracks: () => [{ stop() {} }] };
+          },
+        },
+      },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt);
+
+  await prompt.primeMicrophone();
+
+  assert.equal(microphoneOpens, 1);
 });
 
 test("a failed old transcription cannot repaint or hide a newer recording", async () => {
@@ -312,6 +491,149 @@ test("a failed old transcription cannot repaint or hide a newer recording", asyn
   assert.equal(prompt.statusText.textContent, "recording second");
   assert.deepEqual(scheduledHides, []);
   assert.deepEqual(prompt.pendingInsertionOrder, [2]);
+});
+
+test("transcription IPC carries the recording session id", async () => {
+  const calls = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      if (command === "transcribe-audio") {
+        calls.push(args);
+        return Promise.resolve("session text");
+      }
+      return Promise.resolve(null);
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 7,
+    pendingInsertionOrder: [7],
+    async flushPendingInsertions() {},
+  });
+
+  await prompt.processRecording({
+    id: 7,
+    chunks: [new Blob([new Uint8Array([1, 2, 3])])],
+    mimeType: "audio/webm",
+    translateMode: false,
+    cancelledShortPress: false,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][3], 7);
+});
+
+test("local recording pipelines stay single-flight through transcription", async () => {
+  const firstTranscription = createDeferred();
+  const firstStarted = createDeferred();
+  let transcriptionCalls = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      if (command !== "transcribe-audio") {
+        return Promise.resolve(null);
+      }
+      transcriptionCalls += 1;
+      if (transcriptionCalls === 1) {
+        firstStarted.resolve();
+        return firstTranscription.promise;
+      }
+      return Promise.resolve("second text");
+    },
+    window: {
+      SayTypeVadGate: {
+        async analyze() {
+          return {
+            speech: true,
+            wav: new Uint8Array([1, 2, 3]),
+            trimmedMs: 0,
+            durationMs: 1000,
+          };
+        },
+      },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    recordingSessionId: 2,
+    pendingInsertionOrder: [1, 2],
+    async flushPendingInsertions() {},
+  });
+
+  const first = processOneRecording(prompt, 1);
+  await firstStarted.promise;
+  const second = processOneRecording(prompt, 2);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(transcriptionCalls, 1);
+  firstTranscription.resolve("first text");
+  await Promise.all([first, second]);
+  assert.equal(transcriptionCalls, 2);
+});
+
+test("a queued local transcription can be cancelled before native IPC", async () => {
+  const firstTranscription = createDeferred();
+  const firstStarted = createDeferred();
+  const invoked = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      invoked.push([command, ...args]);
+      if (command === "transcribe-audio" && args[3] === 1) {
+        firstStarted.resolve();
+        return firstTranscription.promise;
+      }
+      if (command === "transcribe-audio") {
+        return Promise.resolve("unexpected second text");
+      }
+      return Promise.resolve(true);
+    },
+    window: {
+      SayTypeVadGate: {
+        async analyze() {
+          return {
+            speech: true,
+            wav: new Uint8Array([1, 2, 3]),
+            trimmedMs: 0,
+            durationMs: 1000,
+          };
+        },
+      },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    recordingSessionId: 2,
+    pendingInsertionOrder: [1, 2],
+    cancelInProgress: false,
+    stopRequested: false,
+    stopRecordingTimer() {},
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    cleanup() {},
+    stopWaveAnimation() {},
+    scheduleHidePrompt() {},
+    async flushPendingInsertions() {},
+  });
+
+  const first = processOneRecording(prompt, 1);
+  await firstStarted.promise;
+  const second = processOneRecording(prompt, 2);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  prompt.cancelRecording();
+
+  assert.equal(prompt.cancelledTranscriptionSessionIds.has(2), true);
+  firstTranscription.resolve("first text");
+  await Promise.all([first, second]);
+  assert.equal(
+    invoked.filter(([command]) => command === "transcribe-audio").length,
+    1
+  );
+  assert.equal(
+    invoked.some(
+      ([command, sessionId]) =>
+        command === "cancel-transcription" && sessionId === 2
+    ),
+    true
+  );
 });
 
 test("the insertion queue waits for the earliest session result", async () => {
