@@ -10,6 +10,11 @@ pub struct ActiveTranscription {
   pub cancellation: CancellationToken,
 }
 
+pub struct LocalModelDownload {
+  pub model: String,
+  pub cancellation: CancellationToken,
+}
+
 pub struct AppState {
   pub hotkey: Mutex<Option<HotkeyHandle>>,
   pub active_transcriptions: Mutex<HashMap<u64, ActiveTranscription>>,
@@ -21,7 +26,7 @@ pub struct AppState {
   pub http_client: reqwest::Client,
   /// Cancellation token of the in-flight local-model download, if any
   /// (single-flight guard for download_local_model).
-  pub local_model_download: Mutex<Option<CancellationToken>>,
+  pub local_model_download: Mutex<Option<LocalModelDownload>>,
   /// Update downloaded and waiting for the user to restart (tray/settings).
   pub pending_update: Mutex<Option<crate::updater::PendingUpdate>>,
   /// Last known updater status, mirrored to the frontend as `update-status`.

@@ -2,7 +2,7 @@ use crate::hotkey;
 use crate::history;
 use crate::platform::{self, InsertResult};
 use crate::settings::{self, AppConfig, SettingsPayload, TRANSLATE_SHORTCUT};
-use crate::state::{ActiveTranscription, AppState};
+use crate::state::{ActiveTranscription, AppState, LocalModelDownload};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -209,7 +209,11 @@ pub fn get_api_keys(window: tauri::WebviewWindow) -> Result<ApiKeys, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_, AppState>) -> Result<bool, String> {
+pub fn save_settings(
+  app: AppHandle,
+  settings_input: AppConfig,
+  state: State<'_, AppState>,
+) -> Result<bool, String> {
   log::info!(
     "command:save_settings provider={} shortcut={} ui_theme={}",
     settings_input.provider,
@@ -226,7 +230,13 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
     config.onboarding_completed = existing.onboarding_completed;
     config.translate_shortcut = TRANSLATE_SHORTCUT.into();
     config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
-    settings::local_provider_selectable(&config.provider, crate::local_asr::assets_ready())
+    if config.provider == crate::local_asr::LOCAL_PROVIDER {
+      config.model = crate::local_asr::normalize_local_model_id(&config.model).into();
+    }
+    settings::local_provider_selectable(
+      &config.provider,
+      crate::local_asr::assets_ready_for(&config.model),
+    )
       .map_err(anyhow::Error::msg)?;
     if config.provider == crate::local_asr::LOCAL_PROVIDER {
       // The form's key fields are hidden for the local provider; keep the stored
@@ -243,16 +253,15 @@ pub fn save_settings(app: AppHandle, settings_input: AppConfig, state: State<'_,
     }
     *existing = config;
     Ok(())
-  }).map_err(stringify_error)?;
+  })
+  .map_err(stringify_error)?;
 
   if let Some(handle) = state.hotkey.lock().unwrap().as_ref() {
     handle.update_shortcut(config.shortcut.clone());
   }
 
   broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
-  if config.provider != crate::local_asr::LOCAL_PROVIDER {
-    crate::local_asr::shutdown_resident_worker();
-  }
+  sync_local_runtime(&app, &config);
   Ok(true)
 }
 
@@ -265,7 +274,8 @@ pub fn set_onboarding_completed() -> Result<bool, String> {
   settings::mutate_config(|config| {
     config.onboarding_completed = true;
     Ok(())
-  }).map_err(stringify_error)?;
+  })
+  .map_err(stringify_error)?;
   Ok(true)
 }
 
@@ -274,7 +284,11 @@ pub fn set_onboarding_completed() -> Result<bool, String> {
 // the provider actually changes, the model is reset to that provider's default
 // — otherwise a fresh config would send the OpenAI default model name to Groq.
 #[tauri::command]
-pub fn save_onboarding_api_key(app: AppHandle, provider: String, api_key: String) -> Result<bool, String> {
+pub fn save_onboarding_api_key(
+  app: AppHandle,
+  provider: String,
+  api_key: String,
+) -> Result<bool, String> {
   log::info!("command:save_onboarding_api_key provider={provider}");
   let key = api_key.trim().to_string();
   if key.is_empty() {
@@ -292,7 +306,8 @@ pub fn save_onboarding_api_key(app: AppHandle, provider: String, api_key: String
     // selected provider may have just been (re)entered.
     config.api_key = settings::selected_api_key(config);
     Ok(())
-  }).map_err(stringify_error)?;
+  })
+  .map_err(stringify_error)?;
   broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
   Ok(true)
 }
@@ -302,7 +317,7 @@ pub fn save_onboarding_api_key(app: AppHandle, provider: String, api_key: String
 fn default_model_for(provider: &str) -> &'static str {
   match provider {
     "groq" => "whisper-large-v3-turbo",
-    crate::local_asr::LOCAL_PROVIDER => "qwen3-asr-0.6b-q8_0",
+    crate::local_asr::LOCAL_PROVIDER => crate::local_asr::LOCAL_MODEL_ID,
     _ => "gpt-4o-mini-transcribe",
   }
 }
@@ -327,19 +342,59 @@ fn switch_provider(config: &mut AppConfig, provider: &str) {
 /// downloaded assets, persists, and broadcasts so every window's badges — and
 /// the tray checkmarks — update live.
 pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), String> {
-  if !matches!(provider, "groq" | "openai" | crate::local_asr::LOCAL_PROVIDER) {
+  if !matches!(
+    provider,
+    "groq" | "openai" | crate::local_asr::LOCAL_PROVIDER
+  ) {
     return Err(format!("Unknown provider: {provider}"));
   }
-  settings::local_provider_selectable(provider, crate::local_asr::assets_ready())?;
+  let local_ready = if provider == crate::local_asr::LOCAL_PROVIDER {
+    let current = settings::read_config().map_err(stringify_error)?;
+    let model = if current.provider == crate::local_asr::LOCAL_PROVIDER {
+      crate::local_asr::normalize_local_model_id(&current.model)
+    } else {
+      crate::local_asr::LOCAL_MODEL_ID
+    };
+    crate::local_asr::assets_ready_for(model)
+  } else {
+    false
+  };
+  settings::local_provider_selectable(provider, local_ready)?;
   let config = settings::mutate_config(|config| {
     switch_provider(config, provider);
     Ok(())
-  }).map_err(stringify_error)?;
+  })
+  .map_err(stringify_error)?;
   broadcast_settings_updates(app, &config).map_err(stringify_error)?;
-  if provider != crate::local_asr::LOCAL_PROVIDER {
-    crate::local_asr::shutdown_resident_worker();
-  }
+  sync_local_runtime(app, &config);
   Ok(())
+}
+
+pub(crate) fn sync_local_runtime(app: &AppHandle, config: &AppConfig) {
+  let selected = crate::local_asr::normalize_local_model_id(&config.model);
+  if config.provider == crate::local_asr::LOCAL_PROVIDER
+    && selected == crate::local_asr::NEMOTRON_MODEL_ID
+  {
+    crate::local_asr::shutdown_resident_worker();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+      if let Err(error) = crate::nemotron_asr::prewarm().await {
+        log::warn!("nemotron: prewarm failed: {error:#}");
+        let _ = app.emit(
+          "local-runtime-error",
+          json!({
+            "model": crate::local_asr::NEMOTRON_MODEL_ID,
+            "message": error.to_string(),
+          }),
+        );
+      }
+    });
+  } else {
+    crate::nemotron_asr::shutdown();
+    if config.provider != crate::local_asr::LOCAL_PROVIDER {
+      crate::local_asr::shutdown_resident_worker();
+    }
+  }
 }
 
 #[tauri::command]
@@ -349,14 +404,31 @@ pub fn set_provider(app: AppHandle, provider: String) -> Result<bool, String> {
   Ok(true)
 }
 
+#[tauri::command]
+pub fn set_local_model(app: AppHandle, model: String) -> Result<bool, String> {
+  let model = crate::local_asr::normalize_local_model_id(&model);
+  settings::local_provider_selectable(
+    crate::local_asr::LOCAL_PROVIDER,
+    crate::local_asr::assets_ready_for(model),
+  )?;
+  let config = settings::mutate_config(|config| {
+    config.provider = crate::local_asr::LOCAL_PROVIDER.into();
+    config.model = model.into();
+    Ok(())
+  })
+  .map_err(stringify_error)?;
+  broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
+  sync_local_runtime(&app, &config);
+  Ok(true)
+}
+
 fn show_main_settings(app: &AppHandle, target: &str) -> Result<(), String> {
   if let Some(window) = app.get_webview_window("main") {
     window.show().map_err(stringify_error)?;
     window.unminimize().map_err(stringify_error)?;
     window.set_focus().map_err(stringify_error)?;
   }
-  app
-    .emit_to("main", "open-settings-page", target)
+  app.emit_to("main", "open-settings-page", target)
     .map_err(stringify_error)
 }
 
@@ -465,6 +537,76 @@ impl Drop for ActiveTranscriptionGuard<'_> {
   }
 }
 
+fn record_successful_transcription(
+  app: &AppHandle,
+  raw: &str,
+  audio_for_debug: Option<(Vec<u8>, String)>,
+) -> String {
+  let text = crate::scrub::scrub_transcription(raw);
+  if text != raw {
+    log::info!(
+      "transcribe: scrubbed hallucination boilerplate ({} -> {} chars)",
+      raw.chars().count(),
+      text.chars().count()
+    );
+  }
+  if text.is_empty() {
+    return text;
+  }
+  if let Err(error) = append_activity(&text, true, None, audio_for_debug) {
+    log::warn!("failed to record transcription in history: {error:#}");
+  }
+  let _ = app.emit("activity-updated", ());
+  text
+}
+
+#[tauri::command]
+pub async fn start_live_transcription(
+  app: AppHandle,
+  session_id: u64,
+  sample_rate: u32,
+  language: String,
+) -> Result<bool, String> {
+  let config = settings::read_config().map_err(stringify_error)?;
+  if config.provider != crate::local_asr::LOCAL_PROVIDER
+    || crate::local_asr::normalize_local_model_id(&config.model)
+      != crate::local_asr::NEMOTRON_MODEL_ID
+  {
+    return Err("Nemotron is not the selected local model".into());
+  }
+  crate::nemotron_asr::start_live_session(app, session_id, sample_rate, language).await?;
+  Ok(true)
+}
+
+#[tauri::command]
+pub async fn push_live_audio(request: tauri::ipc::Request<'_>) -> Result<bool, String> {
+  let bytes = match request.body() {
+    tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+    tauri::ipc::InvokeBody::Json(_) => {
+      return Err("push_live_audio expects a raw PCM16 body".into());
+    }
+  };
+  let session_id = request
+    .headers()
+    .get("session-id")
+    .and_then(|value| value.to_str().ok())
+    .and_then(|value| value.parse::<u64>().ok())
+    .ok_or_else(|| "push_live_audio requires a session id".to_string())?;
+  crate::nemotron_asr::push_live_audio(session_id, bytes).await?;
+  Ok(true)
+}
+
+#[tauri::command]
+pub async fn finish_live_transcription(app: AppHandle, session_id: u64) -> Result<String, String> {
+  let raw = crate::nemotron_asr::finish_live_session(session_id).await?;
+  Ok(record_successful_transcription(&app, &raw, None))
+}
+
+#[tauri::command]
+pub async fn cancel_live_transcription(session_id: u64) -> Result<bool, String> {
+  Ok(crate::nemotron_asr::cancel_live_session(session_id).await)
+}
+
 #[tauri::command]
 pub async fn transcribe_audio(
   app: AppHandle,
@@ -542,7 +684,7 @@ pub async fn transcribe_audio(
     result = async {
       match &route {
         TranscriptionRoute::Local => {
-          perform_local_transcription(&app, audio_buffer, &mime, session_id).await
+          perform_local_transcription(&app, &config, audio_buffer, &mime, session_id).await
         }
         TranscriptionRoute::Cloud { provider, api_key } => {
           perform_transcription_request(
@@ -562,34 +704,7 @@ pub async fn transcribe_audio(
   drop(active_transcription);
 
   match result {
-    Ok(raw) => {
-      // Strip known Whisper hallucination boilerplate (明镜与点点 outros etc.)
-      // before the text reaches history or insertion — see scrub.rs / TODO #10.
-      let text = crate::scrub::scrub_transcription(&raw);
-      if text != raw {
-        // Counts only — the "no transcribed text in logs" promise holds.
-        log::info!(
-          "transcribe: scrubbed hallucination boilerplate ({} -> {} chars)",
-          raw.chars().count(),
-          text.chars().count()
-        );
-      }
-      if text.is_empty() {
-        // The entire output was boilerplate. Return the empty string (the
-        // frontend renders it as the no-speech state) without logging an
-        // empty history row.
-        return Ok(text);
-      }
-      // Saving to history is best-effort: the transcription already succeeded,
-      // so a history read/write failure must NOT bubble up as an Err — that
-      // would show the user "transcription failed" AND drop the text without
-      // ever inserting it, losing a result the API actually returned.
-      if let Err(err) = append_activity(&text, true, None, audio_for_debug) {
-        log::warn!("failed to record transcription in history: {err:#}");
-      }
-      let _ = app.emit("activity-updated", ());
-      Ok(text)
-    }
+    Ok(raw) => Ok(record_successful_transcription(&app, &raw, audio_for_debug)),
     Err(error) => {
       if is_cancellation_error(&error) {
         return Err("TRANSCRIPTION_CANCELLED".into());
@@ -608,7 +723,9 @@ pub async fn transcribe_audio(
       if !is_hang_error(&error) {
         // Best-effort: surface the original API error to the user, not a
         // secondary history-write error.
-        if let Err(err) = append_activity(&message, false, Some(error.to_string()), audio_for_debug) {
+        if let Err(err) =
+          append_activity(&message, false, Some(error.to_string()), audio_for_debug)
+        {
           log::warn!("failed to record failed transcription in history: {err:#}");
         }
         let _ = app.emit("activity-updated", ());
@@ -777,19 +894,33 @@ pub fn check_accessibility_permission() -> AccessibilityStatus {
 }
 
 #[tauri::command]
-pub fn request_accessibility_permission(app: AppHandle, state: State<'_, AppState>) -> AccessibilityStatus {
+pub fn request_accessibility_permission(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> AccessibilityStatus {
   sync_accessibility_status(app, state, accessibility_status(true))
 }
 
 #[tauri::command]
-pub fn recheck_accessibility_permission(app: AppHandle, state: State<'_, AppState>) -> AccessibilityStatus {
+pub fn recheck_accessibility_permission(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> AccessibilityStatus {
   sync_accessibility_status(app, state, accessibility_status(false))
 }
 
-fn sync_accessibility_status(app: AppHandle, state: State<'_, AppState>, status: AccessibilityStatus) -> AccessibilityStatus {
+fn sync_accessibility_status(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  status: AccessibilityStatus,
+) -> AccessibilityStatus {
   let mut previous = state.accessibility.lock().unwrap();
-  let changed = previous.map(|value| value != status.granted).unwrap_or(true);
-  let became_granted = previous.map(|value| !value && status.granted).unwrap_or(status.granted);
+  let changed = previous
+    .map(|value| value != status.granted)
+    .unwrap_or(true);
+  let became_granted = previous
+    .map(|value| !value && status.granted)
+    .unwrap_or(status.granted);
   *previous = Some(status.granted);
   drop(previous);
 
@@ -863,47 +994,56 @@ pub fn save_dictionary(text: String) -> Result<bool, String> {
   settings::mutate_config(|config| {
     config.dictionary = text;
     Ok(())
-  }).map_err(stringify_error)?;
+  })
+  .map_err(stringify_error)?;
   Ok(true)
 }
 
 // --- Local ASR asset management (Settings page) ---
 
 #[tauri::command]
-pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
-  log::info!("command:download_local_model");
+pub async fn download_local_model(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  model: Option<String>,
+) -> Result<bool, String> {
+  let model = crate::local_asr::normalize_local_model_id(model.as_deref().unwrap_or(""));
+  log::info!("command:download_local_model model={model}");
   let cancel = CancellationToken::new();
   {
     let mut slot = state.local_model_download.lock().unwrap();
     if slot.is_some() {
       return Err("Model download already in progress".into());
     }
-    *slot = Some(cancel.clone());
+    *slot = Some(LocalModelDownload {
+      model: model.into(),
+      cancellation: cancel.clone(),
+    });
   }
 
-  let result = crate::local_asr::download_model(app.clone(), cancel).await;
+  let result = crate::local_asr::download_model_for(model, app.clone(), cancel).await;
   *state.local_model_download.lock().unwrap() = None;
 
-  let status = crate::local_asr::model_status(false);
+  let status = crate::local_asr::model_status_for(model, false);
   match result {
     Ok(()) => {
       let _ = app.emit(
         "local-model-download-progress",
-        json!({ "state": "ready", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
+        json!({ "model": model, "state": "ready", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
       );
       Ok(true)
     }
     Err(err) if err == "DOWNLOAD_CANCELLED" => {
       let _ = app.emit(
         "local-model-download-progress",
-        json!({ "state": "cancelled", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
+        json!({ "model": model, "state": "cancelled", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
       );
       Ok(false)
     }
     Err(err) => {
       let _ = app.emit(
         "local-model-download-progress",
-        json!({ "state": "error", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes, "message": err }),
+        json!({ "model": model, "state": "error", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes, "message": err }),
       );
       Err(err)
     }
@@ -913,26 +1053,39 @@ pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) ->
 #[tauri::command]
 pub fn cancel_local_model_download(state: State<'_, AppState>) -> Result<bool, String> {
   log::info!("command:cancel_local_model_download");
-  if let Some(token) = state.local_model_download.lock().unwrap().as_ref() {
-    token.cancel();
+  if let Some(download) = state.local_model_download.lock().unwrap().as_ref() {
+    download.cancellation.cancel();
     return Ok(true);
   }
   Ok(false)
 }
 
 #[tauri::command]
-pub fn get_local_model_status(state: State<'_, AppState>) -> crate::local_asr::ModelStatus {
-  let downloading = state.local_model_download.lock().unwrap().is_some();
-  crate::local_asr::model_status(downloading)
+pub fn get_local_model_status(
+  state: State<'_, AppState>,
+  model: Option<String>,
+) -> crate::local_asr::ModelStatus {
+  let model = crate::local_asr::normalize_local_model_id(model.as_deref().unwrap_or(""));
+  let downloading = state
+    .local_model_download
+    .lock()
+    .unwrap()
+    .as_ref()
+    .is_some_and(|download| download.model == model);
+  crate::local_asr::model_status_for(model, downloading)
 }
 
 #[tauri::command]
-pub fn delete_local_model(state: State<'_, AppState>) -> Result<bool, String> {
-  log::info!("command:delete_local_model");
+pub fn delete_local_model(
+  state: State<'_, AppState>,
+  model: Option<String>,
+) -> Result<bool, String> {
+  let model = crate::local_asr::normalize_local_model_id(model.as_deref().unwrap_or(""));
+  log::info!("command:delete_local_model model={model}");
   if state.local_model_download.lock().unwrap().is_some() {
     return Err("Cancel the running download first".into());
   }
-  crate::local_asr::delete_model()?;
+  crate::local_asr::delete_model_for(model)?;
   Ok(true)
 }
 
@@ -1069,7 +1222,8 @@ pub async fn save_pending_transcription(
 #[tauri::command]
 pub async fn retranscribe_pending(app: AppHandle, id: String) -> Result<String, String> {
   let (bytes, mime) = history::read_debug_audio(&id).map_err(stringify_error)?;
-  let raw = perform_local_transcription(&app, bytes, &mime, None)
+  let config = settings::read_config().map_err(stringify_error)?;
+  let raw = perform_local_transcription(&app, &config, bytes, &mime, None)
     .await
     .map_err(stringify_error)?;
   let text = crate::scrub::scrub_transcription(&raw);
@@ -1156,7 +1310,10 @@ fn build_transcription_prompt(model: &str, language: &str, dictionary: &str) -> 
 #[derive(Debug)]
 pub enum TranscriptionRoute {
   Local,
-  Cloud { provider: &'static str, api_key: String },
+  Cloud {
+    provider: &'static str,
+    api_key: String,
+  },
 }
 
 /// Decide where this transcription goes. Local provider transcribes locally;
@@ -1172,16 +1329,26 @@ pub fn resolve_transcription_route(
       return Ok(TranscriptionRoute::Local);
     }
     if !config.api_key_groq.trim().is_empty() {
-      return Ok(TranscriptionRoute::Cloud { provider: "groq", api_key: config.api_key_groq.trim().into() });
+      return Ok(TranscriptionRoute::Cloud {
+        provider: "groq",
+        api_key: config.api_key_groq.trim().into(),
+      });
     }
     if !config.api_key_openai.trim().is_empty() {
-      return Ok(TranscriptionRoute::Cloud { provider: "openai", api_key: config.api_key_openai.trim().into() });
+      return Ok(TranscriptionRoute::Cloud {
+        provider: "openai",
+        api_key: config.api_key_openai.trim().into(),
+      });
     }
     return Err(
       "Translation needs a cloud API key (the local model only transcribes). Add a Groq or OpenAI key in Settings.".into(),
     );
   }
-  let provider = if config.provider == "groq" { "groq" } else { "openai" };
+  let provider = if config.provider == "groq" {
+    "groq"
+  } else {
+    "openai"
+  };
   let api_key = settings::selected_api_key(config);
   if api_key.trim().is_empty() {
     return Err("API key not configured".into());
@@ -1208,12 +1375,20 @@ fn ensure_wav_mime(mime_type: &str) -> Result<()> {
 
 async fn perform_local_transcription(
   app: &AppHandle,
+  config: &AppConfig,
   audio_buffer: Vec<u8>,
   mime_type: &str,
   session_id: Option<u64>,
 ) -> Result<String> {
   ensure_wav_mime(mime_type)?;
-  crate::local_asr::transcribe_wav(Some(app), session_id, &audio_buffer).await.map_err(|err| {
+  let result = if crate::local_asr::normalize_local_model_id(&config.model)
+    == crate::local_asr::NEMOTRON_MODEL_ID
+  {
+    crate::nemotron_asr::transcribe_wav(audio_buffer, &config.language).await
+  } else {
+    crate::local_asr::transcribe_wav(Some(app), session_id, &audio_buffer).await
+  };
+  result.map_err(|err| {
     if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
       anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
     } else {
@@ -1264,8 +1439,8 @@ async fn perform_transcription_request(
   } else {
     "webm"
   };
-  let file_part = reqwest::multipart::Part::bytes(audio_buffer)
-    .file_name(format!("audio.{extension}"));
+  let file_part =
+    reqwest::multipart::Part::bytes(audio_buffer).file_name(format!("audio.{extension}"));
 
   let mut form = reqwest::multipart::Form::new()
     .part("file", file_part)
@@ -1276,7 +1451,9 @@ async fn perform_transcription_request(
     if config.language != "auto" && !config.language.trim().is_empty() {
       form = form.text("language", config.language.clone());
     }
-    if let Some(prompt) = build_transcription_prompt(&model, &config.language, &config.dictionary) {
+    if let Some(prompt) =
+      build_transcription_prompt(&model, &config.language, &config.dictionary)
+    {
       form = form.text("prompt", prompt);
     }
   }
@@ -1313,9 +1490,7 @@ async fn perform_transcription_request(
 }
 
 fn is_cancellation_error(error: &anyhow::Error) -> bool {
-  error
-    .to_string()
-    .contains("TRANSCRIPTION_CANCELLED")
+  error.to_string().contains("TRANSCRIPTION_CANCELLED")
 }
 
 // Whether a transcription failure is a hang/timeout — the local watchdog aborts
@@ -1334,7 +1509,11 @@ fn accessibility_status(prompt: bool) -> AccessibilityStatus {
     let granted = platform::accessibility_granted(prompt);
     AccessibilityStatus {
       granted,
-      status: if granted { "granted".into() } else { "denied".into() },
+      status: if granted {
+        "granted".into()
+      } else {
+        "denied".into()
+      },
     }
   } else {
     AccessibilityStatus {

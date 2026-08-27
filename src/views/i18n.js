@@ -304,6 +304,8 @@
             whisperLargeV3Turbo:
               "Whisper Large V3 Turbo (Faster) — $0.000667/min ($0.04/hr)",
             qwen3AsrLocal: "Qwen3-ASR 0.6B (on-device) — free, offline",
+            nemotron35Local:
+              "Nemotron 3.5 ASR 0.6B (live, Apple Silicon) — free, offline",
           },
         },
         localModel: {
@@ -312,6 +314,7 @@
           statusPartial: "Download interrupted — resume where it left off.",
           statusDownloading: "Downloading… {done} / {total}",
           statusReady: "Ready · {size} on disk",
+          statusUnsupported: "Nemotron requires an Apple Silicon Mac.",
           download: "Download model",
           resume: "Resume download",
           cancel: "Cancel download",
@@ -666,6 +669,7 @@
             whisperLargeV3Turbo:
               "Whisper Large V3 Turbo（更快） — $0.000667/分钟 ($0.04/小时)",
             qwen3AsrLocal: "Qwen3-ASR 0.6B（本地）— 免费、离线",
+            nemotron35Local: "Nemotron 3.5 ASR 0.6B（实时、Apple Silicon）— 免费、离线",
           },
         },
         localModel: {
@@ -674,6 +678,7 @@
           statusPartial: "下载中断 — 可从断点继续。",
           statusDownloading: "下载中… {done} / {total}",
           statusReady: "已就绪 · 磁盘占用 {size}",
+          statusUnsupported: "Nemotron 需要 Apple Silicon Mac。",
           download: "下载模型",
           resume: "继续下载",
           cancel: "取消下载",

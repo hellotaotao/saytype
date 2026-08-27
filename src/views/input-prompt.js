@@ -15,14 +15,16 @@ const DEBUG_MICROPHONE_CLEANUP = false;
 // override and the empty-model default). Keep in sync with the Rust side.
 const RECORD_DEFAULT_MODEL = { openai: "gpt-4o-mini-transcribe", groq: "whisper-large-v3-turbo" };
 const TRANSLATE_MODEL = { openai: "whisper-1", groq: "whisper-large-v3" };
-const LOCAL_MODEL_ID = "qwen3-asr-0.6b-q8_0";
+const QWEN_LOCAL_MODEL_ID = "qwen3-asr-0.6b-q8_0";
+const NEMOTRON_LOCAL_MODEL_ID = "nemotron-3.5-asr-streaming-0.6b-q8_0";
 const MODEL_LABEL = {
   "gpt-4o-transcribe": "OpenAI GPT-4o",
   "gpt-4o-mini-transcribe": "OpenAI GPT-4o mini",
   "whisper-1": "OpenAI Whisper",
   "whisper-large-v3": "Groq Whisper v3",
   "whisper-large-v3-turbo": "Groq Whisper v3 Turbo",
-  [LOCAL_MODEL_ID]: "Qwen3 · Local",
+  [QWEN_LOCAL_MODEL_ID]: "Qwen3 · Local",
+  [NEMOTRON_LOCAL_MODEL_ID]: "Nemotron 3.5 · Live Local",
 };
 // Audio capture constraints, shared by the launch prime and every recording.
 const AUDIO_CONSTRAINTS = {
@@ -190,6 +192,7 @@ class VoiceInputPrompt {
     this.copyBtnLabel = document.getElementById("copyBtnLabel");
     this.currentProvider = null;
     this.currentModel = "";
+    this.currentLanguage = "auto";
     this._failedText = "";
 
     this.createWaveBars();
@@ -241,27 +244,23 @@ class VoiceInputPrompt {
   }
 
   setupEventListeners() {
-    // The local ASR subprocess emits its transcript token-by-token as it
-    // decodes, so show the text landing instead of a silent wait (a 5min clip
-    // decodes for ~30s). This is progress only -- the clip is fully encoded
-    // before the first token, so it does not arrive any sooner overall, and
-    // storeTranscriptionResult still overwrites this with the final text before
-    // anything is inserted. Guarded on the in-progress count: a cancelled
-    // decode can have one emit already in flight, which must not repaint the
-    // prompt after it was cleared.
+    // Qwen emits preview text while decoding after release; Nemotron emits it
+    // during recording. Preview text is never inserted. The selected engine's
+    // authoritative final replaces it before insertion and history storage.
     ipc.on("local-transcription-partial", (event, payload) => {
       const text = payload && payload.text;
       if (!text || !this.transcriptionText) {
         return;
       }
-      if (this.transcriptionInProgressCount <= 0) {
+      const sessionMatches = Number(payload.sessionId) === this.recordingSessionId;
+      const isLiveNemotron =
+        sessionMatches &&
+        this.activeRecordingSession?.live?.sessionId === Number(payload.sessionId) &&
+        (this.isRecording || this.starting || this.transcriptionInProgressCount > 0);
+      if (!sessionMatches || (!isLiveNemotron && this.transcriptionInProgressCount <= 0)) {
         return;
       }
-      if (
-        this.isRecording ||
-        this.starting ||
-        Number(payload.sessionId) !== this.recordingSessionId
-      ) {
+      if (!isLiveNemotron && (this.isRecording || this.starting)) {
         return;
       }
       this.setTranscriptionPreview(text);
@@ -364,6 +363,7 @@ class VoiceInputPrompt {
       this.osName = settings.os || this.osName;
       this.currentProvider = settings.provider || "openai";
       this.currentModel = settings.model || "";
+      this.currentLanguage = settings.language || "auto";
       this.updateShortcutHint(
         settings.shortcut || DEFAULT_RECORD_SHORTCUT,
         settings.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT
@@ -414,7 +414,10 @@ class VoiceInputPrompt {
     if (this.currentProvider === "local") {
       // Translate mode falls back to a cloud Whisper (commands.rs picks the
       // provider by key presence — the exact one isn't known here).
-      return this.translateMode ? "Cloud Whisper" : MODEL_LABEL[LOCAL_MODEL_ID];
+      const model = this.currentModel === NEMOTRON_LOCAL_MODEL_ID
+        ? NEMOTRON_LOCAL_MODEL_ID
+        : QWEN_LOCAL_MODEL_ID;
+      return this.translateMode ? "Cloud Whisper" : MODEL_LABEL[model];
     }
     const provider = this.currentProvider === "groq" ? "groq" : "openai";
     let model;
@@ -742,6 +745,120 @@ class VoiceInputPrompt {
     this.scheduleHidePrompt(2800);
   }
 
+  shouldUseNemotronLive(translateMode = this.translateMode) {
+    return (
+      this.currentProvider === "local" &&
+      this.currentModel === NEMOTRON_LOCAL_MODEL_ID &&
+      !translateMode
+    );
+  }
+
+  async setupNemotronLive(recordingSession, source) {
+    if (!this.shouldUseNemotronLive(recordingSession.translateMode)) {
+      return;
+    }
+    if (!this.audioContext?.audioWorklet) {
+      throw new Error("AudioWorklet is required for Nemotron live transcription");
+    }
+
+    await this.audioContext.audioWorklet.addModule("live-pcm-worklet.js");
+    await ipc.invoke(
+      "start-live-transcription",
+      recordingSession.id,
+      Math.round(this.audioContext.sampleRate),
+      this.currentLanguage || "auto"
+    );
+
+    const live = {
+      sessionId: recordingSession.id,
+      node: null,
+      mutedOutput: null,
+      uploadTail: Promise.resolve(),
+      uploadError: null,
+      pendingPcm: [],
+      pendingPcmBytes: 0,
+      stopped: false,
+    };
+    recordingSession.live = live;
+
+    const node = new AudioWorkletNode(this.audioContext, "saytype-pcm16-capture");
+    const mutedOutput = this.audioContext.createGain();
+    mutedOutput.gain.value = 0;
+    live.node = node;
+    live.mutedOutput = mutedOutput;
+
+    node.port.onmessage = (event) => {
+      if (live.stopped || !(event.data instanceof ArrayBuffer)) {
+        return;
+      }
+      live.pendingPcm.push(new Uint8Array(event.data));
+      live.pendingPcmBytes += event.data.byteLength;
+      if (live.pendingPcmBytes >= 4096) {
+        this.flushNemotronPcm(live);
+      }
+    };
+    source.connect(node);
+    node.connect(mutedOutput);
+    mutedOutput.connect(this.audioContext.destination);
+  }
+
+  stopNemotronCapture(recordingSession) {
+    const live = recordingSession?.live;
+    if (!live || live.stopped) {
+      return;
+    }
+    this.flushNemotronPcm(live);
+    live.stopped = true;
+    if (live.node) {
+      live.node.port.onmessage = null;
+    }
+    try {
+      live.node?.disconnect();
+      live.mutedOutput?.disconnect();
+    } catch {
+      // The AudioContext may already be closing.
+    }
+  }
+
+  flushNemotronPcm(live) {
+    if (!live?.pendingPcmBytes) {
+      return;
+    }
+    const bytes = new Uint8Array(live.pendingPcmBytes);
+    let offset = 0;
+    for (const chunk of live.pendingPcm) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    live.pendingPcm = [];
+    live.pendingPcmBytes = 0;
+    live.uploadTail = live.uploadTail
+      .then(() => ipc.invoke("push-live-audio", bytes, live.sessionId))
+      .catch((error) => {
+        live.uploadError = error;
+      });
+  }
+
+  async finishNemotronLive(recordingSession) {
+    const live = recordingSession?.live;
+    if (!live) {
+      throw new Error("Nemotron realtime session was not initialized");
+    }
+    await live.uploadTail;
+    if (live.uploadError) {
+      throw live.uploadError;
+    }
+    return ipc.invoke("finish-live-transcription", live.sessionId);
+  }
+
+  cancelNemotronLive(recordingSession) {
+    const sessionId = recordingSession?.live?.sessionId;
+    if (sessionId == null) {
+      return;
+    }
+    void ipc.invoke("cancel-live-transcription", sessionId).catch(() => {});
+  }
+
   async startRecording(startupTiming = {}) {
     if (this.isRecording || this.starting) return;
 
@@ -788,15 +905,6 @@ class VoiceInputPrompt {
       }
 
       this.mediaStream = stream;
-
-      // Reveal the prompt now — the mic is open, so the instant the window
-      // appears it already means "you can talk" (Listening), never "starting".
-      this.promptElement.classList.add("visible", "recording");
-      if (this.translateMode) {
-        this.promptText.textContent = t("inputPrompt.listeningEnglish");
-      } else {
-        this.promptText.textContent = t("inputPrompt.listening");
-      }
 
       // Setup audio context for visualization
       this.audioContext = new (window.AudioContext ||
@@ -850,6 +958,17 @@ class VoiceInputPrompt {
         this.processRecording(recordingSession);
       };
 
+      await this.setupNemotronLive(recordingSession, source);
+
+      // Reveal the prompt only after every selected engine is ready to receive
+      // audio. The visible Listening state therefore never drops first words.
+      this.promptElement.classList.add("visible", "recording");
+      if (this.translateMode) {
+        this.promptText.textContent = t("inputPrompt.listeningEnglish");
+      } else {
+        this.promptText.textContent = t("inputPrompt.listening");
+      }
+
       this.mediaRecorder.start();
       this.recordingStartedAt = Date.now();
       this.cancelledShortPress = false;
@@ -884,6 +1003,7 @@ class VoiceInputPrompt {
     } catch (error) {
       console.error("Error starting recording:", error);
       if (this.activeRecordingSession) {
+        this.cancelNemotronLive(this.activeRecordingSession);
         this.removePendingInsertion(this.activeRecordingSession.id);
       }
       await this.handleRecordingError(error);
@@ -920,6 +1040,7 @@ class VoiceInputPrompt {
     if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
       this.mediaRecorder.stop();
     }
+    this.stopNemotronCapture(this.activeRecordingSession);
 
     // Release the mic as soon as recording stops; we keep the recorded audio
     // chunks for transcription. The mic indicator only shows while recording.
@@ -972,6 +1093,9 @@ class VoiceInputPrompt {
         this.removePendingInsertion(sessionId);
       }
       ipc.invoke("cancel-transcription", sessionId).catch(() => {});
+      if (this.activeRecordingSession?.live?.sessionId === sessionId) {
+        ipc.invoke("cancel-live-transcription", sessionId).catch(() => {});
+      }
       this.promptText.textContent = t("inputPrompt.cancelled");
       this.statusText.textContent = "";
       this.cleanup();
@@ -1108,6 +1232,8 @@ class VoiceInputPrompt {
     let uploadBuffer = null;
     let uploadMime = mimeType || "audio/webm";
     let releaseLocalTranscriptionSlot = null;
+    let audioBlob = null;
+    const useNemotronLive = !!recordingSession.live && !translateMode;
 
     this.transcriptionInProgressCount += 1;
     this.activeTranscriptionSessionIds.add(sessionId);
@@ -1117,6 +1243,7 @@ class VoiceInputPrompt {
         cancelledShortPress ||
         this.cancelledTranscriptionSessionIds.has(sessionId)
       ) {
+        this.cancelNemotronLive(recordingSession);
         this.removePendingInsertion(sessionId);
         if (allowUi()) {
           this.cancelledShortPress = false;
@@ -1129,6 +1256,7 @@ class VoiceInputPrompt {
         return;
       }
       if (!chunks.length) {
+        this.cancelNemotronLive(recordingSession);
         console.warn("No audio chunks captured; skipping transcription request");
         this.removePendingInsertion(sessionId);
         if (allowUi()) {
@@ -1139,17 +1267,8 @@ class VoiceInputPrompt {
         return;
       }
 
-      // Neural VAD gate: if the clip contains no speech, skip transcription
-      // entirely (no API call, no history) and reuse the no-speech UI. When
-      // speech IS present, prefer the gate's head/tail-trimmed 16 kHz WAV —
-      // silence around the speech is what makes Whisper hallucinate outro
-      // boilerplate (TODO #10). Fail OPEN — any VAD error falls through to
-      // uploading the original recording so a VAD bug can never drop or
-      // mangle a real dictation.
-      // Local backend (non-translate) can only decode WAV — force PCM output
-      // from the VAD path, and fall back to a plain decode+encode if the VAD
-      // itself fails. Translate mode goes to a cloud API, which takes any format.
-      const useLocalWav = this.currentProvider === "local" && !translateMode;
+      const useLocalWav =
+        this.currentProvider === "local" && !translateMode && !useNemotronLive;
       if (useLocalWav) {
         // Keep the full local pipeline single-flight, not just the stateful VAD
         // call. Waiting sessions retain only compressed MediaRecorder chunks;
@@ -1162,64 +1281,70 @@ class VoiceInputPrompt {
         }
       }
 
-      const audioBlob = new Blob(chunks, {
+      audioBlob = new Blob(chunks, {
         type: mimeType || "audio/webm", // Use actual recording format
       });
 
-      try {
-        if (window.SayTypeVadGate) {
-          const verdict = await window.SayTypeVadGate.analyze(audioBlob, { forceWav: useLocalWav });
-          if (!verdict.speech) {
-            this.removePendingInsertion(sessionId);
-            if (allowUi()) {
-              this.statusText.textContent = t("inputPrompt.noSpeech");
-              this.scheduleHidePrompt(2000);
-            }
-            return;
-          }
-          if (verdict.wav) {
-            uploadBuffer = verdict.wav;
-            uploadMime = "audio/wav";
-            if (verdict.trimmedMs > 0) {
-              console.log(
-                `VAD trim: cut ${verdict.trimmedMs}ms of head/tail silence from a ${Math.round(verdict.durationMs)}ms clip`
-              );
-            }
-          }
+      let transcription;
+      if (useNemotronLive) {
+        if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
+          this.cancelNemotronLive(recordingSession);
+          this.removePendingInsertion(sessionId);
+          return;
         }
-      } catch (vadError) {
-        console.warn("VAD gate failed; proceeding to transcription:", vadError);
-      }
-      if (useLocalWav && !uploadBuffer) {
-        // VAD path failed (or produced no WAV): encode without it. If even
-        // this fails, fall through with the original bytes — the backend
-        // rejects them with an explicit "expects WAV" error (no silent drop).
+        transcription = await this.finishNemotronLive(recordingSession);
+      } else {
+        // Batch engines run the neural VAD after release. Nemotron has already
+        // processed the live PCM stream and returns an empty final for silence.
         try {
-          uploadBuffer = await window.SayTypeVadGate.encodeFullWav(audioBlob);
-          uploadMime = "audio/wav";
-        } catch (wavError) {
-          console.warn("full-WAV fallback failed; sending original bytes:", wavError);
+          if (window.SayTypeVadGate) {
+            const verdict = await window.SayTypeVadGate.analyze(audioBlob, { forceWav: useLocalWav });
+            if (!verdict.speech) {
+              this.removePendingInsertion(sessionId);
+              if (allowUi()) {
+                this.statusText.textContent = t("inputPrompt.noSpeech");
+                this.scheduleHidePrompt(2000);
+              }
+              return;
+            }
+            if (verdict.wav) {
+              uploadBuffer = verdict.wav;
+              uploadMime = "audio/wav";
+              if (verdict.trimmedMs > 0) {
+                console.log(
+                  `VAD trim: cut ${verdict.trimmedMs}ms of head/tail silence from a ${Math.round(verdict.durationMs)}ms clip`
+                );
+              }
+            }
+          }
+        } catch (vadError) {
+          console.warn("VAD gate failed; proceeding to transcription:", vadError);
         }
-      }
+        if (useLocalWav && !uploadBuffer) {
+          try {
+            uploadBuffer = await window.SayTypeVadGate.encodeFullWav(audioBlob);
+            uploadMime = "audio/wav";
+          } catch (wavError) {
+            console.warn("full-WAV fallback failed; sending original bytes:", wavError);
+          }
+        }
 
-      if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
-        this.removePendingInsertion(sessionId);
-        return;
-      }
+        if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
+          this.removePendingInsertion(sessionId);
+          return;
+        }
 
-      // Send the raw bytes as a Uint8Array so the IPC bridge ships them as the
-      // octet-stream body (not a JSON number array). translateMode/mime go
-      // along as headers — see ipc-bridge.js (tauriRawBody).
-      if (!uploadBuffer) {
-        uploadBuffer = new Uint8Array(await audioBlob.arrayBuffer());
-      }
+        if (!uploadBuffer) {
+          uploadBuffer = new Uint8Array(await audioBlob.arrayBuffer());
+        }
 
-      const transcription = await this.transcribeWithRetry(
-        uploadBuffer,
-        translateMode,
-        uploadMime, // The upload's actual MIME type (WAV when trimmed)
-        sessionId
-      );
+        transcription = await this.transcribeWithRetry(
+          uploadBuffer,
+          translateMode,
+          uploadMime,
+          sessionId
+        );
+      }
 
       if (transcription && transcription.trim()) {
         this.storeTranscriptionResult(sessionId, transcription);
@@ -1234,6 +1359,7 @@ class VoiceInputPrompt {
       }
     } catch (error) {
       console.error("Transcription error:", error);
+      this.cancelNemotronLive(recordingSession);
       this.removePendingInsertion(sessionId);
       // Tauri rejects with the command's Err value, which is the raw string for
       // a Result<_, String>, so handle both string and Error shapes.
@@ -1242,17 +1368,24 @@ class VoiceInputPrompt {
         (error && error.name === "TranscriptionCancelledError") ||
         message.includes("TRANSCRIPTION_CANCELLED");
 
-      // Give-up recovery: a local decode that stayed hung through the auto-retry.
+      // Give-up recovery: preserve a failed local dictation for manual retry.
       // Stash the exact WAV as a re-transcribable pending history entry so the
       // clip isn't lost — even when the user has moved on and the prompt is gone
       // (so this runs regardless of allowUi()). Best-effort; a save failure just
-      // logs. Only local hangs qualify — cloud audio isn't persisted, and
-      // re-transcribe runs through the local route.
+      // logs. Cloud audio isn't persisted; retries always use a local engine.
       let savedPending = false;
+      if (!isCancelled && useNemotronLive && !uploadBuffer && audioBlob) {
+        try {
+          uploadBuffer = await window.SayTypeVadGate.encodeFullWav(audioBlob);
+          uploadMime = "audio/wav";
+        } catch (wavError) {
+          console.warn("failed to preserve Nemotron recording as WAV:", wavError);
+        }
+      }
       if (
         !isCancelled &&
-        this.currentProvider === "local" &&
-        isRetryableTranscriptionError(message) &&
+        (useNemotronLive || this.currentProvider === "local") &&
+        (useNemotronLive || isRetryableTranscriptionError(message)) &&
         uploadBuffer
       ) {
         try {

@@ -140,7 +140,7 @@ pub struct SettingsPayload {
 
 impl SettingsPayload {
   pub fn from_config(config: &AppConfig) -> Self {
-    Self::from_config_with(config, crate::local_asr::assets_ready())
+    Self::from_config_with(config, crate::local_asr::assets_ready_for(&config.model))
   }
 
   /// `local_model_ready` injected for tests (assets_ready() reads the real

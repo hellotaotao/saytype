@@ -19,12 +19,16 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 pub const LOCAL_PROVIDER: &str = "local";
-/// Model id stored in config.model for the local provider. Rust never reads
-/// it back (routing keys off provider=="local"); the frontend mirrors this
-/// literal in settings.js (modelOptions.local) and input-prompt.js
-/// (LOCAL_MODEL_ID) — keep all three in sync.
-#[allow(dead_code)]
-pub const LOCAL_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
+pub const QWEN_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
+pub const NEMOTRON_MODEL_ID: &str = "nemotron-3.5-asr-streaming-0.6b-q8_0";
+pub const LOCAL_MODEL_ID: &str = QWEN_MODEL_ID;
+
+pub fn normalize_local_model_id(model: &str) -> &'static str {
+  match model.trim() {
+    NEMOTRON_MODEL_ID => NEMOTRON_MODEL_ID,
+    _ => QWEN_MODEL_ID,
+  }
+}
 /// Pinned llama.cpp release. Must stay ≥ b9173 (Qwen3-ASR repetition fix,
 /// ggml-org/llama.cpp#22357). Upgrading requires re-verifying CLI flags,
 /// stdout format, all sha256s, and a real-dictation regression.
@@ -255,6 +259,21 @@ pub fn assets_ready() -> bool {
       assets_ready_at(&d)
     })
     .unwrap_or(false)
+}
+
+#[cfg(test)]
+pub fn assets_ready_for_at(dir: &Path, model: &str) -> bool {
+  match normalize_local_model_id(model) {
+    NEMOTRON_MODEL_ID => crate::nemotron_asr::assets_ready_at(dir),
+    _ => assets_ready_at(dir),
+  }
+}
+
+pub fn assets_ready_for(model: &str) -> bool {
+  match normalize_local_model_id(model) {
+    NEMOTRON_MODEL_ID => crate::nemotron_asr::assets_ready(),
+    _ => assets_ready(),
+  }
 }
 
 #[cfg(unix)]
@@ -1015,6 +1034,7 @@ fn emit_progress(app: &tauri::AppHandle, state: &str, downloaded: u64, message: 
   let _ = app.emit(
     "local-model-download-progress",
     serde_json::json!({
+      "model": QWEN_MODEL_ID,
       "state": state,
       "downloadedBytes": downloaded,
       "totalBytes": total_download_bytes(),
@@ -1261,15 +1281,43 @@ async fn stream_to_part(
   Ok(())
 }
 
-/// Settings "delete model": stop any warm worker, then remove the whole
-/// local-asr dir (models + bin).
+/// Settings "delete model": stop the Qwen worker, then remove only Qwen files.
 pub fn delete_model() -> Result<(), String> {
   shutdown_resident_worker();
   let dir = local_asr_dir().map_err(|e| e.to_string())?;
-  match fs::remove_dir_all(&dir) {
+  for asset in MODEL_ASSETS.iter().chain(std::iter::once(llama_zip_asset())) {
+    let _ = fs::remove_file(dir.join(asset.rel_path));
+    let _ = fs::remove_file(dir.join(format!("{}.part", asset.rel_path)));
+  }
+  match fs::remove_dir_all(bin_dir(&dir)) {
     Ok(()) => Ok(()),
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
     Err(err) => Err(err.to_string()),
+  }
+}
+
+pub fn model_status_for(model: &str, downloading: bool) -> ModelStatus {
+  match normalize_local_model_id(model) {
+    NEMOTRON_MODEL_ID => crate::nemotron_asr::model_status(downloading),
+    _ => model_status(downloading),
+  }
+}
+
+pub async fn download_model_for(
+  model: &str,
+  app: tauri::AppHandle,
+  cancel: CancellationToken,
+) -> Result<(), String> {
+  match normalize_local_model_id(model) {
+    NEMOTRON_MODEL_ID => crate::nemotron_asr::download_model(app, cancel).await,
+    _ => download_model(app, cancel).await,
+  }
+}
+
+pub fn delete_model_for(model: &str) -> Result<(), String> {
+  match normalize_local_model_id(model) {
+    NEMOTRON_MODEL_ID => crate::nemotron_asr::delete_model(),
+    _ => delete_model(),
   }
 }
 
@@ -1289,6 +1337,37 @@ mod tests {
     // ~1.02GB models + a 10-80MB zip
     assert!(total > 1_020_000_000 && total < 1_150_000_000, "total = {total}");
     assert_ne!(LLAMA_BUILD, "<FILL-STEP-1>");
+  }
+
+  #[test]
+  fn local_model_ids_normalize_to_qwen_without_clobbering_nemotron() {
+    assert_eq!(normalize_local_model_id(""), QWEN_MODEL_ID);
+    assert_eq!(normalize_local_model_id("unknown-model"), QWEN_MODEL_ID);
+    assert_eq!(normalize_local_model_id(QWEN_MODEL_ID), QWEN_MODEL_ID);
+    assert_eq!(normalize_local_model_id(NEMOTRON_MODEL_ID), NEMOTRON_MODEL_ID);
+  }
+
+  #[test]
+  fn model_readiness_is_independent_for_qwen_and_nemotron() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path();
+
+    for asset in MODEL_ASSETS {
+      let path = dir.join(asset.rel_path);
+      fs::create_dir_all(path.parent().unwrap()).unwrap();
+      fs::File::create(path).unwrap().set_len(asset.size).unwrap();
+    }
+    let cli = cli_path(dir);
+    fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    fs::write(&cli, b"#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    assert!(assets_ready_for_at(dir, QWEN_MODEL_ID));
+    assert!(!assets_ready_for_at(dir, NEMOTRON_MODEL_ID));
   }
 
   #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

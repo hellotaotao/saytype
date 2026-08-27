@@ -23,6 +23,10 @@
     "hide-input-prompt": "hide_input_prompt",
     "cleanup-microphone": "cleanup_microphone",
     "cancel-transcription": "cancel_transcription",
+    "start-live-transcription": "start_live_transcription",
+    "push-live-audio": "push_live_audio",
+    "finish-live-transcription": "finish_live_transcription",
+    "cancel-live-transcription": "cancel_live_transcription",
     "transcribe-audio": "transcribe_audio",
     "save-pending-transcription": "save_pending_transcription",
     "retranscribe-pending": "retranscribe_pending",
@@ -47,6 +51,7 @@
     "set-onboarding-completed": "set_onboarding_completed",
     "save-onboarding-api-key": "save_onboarding_api_key",
     "set-provider": "set_provider",
+    "set-local-model": "set_local_model",
     "open-local-model-panel": "open_local_model_panel",
     "download-local-model": "download_local_model",
     "cancel-local-model-download": "cancel_local_model_download",
@@ -60,6 +65,13 @@
   const tauriArgs = {
     "report-recording-startup": [["timing"]],
     "cancel-transcription": [["sessionId", "session_id"]],
+    "start-live-transcription": [
+      ["sessionId", "session_id"],
+      ["sampleRate", "sample_rate"],
+      ["language"],
+    ],
+    "finish-live-transcription": [["sessionId", "session_id"]],
+    "cancel-live-transcription": [["sessionId", "session_id"]],
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
     "read-debug-audio": [["id"]],
@@ -69,6 +81,10 @@
     "copy-to-clipboard": [["text"], ["shape"]],
     "save-onboarding-api-key": [["provider"], ["apiKey", "api_key"]],
     "set-provider": [["provider"]],
+    "set-local-model": [["model"]],
+    "download-local-model": [["model"]],
+    "get-local-model-status": [["model"]],
+    "delete-local-model": [["model"]],
   };
 
   // Channels whose first arg is binary and is sent as the RAW IPC body (Tauri's
@@ -80,6 +96,10 @@
   // macOS/Linux and `http://ipc.localhost` on Windows WebView2. Otherwise Tauri
   // falls back to the postMessage transport and JSON-encodes it anyway.)
   const tauriRawBody = {
+    "push-live-audio": {
+      body: 0,
+      headers: { "session-id": 1 },
+    },
     "transcribe-audio": {
       body: 0, // args[0] = audio bytes (Uint8Array / ArrayBuffer)
       headers: { "translate-mode": 1, "mime-type": 2, "session-id": 3 },

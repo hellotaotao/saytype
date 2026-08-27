@@ -3,6 +3,7 @@ mod commands;
 mod history;
 mod hotkey;
 mod local_asr;
+mod nemotron_asr;
 mod scrub;
 mod platform;
 mod settings;
@@ -131,6 +132,7 @@ pub fn run() {
       tray::create(&app.handle())?;
 
       let config = settings::read_config().unwrap_or_default();
+      commands::sync_local_runtime(&app.handle(), &config);
       let accessibility = commands::current_accessibility_granted();
       *app.state::<state::AppState>().accessibility.lock().unwrap() = Some(accessibility);
 
@@ -159,6 +161,10 @@ pub fn run() {
       commands::hide_input_prompt,
       commands::cleanup_microphone,
       commands::cancel_transcription,
+      commands::start_live_transcription,
+      commands::push_live_audio,
+      commands::finish_live_transcription,
+      commands::cancel_live_transcription,
       commands::transcribe_audio,
       commands::save_pending_transcription,
       commands::retranscribe_pending,
@@ -183,6 +189,7 @@ pub fn run() {
       commands::set_onboarding_completed,
       commands::save_onboarding_api_key,
       commands::set_provider,
+      commands::set_local_model,
       commands::open_local_model_panel,
       commands::download_local_model,
       commands::cancel_local_model_download,
@@ -200,6 +207,7 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
       ) {
         local_asr::shutdown_resident_worker();
+        nemotron_asr::shutdown();
       }
       // macOS: clicking the Dock icon (or relaunching the app) when no window
       // is visible — e.g. after starting minimized — should bring the main

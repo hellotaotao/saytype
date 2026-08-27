@@ -293,6 +293,36 @@ test("local partial text is shown only for the latest non-recording session", ()
   assert.deepEqual(previews, ["latest"]);
 });
 
+test("Nemotron partials render during recording but not after the session is idle", () => {
+  const handlers = new Map();
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    on(channel, handler) {
+      handlers.set(channel, handler);
+    },
+  });
+  const previews = [];
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 4,
+    transcriptionInProgressCount: 0,
+    transcriptionText: {},
+    activeRecordingSession: { live: { sessionId: 4 } },
+    isRecording: true,
+    setTranscriptionPreview(text) {
+      previews.push(text);
+    },
+    updateModelBadge() {},
+  });
+  prompt.setupEventListeners();
+  const onPartial = handlers.get("local-transcription-partial");
+
+  onPartial(null, { sessionId: 4, text: "live" });
+  prompt.isRecording = false;
+  prompt.starting = false;
+  onPartial(null, { sessionId: 4, text: "late" });
+
+  assert.deepEqual(previews, ["live"]);
+});
+
 test("start event timing includes native work and renderer delivery delay", () => {
   const VoiceInputPrompt = loadVoiceInputPrompt();
   const normalize = VoiceInputPrompt.normalizeRecordingStartPayload;
@@ -520,6 +550,42 @@ test("transcription IPC carries the recording session id", async () => {
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0][3], 7);
+});
+
+test("Nemotron final is inserted without running the Qwen batch path", async () => {
+  const calls = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      calls.push([command, ...args]);
+      if (command === "finish-live-transcription") {
+        return Promise.resolve("live final");
+      }
+      return Promise.resolve(null);
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    currentModel: "nemotron-3.5-asr-streaming-0.6b-q8_0",
+    recordingSessionId: 9,
+    pendingInsertionOrder: [9],
+    async flushPendingInsertions() {},
+  });
+
+  await prompt.processRecording({
+    id: 9,
+    chunks: [new Blob([new Uint8Array([1, 2, 3])])],
+    mimeType: "audio/webm",
+    translateMode: false,
+    cancelledShortPress: false,
+    live: {
+      sessionId: 9,
+      uploadTail: Promise.resolve(),
+      uploadError: null,
+    },
+  });
+
+  assert.deepEqual(calls, [["finish-live-transcription", 9]]);
+  assert.equal(prompt.pendingInsertionsById.get(9), "live final");
 });
 
 test("local recording pipelines stay single-flight through transcription", async () => {

@@ -12,6 +12,8 @@ if (typeof document !== "undefined" && document.documentElement) {
 const READY_TIMEOUT_MS = 3000;
 const READY_POLL_MS = 25;
 const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
+const QWEN_LOCAL_MODEL = "qwen3-asr-0.6b-q8_0";
+const NEMOTRON_LOCAL_MODEL = "nemotron-3.5-asr-streaming-0.6b-q8_0";
 let currentThemePref = "elegant";
 
 // First entry per provider is the effective default when switching provider
@@ -33,7 +35,8 @@ const modelOptions = {
     { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
   ],
   local: [
-    { value: "qwen3-asr-0.6b-q8_0", labelKey: "settings.model.options.qwen3AsrLocal", recommended: false },
+    { value: QWEN_LOCAL_MODEL, labelKey: "settings.model.options.qwen3AsrLocal", recommended: true },
+    { value: NEMOTRON_LOCAL_MODEL, labelKey: "settings.model.options.nemotron35Local" },
   ],
 };
 
@@ -172,7 +175,7 @@ let localModelState = "absent"; // absent | partial | downloading | ready
 // "switch to local?" prompt on ready: a download driven by the onboarding
 // onboarding wizard auto-switches there, so Settings must not show a second,
 // competing dialog.
-let localModelDownloadStartedHere = false;
+let localModelDownloadStartedHere = "";
 let localModelSyncBound = false;
 let updatesPanelBound = false;
 let currentAppVersion = "";
@@ -183,6 +186,11 @@ let currentDiagnosticLog = null;
 
 function formatGB(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function selectedLocalModel() {
+  const value = document.getElementById("modelSelect")?.value;
+  return value === NEMOTRON_LOCAL_MODEL ? NEMOTRON_LOCAL_MODEL : QWEN_LOCAL_MODEL;
 }
 
 function renderLocalModelPanel(status) {
@@ -209,7 +217,11 @@ function renderLocalModelPanel(status) {
     isPartial ? "settings.localModel.deletePartial" : "settings.localModel.delete"
   );
 
-  if (status.state === "ready") {
+  if (status.state === "unsupported") {
+    statusEl.textContent = translate("settings.localModel.statusUnsupported");
+    actionBtn.classList.add("hidden");
+    deleteBtn.classList.add("hidden");
+  } else if (status.state === "ready") {
     statusEl.textContent = translate("settings.localModel.statusReady", {
       size: formatGB(status.totalBytes),
     });
@@ -238,7 +250,7 @@ async function refreshLocalModelStatus() {
     return;
   }
   try {
-    renderLocalModelPanel(await ipc.invoke("get-local-model-status"));
+    renderLocalModelPanel(await ipc.invoke("get-local-model-status", selectedLocalModel()));
   } catch (error) {
     console.error("Failed to fetch local model status:", error);
   }
@@ -247,16 +259,17 @@ async function refreshLocalModelStatus() {
 async function handleLocalModelAction() {
   try {
     if (localModelState === "downloading") {
-      localModelDownloadStartedHere = false;
+      localModelDownloadStartedHere = "";
       await ipc.invoke("cancel-local-model-download");
       return; // terminal event repaints the panel
     }
     // Optimistic repaint, then kick the (long-running) download; progress
     // events keep the panel live. Errors surface via the "error" event too.
-    localModelDownloadStartedHere = true;
+    const model = selectedLocalModel();
+    localModelDownloadStartedHere = model;
     renderLocalModelPanel({ state: "downloading", downloadedBytes: 0, totalBytes: 1 });
     void refreshLocalModelStatus();
-    await ipc.invoke("download-local-model");
+    await ipc.invoke("download-local-model", model);
   } catch (error) {
     console.error("Local model download failed:", error);
   }
@@ -264,17 +277,17 @@ async function handleLocalModelAction() {
 
 // Download finished from this page → offer (don't force) the switch to the
 // local engine; the backend save + broadcast keeps every window in sync.
-async function offerSwitchToLocal() {
-  if (currentSettings?.provider === "local") {
+async function offerSwitchToLocal(model) {
+  if (currentSettings?.provider === "local" && currentSettings?.model === model) {
     return;
   }
   if (!confirm(translate("settings.localModel.switchPrompt"))) {
     return;
   }
   try {
-    await ipc.invoke("set-provider", "local");
+    await ipc.invoke("set-local-model", model);
     currentSettings.provider = "local";
-    currentSettings.model = "qwen3-asr-0.6b-q8_0";
+    currentSettings.model = model;
     const providerSelect = document.getElementById("providerSelect");
     setSelectValue(providerSelect, "local", "groq");
     updateModelOptions("local");
@@ -296,7 +309,7 @@ async function handleLocalModelDelete() {
     return;
   }
   try {
-    await ipc.invoke("delete-local-model");
+    await ipc.invoke("delete-local-model", selectedLocalModel());
     await refreshLocalModelStatus();
   } catch (error) {
     console.error("Failed to delete local model:", error);
@@ -312,6 +325,9 @@ function setupLocalModelSync() {
     if (!payload) {
       return;
     }
+    if (payload.model && payload.model !== selectedLocalModel()) {
+      return;
+    }
     if (payload.state === "error") {
       alert(translate("settings.localModel.downloadFailed", { reason: payload.message || "" }));
     }
@@ -325,9 +341,10 @@ function setupLocalModelSync() {
       // ready/cancelled/error: re-derive the real on-disk state.
       void refreshLocalModelStatus();
     }
-    if (payload.state === "ready" && localModelDownloadStartedHere) {
-      localModelDownloadStartedHere = false;
-      void offerSwitchToLocal();
+    if (payload.state === "ready" && localModelDownloadStartedHere === selectedLocalModel()) {
+      const model = localModelDownloadStartedHere;
+      localModelDownloadStartedHere = "";
+      void offerSwitchToLocal(model);
     }
   });
 
@@ -602,6 +619,12 @@ function handleProviderChange(event) {
   void refreshLocalModelStatus();
 }
 
+function handleModelChange() {
+  if (document.getElementById("providerSelect")?.value === "local") {
+    void refreshLocalModelStatus();
+  }
+}
+
 function handleThemeChange(event) {
   applyTheme(event.target.value);
 }
@@ -675,6 +698,7 @@ function bindEventHandlers() {
   const saveSettingsButton = document.getElementById("saveSettingsButton");
   const uiLanguageSelect = document.getElementById("uiLanguageSelect");
   const themeSelect = document.getElementById("themeSelect");
+  const modelSelect = document.getElementById("modelSelect");
 
   providerSelect?.addEventListener("change", handleProviderChange);
   checkPermissionButton?.addEventListener("click", () => {
@@ -691,6 +715,7 @@ function bindEventHandlers() {
   });
   uiLanguageSelect?.addEventListener("change", handleUiLanguageChange);
   themeSelect?.addEventListener("change", handleThemeChange);
+  modelSelect?.addEventListener("change", handleModelChange);
 
   document.querySelectorAll(".reveal-btn").forEach((button) => {
     button.addEventListener("click", () => toggleKeyReveal(button));
