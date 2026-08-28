@@ -165,18 +165,21 @@ function bindEvents() {
       renderObKey();
     });
   });
-  document.getElementById("obLocalCard")?.addEventListener("click", () => {
-    const state = obLocalStatus?.state || "absent";
-    if (state === "downloading") {
-      return; // in flight — the wizard's escape hatch is "Skip this step"
-    }
-    if (state === "ready") {
-      if (cachedSettings?.provider !== "local") {
-        void obSelectLocal();
+  document.querySelectorAll("[data-local-model]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const model = card.getAttribute("data-local-model") || NEMOTRON_LOCAL_MODEL;
+      const state = obLocalStatuses[model]?.state || "absent";
+      if (state === "downloading") {
+        return;
       }
-      return;
-    }
-    void obStartLocalDownload();
+      if (state === "ready") {
+        if (!localEngineSelected(model)) {
+          void obSelectLocal(model);
+        }
+        return;
+      }
+      void obStartLocalDownload(model);
+    });
   });
   document.getElementById("obCloudToggle")?.addEventListener("click", () => {
     obCloudExpanded = !obCloudExpanded;
@@ -189,8 +192,9 @@ function bindEvents() {
     if (!payload) {
       return;
     }
+    const model = normalizeLocalModel(payload.model);
     if (payload.state === "downloading") {
-      obLocalStatus = {
+      obLocalStatuses[model] = {
         state: "downloading",
         downloadedBytes: payload.downloadedBytes || 0,
         totalBytes: payload.totalBytes || 0,
@@ -201,13 +205,13 @@ function bindEvents() {
       return;
     }
     if (payload.state === "error") {
-      obLocalError = payload.message || "";
+      obLocalErrors[model] = payload.message || "";
     }
-    if (payload.state === "ready" && obLocalStartedHere) {
+    if (payload.state === "ready" && obLocalStartedHere === model) {
       // Clicking Download in the wizard already chose the local engine —
       // completing the download selects it without a second confirmation.
-      obLocalStartedHere = false;
-      void obSelectLocal();
+      obLocalStartedHere = "";
+      void obSelectLocal(model);
     }
     void obRefreshLocalStatus();
   });
@@ -579,27 +583,54 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
   renderEngineCard();
 }
 
-// Engine quick-switch: its own card right under the readiness card — one
-// segmented control [Groq | OpenAI | Local] mirroring config.provider (the
-// tray's Engine submenu is the same switch). Deliberately NOT inside the
+// Engine quick-switch: its own card right under the readiness card. Cloud
+// providers stay provider-level choices; each local model is a concrete
+// choice because there is no second model selector here. Deliberately NOT inside the
 // readiness card: that card is pure status display, and burying an
 // interactive control among status rows made it unfindable. The
-// "recommended" tag on Local is a nudge, so it only shows on local-capable
-// hardware (Apple Silicon) while a cloud engine is selected. Selecting local
-// before its assets are downloaded is rejected by the backend — we then open
+// "recommended" tag on Nemotron is a nudge, so it only shows on local-capable
+// hardware (Apple Silicon) while another engine is selected. Selecting a local
+// model before its assets are downloaded is rejected by the backend — we then open
 // Settings on the download panel instead of silently switching to an
 // unusable engine.
+const QWEN_LOCAL_MODEL = "qwen3-asr-0.6b-q8_0";
+const NEMOTRON_LOCAL_MODEL = "nemotron-3.5-asr-streaming-0.6b-q8_0";
+
 const ENGINE_OPTIONS = [
   { value: "groq", label: "Groq" },
   { value: "openai", label: "OpenAI" },
-  { value: "local", labelKey: "home.engineLocal" },
+  {
+    value: "local-nemotron",
+    labelKey: "home.engineLocalNemotron",
+    model: NEMOTRON_LOCAL_MODEL,
+    recommended: true,
+  },
+  { value: "local-qwen", labelKey: "home.engineLocalQwen", model: QWEN_LOCAL_MODEL },
 ];
 
 const ENGINE_CAPTION_KEY = {
-  local: "home.engineCaptionLocal",
   groq: "home.engineCaptionGroq",
   openai: "home.engineCaptionOpenai",
+  "local-qwen": "home.engineCaptionLocalQwen",
+  "local-nemotron": "home.engineCaptionLocalNemotron",
 };
+
+function normalizeLocalModel(model) {
+  return model === NEMOTRON_LOCAL_MODEL ? NEMOTRON_LOCAL_MODEL : QWEN_LOCAL_MODEL;
+}
+
+function localEngineSelected(model) {
+  return cachedSettings?.provider === "local" && normalizeLocalModel(cachedSettings.model) === model;
+}
+
+function selectedEngineValue() {
+  if (cachedSettings?.provider !== "local") {
+    return cachedSettings?.provider || "groq";
+  }
+  return normalizeLocalModel(cachedSettings.model) === NEMOTRON_LOCAL_MODEL
+    ? "local-nemotron"
+    : "local-qwen";
+}
 
 function renderEngineCard() {
   const card = document.getElementById("engine-card");
@@ -618,7 +649,8 @@ function renderEngineCard() {
   title.textContent = t("home.engineLabel");
   const sub = document.createElement("div");
   sub.className = "engine-sub";
-  const captionKey = ENGINE_CAPTION_KEY[cachedSettings?.provider];
+  const selectedEngine = selectedEngineValue();
+  const captionKey = ENGINE_CAPTION_KEY[selectedEngine];
   sub.textContent = captionKey ? t(captionKey) : "";
   titles.appendChild(title);
   titles.appendChild(sub);
@@ -626,8 +658,8 @@ function renderEngineCard() {
   const seg = document.createElement("div");
   seg.className = "engine-seg";
   seg.setAttribute("role", "radiogroup");
-  ENGINE_OPTIONS.forEach(({ value, label, labelKey }) => {
-    const active = cachedSettings?.provider === value;
+  ENGINE_OPTIONS.forEach(({ value, label, labelKey, model, recommended }) => {
+    const active = selectedEngine === value;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `engine-seg-btn${active ? " active" : ""}`;
@@ -636,14 +668,14 @@ function renderEngineCard() {
     const text = document.createElement("span");
     text.textContent = labelKey ? t(labelKey) : label;
     btn.appendChild(text);
-    if (value === "local" && cachedSettings?.localCapable && !active) {
+    if (recommended && cachedSettings?.localCapable && !active) {
       const tag = document.createElement("span");
       tag.className = "engine-tag";
       tag.textContent = t("home.engineRecommended");
       btn.appendChild(tag);
     }
     btn.addEventListener("click", () => {
-      void selectEngine(value);
+      void selectEngine(value, model);
     });
     seg.appendChild(btn);
   });
@@ -651,19 +683,23 @@ function renderEngineCard() {
   card.replaceChildren(iconWrap, titles, seg);
 }
 
-async function selectEngine(provider) {
-  if (cachedSettings?.provider === provider) {
+async function selectEngine(providerChoice, localModel = "") {
+  if (selectedEngineValue() === providerChoice) {
     return;
   }
   try {
-    await ipc.invoke("set-provider", provider);
+    if (localModel) {
+      await ipc.invoke("set-local-model", localModel);
+    } else {
+      await ipc.invoke("set-provider", providerChoice);
+    }
     // The shortcut-updated broadcast re-renders too; refresh eagerly so the
     // highlight moves without waiting on the event round-trip.
     await refreshReadiness();
   } catch (error) {
-    if (provider === "local") {
+    if (localModel) {
       // Assets not downloaded yet — hand over to the settings download panel.
-      ipc.invoke("open-local-model-panel").catch((panelError) => {
+      ipc.invoke("open-local-model-panel", localModel).catch((panelError) => {
         console.error("Failed to open local model panel:", panelError);
       });
       return;
@@ -773,14 +809,12 @@ let obKeyProvider = "groq";
 let obKeyStatus = "idle"; // "idle" | "saving" | "saved" | "error"
 let obKeyError = "";
 let obAdvanceTimer = null;
-// Page 5's local-engine path (only rendered when settings.localCapable):
-// download state mirrors get-local-model-status; obLocalStartedHere marks a
-// download the user started from THIS wizard — clicking Download already
-// expresses "use local", so its completion selects the engine without asking
-// again (the Settings page prompts instead for downloads started there).
-let obLocalStatus = null; // { state, downloadedBytes, totalBytes } | null
-let obLocalStartedHere = false;
-let obLocalError = "";
+// Page 5 tracks each local model independently. obLocalStartedHere records the
+// model whose download was started from this wizard so only that model is
+// selected when its download completes.
+let obLocalStatuses = {};
+let obLocalStartedHere = "";
+let obLocalErrors = {};
 let obCloudExpanded = false;
 
 function onboardingVisible() {
@@ -799,8 +833,8 @@ function showOnboarding(page = 1) {
   // Recommend Groq (free tier) unless the user already runs on OpenAI.
   obKeyProvider =
     cachedSettings?.hasApiKey && cachedSettings.provider === "openai" ? "openai" : "groq";
-  obLocalError = "";
-  obLocalStartedHere = false;
+  obLocalErrors = {};
+  obLocalStartedHere = "";
   // Local-first: the cloud section starts folded on capable hardware, unless
   // the user is already set up on a cloud engine (re-opened wizard from Help).
   obCloudExpanded =
@@ -904,7 +938,14 @@ async function obRefreshLocalStatus() {
     return;
   }
   try {
-    obLocalStatus = await ipc.invoke("get-local-model-status");
+    const [nemotron, qwen] = await Promise.all([
+      ipc.invoke("get-local-model-status", NEMOTRON_LOCAL_MODEL),
+      ipc.invoke("get-local-model-status", QWEN_LOCAL_MODEL),
+    ]);
+    obLocalStatuses = {
+      [NEMOTRON_LOCAL_MODEL]: nemotron,
+      [QWEN_LOCAL_MODEL]: qwen,
+    };
   } catch (error) {
     console.error("Failed to fetch local model status:", error);
   }
@@ -916,43 +957,88 @@ async function obRefreshLocalStatus() {
 // Pick the local engine (assets are ready). The backend save broadcasts
 // shortcut-updated → refreshReadiness updates cachedSettings/hasApiKey, which
 // is what satisfies page 5's gate.
-async function obSelectLocal() {
+async function obSelectLocal(model) {
   try {
-    await ipc.invoke("set-provider", "local");
+    await ipc.invoke("set-local-model", model);
     await refreshReadiness();
     if (onboardingVisible()) {
       renderOnboarding();
       obScheduleAdvance(5);
     }
   } catch (error) {
-    obLocalError = String(error?.message || error);
+    obLocalErrors[model] = String(error?.message || error);
     renderObLocal();
   }
 }
 
-async function obStartLocalDownload() {
-  obLocalError = "";
-  obLocalStartedHere = true;
-  obLocalStatus = {
+async function obStartLocalDownload(model) {
+  obLocalErrors[model] = "";
+  obLocalStartedHere = model;
+  const currentStatus = obLocalStatuses[model];
+  obLocalStatuses[model] = {
     state: "downloading",
-    downloadedBytes: obLocalStatus?.downloadedBytes || 0,
-    totalBytes: obLocalStatus?.totalBytes || 0,
+    downloadedBytes: currentStatus?.downloadedBytes || 0,
+    totalBytes: currentStatus?.totalBytes || 0,
   };
   renderObLocal();
   try {
-    await ipc.invoke("download-local-model");
+    await ipc.invoke("download-local-model", model);
   } catch (error) {
-    obLocalStartedHere = false;
-    obLocalError = String(error?.message || error);
+    obLocalStartedHere = "";
+    obLocalErrors[model] = String(error?.message || error);
     void obRefreshLocalStatus();
   }
 }
 
+function renderObLocalCard(card, model) {
+  const state = obLocalStatuses[model]?.state || "absent";
+  const status = obLocalStatuses[model];
+  const selected = state === "ready" && localEngineSelected(model);
+  card.classList.toggle("selected", selected);
+  card.classList.toggle("downloading", state === "downloading");
+
+  const icon = card.querySelector(".ob-local-icon");
+  if (icon) {
+    icon.textContent = selected ? "check_circle" : "memory";
+  }
+  const progress = card.querySelector(".ob-local-progress");
+  if (progress) {
+    progress.hidden = state !== "downloading";
+    const pct = status?.totalBytes
+      ? (status.downloadedBytes || 0) / status.totalBytes
+      : 0;
+    progress.value = Math.round(pct * 1000);
+  }
+  const desc = card.querySelector(".ob-provider-desc");
+  if (!desc) {
+    return;
+  }
+  const error = obLocalErrors[model];
+  if (error) {
+    desc.textContent = t("onboarding.key.localError", { reason: error });
+  } else if (selected) {
+    desc.textContent = t("onboarding.key.localSelected");
+  } else if (state === "ready") {
+    desc.textContent = t("onboarding.key.localReady");
+  } else if (state === "downloading") {
+    desc.textContent = t("onboarding.key.localDownloading", {
+      done: obFormatGB(status?.downloadedBytes || 0),
+      total: obFormatGB(status?.totalBytes || 0),
+    });
+  } else if (state === "partial") {
+    desc.textContent = t("onboarding.key.localResume");
+  } else {
+    desc.textContent = t("onboarding.key.localAbsent", {
+      total: status?.totalBytes ? obFormatGB(status.totalBytes) : "~1 GB",
+    });
+  }
+}
+
 function renderObLocal() {
-  const card = document.getElementById("obLocalCard");
+  const cards = Array.from(document.querySelectorAll("[data-local-model]"));
   const toggle = document.getElementById("obCloudToggle");
   const cloud = document.getElementById("obCloudSection");
-  if (!card || !toggle || !cloud) {
+  if (!cards.length || !toggle || !cloud) {
     return;
   }
   const capable = !!cachedSettings?.localCapable;
@@ -968,7 +1054,9 @@ function renderObLocal() {
     lead.textContent = t(capable ? "onboarding.key.leadLocalFirst" : "onboarding.key.lead");
   }
 
-  card.hidden = !capable;
+  cards.forEach((card) => {
+    card.hidden = !capable;
+  });
   toggle.hidden = !capable;
   cloud.hidden = capable && !obCloudExpanded;
   toggle.textContent = t(
@@ -978,44 +1066,9 @@ function renderObLocal() {
     return;
   }
 
-  const state = obLocalStatus?.state || "absent";
-  const selected = state === "ready" && cachedSettings?.provider === "local";
-  card.classList.toggle("selected", selected);
-  card.classList.toggle("downloading", state === "downloading");
-
-  const icon = document.getElementById("obLocalIcon");
-  if (icon) {
-    icon.textContent = selected ? "check_circle" : "memory";
-  }
-  const progress = document.getElementById("obLocalProgress");
-  if (progress) {
-    progress.hidden = state !== "downloading";
-    const pct = obLocalStatus?.totalBytes
-      ? (obLocalStatus.downloadedBytes || 0) / obLocalStatus.totalBytes
-      : 0;
-    progress.value = Math.round(pct * 1000);
-  }
-  const desc = document.getElementById("obLocalDesc");
-  if (desc) {
-    if (obLocalError) {
-      desc.textContent = t("onboarding.key.localError", { reason: obLocalError });
-    } else if (selected) {
-      desc.textContent = t("onboarding.key.localSelected");
-    } else if (state === "ready") {
-      desc.textContent = t("onboarding.key.localReady");
-    } else if (state === "downloading") {
-      desc.textContent = t("onboarding.key.localDownloading", {
-        done: obFormatGB(obLocalStatus?.downloadedBytes || 0),
-        total: obFormatGB(obLocalStatus?.totalBytes || 0),
-      });
-    } else if (state === "partial") {
-      desc.textContent = t("onboarding.key.localResume");
-    } else {
-      desc.textContent = t("onboarding.key.localAbsent", {
-        total: obLocalStatus?.totalBytes ? obFormatGB(obLocalStatus.totalBytes) : "~1 GB",
-      });
-    }
-  }
+  cards.forEach((card) => {
+    renderObLocalCard(card, normalizeLocalModel(card.getAttribute("data-local-model")));
+  });
 }
 
 // Whether a wizard page's job is done. Info pages (1/2/6) are always

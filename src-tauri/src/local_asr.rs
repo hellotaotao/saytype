@@ -21,7 +21,6 @@ use tokio_util::sync::CancellationToken;
 pub const LOCAL_PROVIDER: &str = "local";
 pub const QWEN_MODEL_ID: &str = "qwen3-asr-0.6b-q8_0";
 pub const NEMOTRON_MODEL_ID: &str = "nemotron-3.5-asr-streaming-0.6b-q8_0";
-pub const LOCAL_MODEL_ID: &str = QWEN_MODEL_ID;
 
 pub fn normalize_local_model_id(model: &str) -> &'static str {
   match model.trim() {

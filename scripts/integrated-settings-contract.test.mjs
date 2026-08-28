@@ -83,6 +83,28 @@ test("existing settings are redistributed by purpose", () => {
   }
 });
 
+test("local engines are provider choices while cloud providers retain model selection", () => {
+  const transcription = sectionSource("settings-panel-transcription");
+  assert.match(transcription, /option value="local-nemotron"/);
+  assert.match(transcription, /option value="local-qwen"/);
+  assert.doesNotMatch(transcription, /option value="local"/);
+  assert.match(transcription, /id="modelItem"/);
+  assert.match(settingsJs, /localModelForProvider/);
+  assert.match(settingsJs, /modelItem\?\.classList\.toggle\("hidden", provider === "local"\)/);
+  assert.match(settingsJs, /provider = localModel \? "local" : providerChoice/);
+  assert.match(settingsJs, /model: localModel \|\| document\.getElementById\("modelSelect"\)/);
+});
+
+test("onboarding, Home, and tray expose Qwen and Nemotron as separate local engines", () => {
+  assert.match(mainHtml, /id="obLocalNemotronCard"[^>]*data-local-model="nemotron-3\.5-asr-streaming-0\.6b-q8_0"/);
+  assert.match(mainHtml, /id="obLocalQwenCard"[^>]*data-local-model="qwen3-asr-0\.6b-q8_0"/);
+  assert.match(mainJs, /value: "local-nemotron"/);
+  assert.match(mainJs, /value: "local-qwen"/);
+  assert.match(mainJs, /invoke\("set-local-model", localModel\)/);
+  assert.match(trayRs, /engine-local-nemotron/);
+  assert.match(trayRs, /engine-local-qwen/);
+});
+
 test("main page owns the Settings controller and dirty navigation guard", () => {
   assert.match(mainHtml, /<script src="main\.js"><\/script>\s*<script src="settings\.js"><\/script>/);
   assert.match(settingsJs, /window\.SayTypeSettings\s*=/);

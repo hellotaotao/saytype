@@ -100,12 +100,20 @@
       <div class="onboard-page" data-ob-page="5">
         <h1 id="obKeyTitle" data-i18n="onboarding.key.title">Connect your transcription service</h1>
         <p class="ob-lead" id="obKeyLead" data-i18n="onboarding.key.lead">You use your own API key.</p>
-        <button type="button" class="ob-local-card" id="obLocalCard" hidden>
-          <span class="material-icons ob-local-icon" id="obLocalIcon">memory</span>
+        <button type="button" class="ob-local-card" id="obLocalNemotronCard" data-local-model="nemotron-3.5-asr-streaming-0.6b-q8_0" hidden>
+          <span class="material-icons ob-local-icon">memory</span>
           <span class="ob-local-body">
-            <span class="ob-provider-name"><span data-i18n="onboarding.key.localName">Local · Qwen3</span><span class="ob-provider-tag" data-i18n="onboarding.key.localTag">Recommended · free · offline</span></span>
-            <span class="ob-provider-desc" id="obLocalDesc"></span>
-            <progress class="ob-local-progress" id="obLocalProgress" max="1000" value="0" hidden></progress>
+            <span class="ob-provider-name"><span data-i18n="onboarding.key.localNemotronName">Local · Nemotron 3.5 ASR</span><span class="ob-provider-tag" data-i18n="onboarding.key.localRecommendedTag">Recommended · free · offline</span></span>
+            <span class="ob-provider-desc"></span>
+            <progress class="ob-local-progress" max="1000" value="0" hidden></progress>
+          </span>
+        </button>
+        <button type="button" class="ob-local-card" id="obLocalQwenCard" data-local-model="qwen3-asr-0.6b-q8_0" hidden>
+          <span class="material-icons ob-local-icon">memory</span>
+          <span class="ob-local-body">
+            <span class="ob-provider-name"><span data-i18n="onboarding.key.localQwenName">Local · Qwen3-ASR</span><span class="ob-provider-tag" data-i18n="onboarding.key.localOfflineTag">Free · offline</span></span>
+            <span class="ob-provider-desc"></span>
+            <progress class="ob-local-progress" max="1000" value="0" hidden></progress>
           </span>
         </button>
         <button type="button" class="link-btn ob-cloud-toggle" id="obCloudToggle" hidden></button>
@@ -436,21 +444,22 @@
           <div class="setting-group">
             <div class="setting-item">
               <div class="setting-info">
-                <div class="setting-title" data-i18n="settings.apiProvider.title">API Provider</div>
+                <div class="setting-title" data-i18n="settings.apiProvider.title">Transcription Provider</div>
                 <div class="setting-description" data-i18n="settings.apiProvider.description">
-                  Choose transcription API service.
+                  Choose a cloud provider or local engine.
                 </div>
               </div>
               <div class="setting-control">
-                <select class="input provider-select" id="providerSelect" title="Select API provider" data-i18n="settings.apiProvider.selectTitle" data-i18n-attr="title">
+                <select class="input provider-select" id="providerSelect" title="Select transcription provider" data-i18n="settings.apiProvider.selectTitle" data-i18n-attr="title">
                   <option value="groq">Groq</option>
                   <option value="openai">OpenAI</option>
-                  <option value="local">Local · Qwen3-ASR</option>
+                  <option value="local-nemotron" data-i18n="settings.apiProvider.localNemotron">Local · Nemotron 3.5 ASR · ★ Recommended</option>
+                  <option value="local-qwen" data-i18n="settings.apiProvider.localQwen">Local · Qwen3-ASR</option>
                 </select>
               </div>
             </div>
 
-            <div class="setting-item">
+            <div class="setting-item" id="apiKeyItem">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.apiKey.title">API Key</div>
                 <div class="setting-description" data-i18n="settings.apiKey.description">
@@ -469,7 +478,7 @@
               </div>
             </div>
 
-            <div class="setting-item">
+            <div class="setting-item" id="modelItem">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.model.title">Model Selection</div>
                 <div class="setting-description" data-i18n="settings.model.description">

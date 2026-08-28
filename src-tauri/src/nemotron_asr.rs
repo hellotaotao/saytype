@@ -30,6 +30,8 @@ const PROGRESS_EMIT_STEP: u64 = 8 * 1024 * 1024;
 const SIDECAR_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const FINAL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PCM_CHUNK_BYTES: usize = 512 * 1024;
+// R=6 is the model's trained 560 ms accuracy profile.
+const RNNT_RIGHT_CONTEXT: &str = "6";
 
 static MODEL_ASSET: Asset = Asset {
   rel_path: MODEL_FILE,
@@ -490,6 +492,8 @@ async fn ensure_sidecar() -> Result<SidecarEndpoint> {
     .arg(model_path(&base))
     .arg("--device")
     .arg("metal")
+    .arg("--asr.streaming.rnnt_right_context")
+    .arg(RNNT_RIGHT_CONTEXT)
     .env("NEMO_SPEECH_HTTP_API_KEY", &token)
     .stdin(Stdio::null())
     .stdout(Stdio::null())
@@ -846,6 +850,11 @@ mod tests {
         RUNTIME_SHA256
       );
     }
+  }
+
+  #[test]
+  fn streaming_profile_uses_the_560ms_accuracy_context() {
+    assert_eq!(RNNT_RIGHT_CONTEXT, "6");
   }
 
   #[test]

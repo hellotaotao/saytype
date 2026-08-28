@@ -317,7 +317,7 @@ pub fn save_onboarding_api_key(
 fn default_model_for(provider: &str) -> &'static str {
   match provider {
     "groq" => "whisper-large-v3-turbo",
-    crate::local_asr::LOCAL_PROVIDER => crate::local_asr::LOCAL_MODEL_ID,
+    crate::local_asr::LOCAL_PROVIDER => crate::local_asr::NEMOTRON_MODEL_ID,
     _ => "gpt-4o-mini-transcribe",
   }
 }
@@ -353,7 +353,7 @@ pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), Stri
     let model = if current.provider == crate::local_asr::LOCAL_PROVIDER {
       crate::local_asr::normalize_local_model_id(&current.model)
     } else {
-      crate::local_asr::LOCAL_MODEL_ID
+      default_model_for(crate::local_asr::LOCAL_PROVIDER)
     };
     crate::local_asr::assets_ready_for(model)
   } else {
@@ -406,7 +406,12 @@ pub fn set_provider(app: AppHandle, provider: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn set_local_model(app: AppHandle, model: String) -> Result<bool, String> {
-  let model = crate::local_asr::normalize_local_model_id(&model);
+  apply_local_model_change(&app, &model)?;
+  Ok(true)
+}
+
+pub fn apply_local_model_change(app: &AppHandle, model: &str) -> Result<(), String> {
+  let model = crate::local_asr::normalize_local_model_id(model);
   settings::local_provider_selectable(
     crate::local_asr::LOCAL_PROVIDER,
     crate::local_asr::assets_ready_for(model),
@@ -417,9 +422,9 @@ pub fn set_local_model(app: AppHandle, model: String) -> Result<bool, String> {
     Ok(())
   })
   .map_err(stringify_error)?;
-  broadcast_settings_updates(&app, &config).map_err(stringify_error)?;
-  sync_local_runtime(&app, &config);
-  Ok(true)
+  broadcast_settings_updates(app, &config).map_err(stringify_error)?;
+  sync_local_runtime(app, &config);
+  Ok(())
 }
 
 fn show_main_settings(app: &AppHandle, target: &str) -> Result<(), String> {
@@ -435,9 +440,18 @@ fn show_main_settings(app: &AppHandle, target: &str) -> Result<(), String> {
 // Every "local isn't downloaded yet" guide (tray submenu, home switcher)
 // funnels here: show the main Settings page and reveal the model panel.
 #[tauri::command]
-pub fn open_local_model_panel(app: AppHandle) -> Result<(), String> {
-  log::info!("command:open_local_model_panel");
-  show_main_settings(&app, "local-model")
+pub fn open_local_model_panel(app: AppHandle, model: Option<String>) -> Result<(), String> {
+  let model = model
+    .as_deref()
+    .map(crate::local_asr::normalize_local_model_id)
+    .unwrap_or(crate::local_asr::NEMOTRON_MODEL_ID);
+  log::info!("command:open_local_model_panel model={model}");
+  show_local_model_panel(&app, model)
+}
+
+pub fn show_local_model_panel(app: &AppHandle, model: &str) -> Result<(), String> {
+  let model = crate::local_asr::normalize_local_model_id(model);
+  show_main_settings(app, &format!("local-model:{model}"))
 }
 
 #[tauri::command]
@@ -1643,7 +1657,7 @@ mod tests {
     assert_eq!(config.provider, "groq");
     assert_eq!(config.model, "whisper-large-v3-turbo");
     switch_provider(&mut config, "local");
-    assert_eq!(config.model, "qwen3-asr-0.6b-q8_0");
+    assert_eq!(config.model, "nemotron-3.5-asr-streaming-0.6b-q8_0");
     switch_provider(&mut config, "openai");
     assert_eq!(config.model, "gpt-4o-mini-transcribe");
   }

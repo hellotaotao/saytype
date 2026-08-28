@@ -2,12 +2,23 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-/// The tray's engine entries: (menu id, label, provider value). Labels are
+/// The tray exposes cloud providers and concrete local engines. Labels are
 /// English-only like the rest of the tray menu.
-const ENGINES: [(&str, &str, &str); 3] = [
-  ("engine-groq", "Groq (cloud)", "groq"),
-  ("engine-openai", "OpenAI (cloud)", "openai"),
-  ("engine-local", "Local · Qwen3", "local"),
+const ENGINES: [(&str, &str, &str, Option<&str>); 4] = [
+  ("engine-groq", "Groq (cloud)", "groq", None),
+  ("engine-openai", "OpenAI (cloud)", "openai", None),
+  (
+    "engine-local-nemotron",
+    "Local · Nemotron 3.5 ASR",
+    "local",
+    Some(crate::local_asr::NEMOTRON_MODEL_ID),
+  ),
+  (
+    "engine-local-qwen",
+    "Local · Qwen3-ASR",
+    "local",
+    Some(crate::local_asr::QWEN_MODEL_ID),
+  ),
 ];
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -30,9 +41,18 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
           log::error!("tray:install-update-failed error={error}");
         }
       }
-      "engine-groq" => switch_engine(app, "groq"),
-      "engine-openai" => switch_engine(app, "openai"),
-      "engine-local" => switch_engine(app, "local"),
+      "engine-groq" => switch_engine(app, "groq", None),
+      "engine-openai" => switch_engine(app, "openai", None),
+      "engine-local-nemotron" => switch_engine(
+        app,
+        crate::local_asr::LOCAL_PROVIDER,
+        Some(crate::local_asr::NEMOTRON_MODEL_ID),
+      ),
+      "engine-local-qwen" => switch_engine(
+        app,
+        crate::local_asr::LOCAL_PROVIDER,
+        Some(crate::local_asr::QWEN_MODEL_ID),
+      ),
       "quit" => app.exit(0),
       _ => {}
     })
@@ -87,19 +107,17 @@ fn build_menu(
   menu.append(&MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?)?;
   menu.append(&PredefinedMenuItem::separator(app)?)?;
 
-  // Engine quick-switch: checkmark mirrors config.provider. Kept fresh by
-  // refresh_menu(), which every settings write triggers.
-  let provider = crate::settings::read_config()
-    .map(|config| config.provider)
-    .unwrap_or_default();
+  // Engine quick-switch: local checkmarks include the selected model. Kept
+  // fresh by refresh_menu(), which every settings write triggers.
+  let config = crate::settings::read_config().unwrap_or_default();
   let engine = Submenu::with_id(app, "engine", "Engine", true)?;
-  for (id, label, value) in ENGINES {
+  for (id, label, provider, model) in ENGINES {
     engine.append(&CheckMenuItem::with_id(
       app,
       id,
       label,
       true,
-      provider == value,
+      engine_selected(&config, provider, model),
       None::<&str>,
     )?)?;
   }
@@ -110,15 +128,32 @@ fn build_menu(
   Ok(menu)
 }
 
-/// Handle an Engine submenu click. Selecting "local" before its assets are
-/// downloaded must not switch to an unusable backend: open Settings on the
-/// model download panel instead (settings.js listens for the event).
-fn switch_engine(app: &AppHandle, provider: &str) {
-  if provider == crate::local_asr::LOCAL_PROVIDER && !crate::local_asr::assets_ready() {
-    if let Err(error) = crate::commands::open_local_model_panel(app.clone()) {
-      log::error!("tray:open-local-model-panel error={error}");
+fn engine_selected(
+  config: &crate::settings::AppConfig,
+  provider: &str,
+  model: Option<&str>,
+) -> bool {
+  if config.provider != provider {
+    return false;
+  }
+  model.is_none_or(|model| crate::local_asr::normalize_local_model_id(&config.model) == model)
+}
+
+/// Handle an Engine submenu click. A missing local model opens its matching
+/// download panel instead of switching to an unusable backend.
+fn switch_engine(app: &AppHandle, provider: &str, local_model: Option<&str>) {
+  if let Some(model) = local_model {
+    if !crate::local_asr::assets_ready_for(model) {
+      if let Err(error) = crate::commands::show_local_model_panel(app, model) {
+        log::error!("tray:open-local-model-panel error={error}");
+      }
+      refresh_menu(app);
+      return;
     }
-    refresh_menu(app); // undo the CheckMenuItem's optimistic toggle
+    if let Err(error) = crate::commands::apply_local_model_change(app, model) {
+      log::error!("tray:engine-switch-failed provider={provider} model={model} error={error}");
+      refresh_menu(app);
+    }
     return;
   }
   if let Err(error) = crate::commands::apply_provider_change(app, provider) {
@@ -150,5 +185,29 @@ pub fn refresh_menu(app: &AppHandle) {
       }
     }
     Err(error) => log::error!("tray:build-menu-failed error={error}"),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn local_engine_checkmark_includes_the_model() {
+    let mut config = crate::settings::AppConfig::default();
+    config.provider = crate::local_asr::LOCAL_PROVIDER.into();
+    config.model = crate::local_asr::NEMOTRON_MODEL_ID.into();
+
+    assert!(engine_selected(
+      &config,
+      crate::local_asr::LOCAL_PROVIDER,
+      Some(crate::local_asr::NEMOTRON_MODEL_ID)
+    ));
+    assert!(!engine_selected(
+      &config,
+      crate::local_asr::LOCAL_PROVIDER,
+      Some(crate::local_asr::QWEN_MODEL_ID)
+    ));
+    assert!(!engine_selected(&config, "groq", None));
   }
 }

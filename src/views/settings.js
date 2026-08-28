@@ -14,6 +14,8 @@ const READY_POLL_MS = 25;
 const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
 const QWEN_LOCAL_MODEL = "qwen3-asr-0.6b-q8_0";
 const NEMOTRON_LOCAL_MODEL = "nemotron-3.5-asr-streaming-0.6b-q8_0";
+const LOCAL_QWEN_PROVIDER = "local-qwen";
+const LOCAL_NEMOTRON_PROVIDER = "local-nemotron";
 let currentThemePref = "elegant";
 
 // First entry per provider is the effective default when switching provider
@@ -33,10 +35,6 @@ const modelOptions = {
     { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe", recommended: true },
     { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
     { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
-  ],
-  local: [
-    { value: QWEN_LOCAL_MODEL, labelKey: "settings.model.options.qwen3AsrLocal", recommended: true },
-    { value: NEMOTRON_LOCAL_MODEL, labelKey: "settings.model.options.nemotron35Local" },
   ],
 };
 
@@ -159,12 +157,36 @@ function updateModelOptions(provider) {
   });
 }
 
-function toggleApiKeyVisibility(provider) {
+function localModelForProvider(provider) {
+  if (provider === LOCAL_NEMOTRON_PROVIDER) {
+    return NEMOTRON_LOCAL_MODEL;
+  }
+  if (provider === LOCAL_QWEN_PROVIDER) {
+    return QWEN_LOCAL_MODEL;
+  }
+  return "";
+}
+
+function providerForSettings(settings) {
+  if (settings?.provider !== "local") {
+    return settings?.provider || "groq";
+  }
+  return settings.model === NEMOTRON_LOCAL_MODEL
+    ? LOCAL_NEMOTRON_PROVIDER
+    : LOCAL_QWEN_PROVIDER;
+}
+
+function toggleProviderFields(providerChoice) {
+  const provider = localModelForProvider(providerChoice) ? "local" : providerChoice;
+  const apiKeyItem = document.getElementById("apiKeyItem");
+  const modelItem = document.getElementById("modelItem");
   const fieldGroq = document.getElementById("apiKeyFieldGroq");
   const fieldOpenAI = document.getElementById("apiKeyFieldOpenAI");
   if (!fieldGroq || !fieldOpenAI) {
     return;
   }
+  apiKeyItem?.classList.toggle("hidden", provider === "local");
+  modelItem?.classList.toggle("hidden", provider === "local");
   fieldGroq.classList.toggle("hidden", provider !== "groq");
   fieldOpenAI.classList.toggle("hidden", provider !== "openai");
 }
@@ -189,8 +211,8 @@ function formatGB(bytes) {
 }
 
 function selectedLocalModel() {
-  const value = document.getElementById("modelSelect")?.value;
-  return value === NEMOTRON_LOCAL_MODEL ? NEMOTRON_LOCAL_MODEL : QWEN_LOCAL_MODEL;
+  const provider = document.getElementById("providerSelect")?.value;
+  return localModelForProvider(provider) || NEMOTRON_LOCAL_MODEL;
 }
 
 function renderLocalModelPanel(status) {
@@ -204,7 +226,7 @@ function renderLocalModelPanel(status) {
   }
   localModelState = status.state;
   const provider = document.getElementById("providerSelect")?.value;
-  item.classList.toggle("hidden", provider !== "local");
+  item.classList.toggle("hidden", !localModelForProvider(provider));
 
   const pct = status.totalBytes ? status.downloadedBytes / status.totalBytes : 0;
   progressEl.value = Math.round(pct * 1000);
@@ -289,10 +311,8 @@ async function offerSwitchToLocal(model) {
     currentSettings.provider = "local";
     currentSettings.model = model;
     const providerSelect = document.getElementById("providerSelect");
-    setSelectValue(providerSelect, "local", "groq");
-    updateModelOptions("local");
-    setSelectValue(document.getElementById("modelSelect"), currentSettings.model, "");
-    toggleApiKeyVisibility("local");
+    setSelectValue(providerSelect, providerForSettings(currentSettings), "groq");
+    toggleProviderFields(providerSelect?.value || "groq");
     void refreshLocalModelStatus();
   } catch (error) {
     console.error("Failed to switch to the local engine:", error);
@@ -350,11 +370,13 @@ function setupLocalModelSync() {
 
 }
 
-function revealLocalModelPanel() {
+function revealLocalModelPanel(model = NEMOTRON_LOCAL_MODEL) {
   const providerSelect = document.getElementById("providerSelect");
-  setSelectValue(providerSelect, "local", "groq");
-  updateModelOptions("local");
-  toggleApiKeyVisibility("local");
+  const provider = model === QWEN_LOCAL_MODEL
+    ? LOCAL_QWEN_PROVIDER
+    : LOCAL_NEMOTRON_PROVIDER;
+  setSelectValue(providerSelect, provider, "groq");
+  toggleProviderFields(provider);
   void refreshLocalModelStatus();
   window.setTimeout(() => {
     document.getElementById("localModelItem")?.scrollIntoView({ block: "center" });
@@ -613,16 +635,13 @@ function setSelectValue(element, value, fallback) {
 }
 
 function handleProviderChange(event) {
-  const provider = event.target.value || "groq";
-  updateModelOptions(provider);
-  toggleApiKeyVisibility(provider);
-  void refreshLocalModelStatus();
-}
-
-function handleModelChange() {
-  if (document.getElementById("providerSelect")?.value === "local") {
-    void refreshLocalModelStatus();
+  const providerChoice = event.target.value || "groq";
+  const provider = localModelForProvider(providerChoice) ? "local" : providerChoice;
+  if (provider !== "local") {
+    updateModelOptions(provider);
   }
+  toggleProviderFields(providerChoice);
+  void refreshLocalModelStatus();
 }
 
 function handleThemeChange(event) {
@@ -698,7 +717,6 @@ function bindEventHandlers() {
   const saveSettingsButton = document.getElementById("saveSettingsButton");
   const uiLanguageSelect = document.getElementById("uiLanguageSelect");
   const themeSelect = document.getElementById("themeSelect");
-  const modelSelect = document.getElementById("modelSelect");
 
   providerSelect?.addEventListener("change", handleProviderChange);
   checkPermissionButton?.addEventListener("click", () => {
@@ -715,7 +733,6 @@ function bindEventHandlers() {
   });
   uiLanguageSelect?.addEventListener("change", handleUiLanguageChange);
   themeSelect?.addEventListener("change", handleThemeChange);
-  modelSelect?.addEventListener("change", handleModelChange);
 
   document.querySelectorAll(".reveal-btn").forEach((button) => {
     button.addEventListener("click", () => toggleKeyReveal(button));
@@ -1028,6 +1045,7 @@ async function loadSettings() {
     applyTheme(currentSettings.uiTheme);
 
     const provider = currentSettings.provider || "groq";
+    const providerChoice = providerForSettings(currentSettings);
     const providerSelect = document.getElementById("providerSelect");
     const shortcutSelect = document.getElementById("shortcutSelect");
     const uiLanguageSelect = document.getElementById("uiLanguageSelect");
@@ -1039,9 +1057,11 @@ async function loadSettings() {
     const apiKeyGroq = document.getElementById("apiKeyGroq");
     const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
 
-    setSelectValue(providerSelect, provider, "groq");
-    updateModelOptions(provider);
-    toggleApiKeyVisibility(provider);
+    setSelectValue(providerSelect, providerChoice, "groq");
+    if (provider !== "local") {
+      updateModelOptions(provider);
+    }
+    toggleProviderFields(providerChoice);
 
     if (apiKeyGroq) {
       apiKeyGroq.value = apiKeys.apiKeyGroq || apiKeys.apiKey || "";
@@ -1054,7 +1074,9 @@ async function loadSettings() {
     setSelectValue(uiLanguageSelect, currentSettings.uiLanguage || "auto", "auto");
     setSelectValue(themeSelect, normalizeThemePref(currentSettings.uiTheme), "elegant");
     setSelectValue(languageSelect, currentSettings.language || "auto", "auto");
-    setSelectValue(modelSelect, currentSettings.model, modelSelect?.options[0]?.value || "");
+    if (provider !== "local") {
+      setSelectValue(modelSelect, currentSettings.model, modelSelect?.options[0]?.value || "");
+    }
 
     if (autoLaunchCheck) {
       autoLaunchCheck.checked = !!currentSettings.autoLaunch;
@@ -1081,8 +1103,10 @@ async function saveSettings() {
   try {
     await initializeDependencies();
 
-    const provider = document.getElementById("providerSelect")?.value || "groq";
-    if (provider === "local" && localModelState !== "ready") {
+    const providerChoice = document.getElementById("providerSelect")?.value || "groq";
+    const localModel = localModelForProvider(providerChoice);
+    const provider = localModel ? "local" : providerChoice;
+    if (localModel && localModelState !== "ready") {
       alert(translate("settings.localModel.notReady"));
       return;
     }
@@ -1094,7 +1118,7 @@ async function saveSettings() {
       language: document.getElementById("languageSelect")?.value || "auto",
       uiLanguage: document.getElementById("uiLanguageSelect")?.value || "auto",
       uiTheme: normalizeThemePref(themeSelect ? themeSelect.value : "elegant"),
-      model: document.getElementById("modelSelect")?.value || "",
+      model: localModel || document.getElementById("modelSelect")?.value || "",
       microphone: currentSettings.microphone,
       autoLaunch: !!document.getElementById("autoLaunchCheck")?.checked,
       startMinimized: !!document.getElementById("startMinimizedCheck")?.checked,
@@ -1154,9 +1178,10 @@ async function showSettings(target = null) {
       await loadSettings();
     }
 
-    if (target === "local-model") {
+    if (typeof target === "string" && target.startsWith("local-model")) {
       activateSettingsTab("transcription");
-      revealLocalModelPanel();
+      const model = target.split(":", 2)[1] || NEMOTRON_LOCAL_MODEL;
+      revealLocalModelPanel(model);
       return;
     }
 

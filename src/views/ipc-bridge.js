@@ -82,6 +82,7 @@
     "save-onboarding-api-key": [["provider"], ["apiKey", "api_key"]],
     "set-provider": [["provider"]],
     "set-local-model": [["model"]],
+    "open-local-model-panel": [["model"]],
     "download-local-model": [["model"]],
     "get-local-model-status": [["model"]],
     "delete-local-model": [["model"]],
