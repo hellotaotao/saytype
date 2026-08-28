@@ -30,8 +30,8 @@ const PROGRESS_EMIT_STEP: u64 = 8 * 1024 * 1024;
 const SIDECAR_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const FINAL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PCM_CHUNK_BYTES: usize = 512 * 1024;
-// R=6 is the model's trained 560 ms accuracy profile.
-const RNNT_RIGHT_CONTEXT: &str = "6";
+const BALANCED_RIGHT_CONTEXT: &str = "6";
+const ACCURACY_RIGHT_CONTEXT: &str = "13";
 
 static MODEL_ASSET: Asset = Asset {
   rel_path: MODEL_FILE,
@@ -381,6 +381,7 @@ struct SidecarEndpoint {
 struct Sidecar {
   child: Child,
   endpoint: SidecarEndpoint,
+  right_context: &'static str,
 }
 
 static SIDECAR: Mutex<Option<Sidecar>> = Mutex::const_new(None);
@@ -458,15 +459,40 @@ fn reserve_loopback_port() -> Result<u16> {
   Ok(listener.local_addr()?.port())
 }
 
-async fn ensure_sidecar() -> Result<SidecarEndpoint> {
+fn right_context_for_latency_ms(latency_ms: u32) -> &'static str {
+  match crate::settings::normalize_nemotron_latency_ms(latency_ms) {
+    crate::settings::NEMOTRON_ACCURACY_LATENCY_MS => ACCURACY_RIGHT_CONTEXT,
+    _ => BALANCED_RIGHT_CONTEXT,
+  }
+}
+
+fn session_update(sample_rate: u32, language: &str) -> Value {
+  let language = if language.trim().is_empty() {
+    "auto"
+  } else {
+    language.trim()
+  };
+  json!({
+    "type": "session.update",
+    "session": {
+      "sample_rate": sample_rate,
+      "language": language,
+      "automatic_punctuation": true,
+    },
+  })
+}
+
+async fn ensure_sidecar(latency_ms: u32) -> Result<SidecarEndpoint> {
   if !assets_ready() {
     anyhow::bail!("LOCAL_MODEL_MISSING: Nemotron assets are missing or incomplete");
   }
+  let right_context = right_context_for_latency_ms(latency_ms);
   let mut slot = SIDECAR.lock().await;
   if let Some(sidecar) = slot.as_mut() {
-    if matches!(sidecar.child.try_wait(), Ok(None)) {
+    if matches!(sidecar.child.try_wait(), Ok(None)) && sidecar.right_context == right_context {
       return Ok(sidecar.endpoint.clone());
     }
+    let _ = sidecar.child.start_kill();
     slot.take();
   }
 
@@ -493,7 +519,7 @@ async fn ensure_sidecar() -> Result<SidecarEndpoint> {
     .arg("--device")
     .arg("metal")
     .arg("--asr.streaming.rnnt_right_context")
-    .arg(RNNT_RIGHT_CONTEXT)
+    .arg(right_context)
     .env("NEMO_SPEECH_HTTP_API_KEY", &token)
     .stdin(Stdio::null())
     .stdout(Stdio::null())
@@ -528,16 +554,19 @@ async fn ensure_sidecar() -> Result<SidecarEndpoint> {
     tokio::time::sleep(Duration::from_millis(150)).await;
   }
 
-  log::info!("nemotron: sidecar ready on loopback port {port}");
+  log::info!(
+    "nemotron: sidecar ready on loopback port {port} with right context {right_context}"
+  );
   *slot = Some(Sidecar {
     child,
     endpoint: endpoint.clone(),
+    right_context,
   });
   Ok(endpoint)
 }
 
-pub async fn prewarm() -> Result<()> {
-  ensure_sidecar().await.map(|_| ())
+pub async fn prewarm(latency_ms: u32) -> Result<()> {
+  ensure_sidecar(latency_ms).await.map(|_| ())
 }
 
 pub async fn start_live_session(
@@ -545,11 +574,14 @@ pub async fn start_live_session(
   session_id: u64,
   sample_rate: u32,
   language: String,
+  latency_ms: u32,
 ) -> Result<(), String> {
   if !(8_000..=96_000).contains(&sample_rate) {
     return Err(format!("unsupported realtime sample rate: {sample_rate}"));
   }
-  let endpoint = ensure_sidecar().await.map_err(|error| error.to_string())?;
+  let endpoint = ensure_sidecar(latency_ms)
+    .await
+    .map_err(|error| error.to_string())?;
   let url = format!(
     "ws://127.0.0.1:{}/v1/realtime?api_key={}",
     endpoint.port, endpoint.token
@@ -582,22 +614,9 @@ pub async fn start_live_session(
     return Err("Nemotron realtime API returned an invalid session handshake".into());
   }
 
-  let language = if language.trim().is_empty() {
-    "auto"
-  } else {
-    language.trim()
-  };
   socket
     .send(Message::Text(
-      json!({
-        "type": "session.update",
-        "session": {
-          "sample_rate": sample_rate,
-          "language": language,
-          "automatic_punctuation": true,
-        }
-      })
-      .to_string(),
+      session_update(sample_rate, &language).to_string(),
     ))
     .await
     .map_err(|error| error.to_string())?;
@@ -737,8 +756,12 @@ pub async fn cancel_live_session(session_id: u64) -> bool {
   }
 }
 
-pub async fn transcribe_wav(wav: Vec<u8>, language: &str) -> Result<String> {
-  let endpoint = ensure_sidecar().await?;
+pub async fn transcribe_wav(
+  wav: Vec<u8>,
+  language: &str,
+  latency_ms: u32,
+) -> Result<String> {
+  let endpoint = ensure_sidecar(latency_ms).await?;
   let part = reqwest::multipart::Part::bytes(wav)
     .file_name("audio.wav")
     .mime_str("audio/wav")?;
@@ -853,8 +876,17 @@ mod tests {
   }
 
   #[test]
-  fn streaming_profile_uses_the_560ms_accuracy_context() {
-    assert_eq!(RNNT_RIGHT_CONTEXT, "6");
+  fn streaming_profiles_map_to_the_supported_right_contexts() {
+    assert_eq!(right_context_for_latency_ms(560), "6");
+    assert_eq!(right_context_for_latency_ms(1_120), "13");
+    assert_eq!(right_context_for_latency_ms(999), "6");
+  }
+
+  #[test]
+  fn realtime_session_uses_the_selected_language() {
+    let update = session_update(16_000, "zh");
+    assert_eq!(update["session"]["language"], "zh");
+    assert_eq!(session_update(16_000, "")["session"]["language"], "auto");
   }
 
   #[test]

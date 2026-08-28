@@ -180,6 +180,7 @@ function toggleProviderFields(providerChoice) {
   const provider = localModelForProvider(providerChoice) ? "local" : providerChoice;
   const apiKeyItem = document.getElementById("apiKeyItem");
   const modelItem = document.getElementById("modelItem");
+  const nemotronLatencyItem = document.getElementById("nemotronLatencyItem");
   const fieldGroq = document.getElementById("apiKeyFieldGroq");
   const fieldOpenAI = document.getElementById("apiKeyFieldOpenAI");
   if (!fieldGroq || !fieldOpenAI) {
@@ -187,6 +188,7 @@ function toggleProviderFields(providerChoice) {
   }
   apiKeyItem?.classList.toggle("hidden", provider === "local");
   modelItem?.classList.toggle("hidden", provider === "local");
+  nemotronLatencyItem?.classList.toggle("hidden", providerChoice !== LOCAL_NEMOTRON_PROVIDER);
   fieldGroq.classList.toggle("hidden", provider !== "groq");
   fieldOpenAI.classList.toggle("hidden", provider !== "openai");
 }
@@ -212,7 +214,7 @@ function formatGB(bytes) {
 
 function selectedLocalModel() {
   const provider = document.getElementById("providerSelect")?.value;
-  return localModelForProvider(provider) || NEMOTRON_LOCAL_MODEL;
+  return localModelForProvider(provider) || QWEN_LOCAL_MODEL;
 }
 
 function renderLocalModelPanel(status) {
@@ -370,7 +372,7 @@ function setupLocalModelSync() {
 
 }
 
-function revealLocalModelPanel(model = NEMOTRON_LOCAL_MODEL) {
+function revealLocalModelPanel(model = QWEN_LOCAL_MODEL) {
   const providerSelect = document.getElementById("providerSelect");
   const provider = model === QWEN_LOCAL_MODEL
     ? LOCAL_QWEN_PROVIDER
@@ -1052,6 +1054,7 @@ async function loadSettings() {
     const themeSelect = document.getElementById("themeSelect");
     const languageSelect = document.getElementById("languageSelect");
     const modelSelect = document.getElementById("modelSelect");
+    const nemotronLatencySelect = document.getElementById("nemotronLatencySelect");
     const autoLaunchCheck = document.getElementById("autoLaunchCheck");
     const startMinimizedCheck = document.getElementById("startMinimizedCheck");
     const apiKeyGroq = document.getElementById("apiKeyGroq");
@@ -1074,6 +1077,11 @@ async function loadSettings() {
     setSelectValue(uiLanguageSelect, currentSettings.uiLanguage || "auto", "auto");
     setSelectValue(themeSelect, normalizeThemePref(currentSettings.uiTheme), "elegant");
     setSelectValue(languageSelect, currentSettings.language || "auto", "auto");
+    setSelectValue(
+      nemotronLatencySelect,
+      String(currentSettings.nemotronLatencyMs || 560),
+      "560"
+    );
     if (provider !== "local") {
       setSelectValue(modelSelect, currentSettings.model, modelSelect?.options[0]?.value || "");
     }
@@ -1123,6 +1131,9 @@ async function saveSettings() {
       autoLaunch: !!document.getElementById("autoLaunchCheck")?.checked,
       startMinimized: !!document.getElementById("startMinimizedCheck")?.checked,
       provider,
+      nemotronLatencyMs: Number(
+        document.getElementById("nemotronLatencySelect")?.value || 560
+      ),
     };
 
     await ipc.invoke("save-settings", settings);
@@ -1180,7 +1191,7 @@ async function showSettings(target = null) {
 
     if (typeof target === "string" && target.startsWith("local-model")) {
       activateSettingsTab("transcription");
-      const model = target.split(":", 2)[1] || NEMOTRON_LOCAL_MODEL;
+      const model = target.split(":", 2)[1] || QWEN_LOCAL_MODEL;
       revealLocalModelPanel(model);
       return;
     }

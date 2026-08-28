@@ -8,16 +8,16 @@ const ENGINES: [(&str, &str, &str, Option<&str>); 4] = [
   ("engine-groq", "Groq (cloud)", "groq", None),
   ("engine-openai", "OpenAI (cloud)", "openai", None),
   (
-    "engine-local-nemotron",
-    "Local · Nemotron 3.5 ASR",
-    "local",
-    Some(crate::local_asr::NEMOTRON_MODEL_ID),
-  ),
-  (
     "engine-local-qwen",
     "Local · Qwen3-ASR",
     "local",
     Some(crate::local_asr::QWEN_MODEL_ID),
+  ),
+  (
+    "engine-local-nemotron",
+    "Local · Nemotron 3.5 ASR",
+    "local",
+    Some(crate::local_asr::NEMOTRON_MODEL_ID),
   ),
 ];
 

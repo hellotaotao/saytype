@@ -230,6 +230,8 @@ pub fn save_settings(
     config.onboarding_completed = existing.onboarding_completed;
     config.translate_shortcut = TRANSLATE_SHORTCUT.into();
     config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
+    config.nemotron_latency_ms =
+      settings::normalize_nemotron_latency_ms(config.nemotron_latency_ms);
     if config.provider == crate::local_asr::LOCAL_PROVIDER {
       config.model = crate::local_asr::normalize_local_model_id(&config.model).into();
     }
@@ -317,7 +319,7 @@ pub fn save_onboarding_api_key(
 fn default_model_for(provider: &str) -> &'static str {
   match provider {
     "groq" => "whisper-large-v3-turbo",
-    crate::local_asr::LOCAL_PROVIDER => crate::local_asr::NEMOTRON_MODEL_ID,
+    crate::local_asr::LOCAL_PROVIDER => crate::local_asr::QWEN_MODEL_ID,
     _ => "gpt-4o-mini-transcribe",
   }
 }
@@ -377,8 +379,9 @@ pub(crate) fn sync_local_runtime(app: &AppHandle, config: &AppConfig) {
   {
     crate::local_asr::shutdown_resident_worker();
     let app = app.clone();
+    let latency_ms = config.nemotron_latency_ms;
     tauri::async_runtime::spawn(async move {
-      if let Err(error) = crate::nemotron_asr::prewarm().await {
+      if let Err(error) = crate::nemotron_asr::prewarm(latency_ms).await {
         log::warn!("nemotron: prewarm failed: {error:#}");
         let _ = app.emit(
           "local-runtime-error",
@@ -444,7 +447,7 @@ pub fn open_local_model_panel(app: AppHandle, model: Option<String>) -> Result<(
   let model = model
     .as_deref()
     .map(crate::local_asr::normalize_local_model_id)
-    .unwrap_or(crate::local_asr::NEMOTRON_MODEL_ID);
+    .unwrap_or(crate::local_asr::QWEN_MODEL_ID);
   log::info!("command:open_local_model_panel model={model}");
   show_local_model_panel(&app, model)
 }
@@ -588,7 +591,14 @@ pub async fn start_live_transcription(
   {
     return Err("Nemotron is not the selected local model".into());
   }
-  crate::nemotron_asr::start_live_session(app, session_id, sample_rate, language).await?;
+  crate::nemotron_asr::start_live_session(
+    app,
+    session_id,
+    sample_rate,
+    language,
+    config.nemotron_latency_ms,
+  )
+  .await?;
   Ok(true)
 }
 
@@ -1398,7 +1408,12 @@ async fn perform_local_transcription(
   let result = if crate::local_asr::normalize_local_model_id(&config.model)
     == crate::local_asr::NEMOTRON_MODEL_ID
   {
-    crate::nemotron_asr::transcribe_wav(audio_buffer, &config.language).await
+    crate::nemotron_asr::transcribe_wav(
+      audio_buffer,
+      &config.language,
+      config.nemotron_latency_ms,
+    )
+    .await
   } else {
     crate::local_asr::transcribe_wav(Some(app), session_id, &audio_buffer).await
   };
@@ -1657,7 +1672,7 @@ mod tests {
     assert_eq!(config.provider, "groq");
     assert_eq!(config.model, "whisper-large-v3-turbo");
     switch_provider(&mut config, "local");
-    assert_eq!(config.model, "nemotron-3.5-asr-streaming-0.6b-q8_0");
+    assert_eq!(config.model, "qwen3-asr-0.6b-q8_0");
     switch_provider(&mut config, "openai");
     assert_eq!(config.model, "gpt-4o-mini-transcribe");
   }

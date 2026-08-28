@@ -100,18 +100,18 @@
       <div class="onboard-page" data-ob-page="5">
         <h1 id="obKeyTitle" data-i18n="onboarding.key.title">Connect your transcription service</h1>
         <p class="ob-lead" id="obKeyLead" data-i18n="onboarding.key.lead">You use your own API key.</p>
-        <button type="button" class="ob-local-card" id="obLocalNemotronCard" data-local-model="nemotron-3.5-asr-streaming-0.6b-q8_0" hidden>
+        <button type="button" class="ob-local-card" id="obLocalQwenCard" data-local-model="qwen3-asr-0.6b-q8_0" hidden>
           <span class="material-icons ob-local-icon">memory</span>
           <span class="ob-local-body">
-            <span class="ob-provider-name"><span data-i18n="onboarding.key.localNemotronName">Local · Nemotron 3.5 ASR</span><span class="ob-provider-tag" data-i18n="onboarding.key.localRecommendedTag">Recommended · free · offline</span></span>
+            <span class="ob-provider-name"><span data-i18n="onboarding.key.localQwenName">Local · Qwen3-ASR</span><span class="ob-provider-tag" data-i18n="onboarding.key.localRecommendedTag">Recommended · free · offline</span></span>
             <span class="ob-provider-desc"></span>
             <progress class="ob-local-progress" max="1000" value="0" hidden></progress>
           </span>
         </button>
-        <button type="button" class="ob-local-card" id="obLocalQwenCard" data-local-model="qwen3-asr-0.6b-q8_0" hidden>
+        <button type="button" class="ob-local-card" id="obLocalNemotronCard" data-local-model="nemotron-3.5-asr-streaming-0.6b-q8_0" hidden>
           <span class="material-icons ob-local-icon">memory</span>
           <span class="ob-local-body">
-            <span class="ob-provider-name"><span data-i18n="onboarding.key.localQwenName">Local · Qwen3-ASR</span><span class="ob-provider-tag" data-i18n="onboarding.key.localOfflineTag">Free · offline</span></span>
+            <span class="ob-provider-name"><span data-i18n="onboarding.key.localNemotronName">Local · Nemotron 3.5 ASR</span><span class="ob-provider-tag" data-i18n="onboarding.key.localOfflineTag">Free · offline</span></span>
             <span class="ob-provider-desc"></span>
             <progress class="ob-local-progress" max="1000" value="0" hidden></progress>
           </span>
@@ -453,8 +453,8 @@
                 <select class="input provider-select" id="providerSelect" title="Select transcription provider" data-i18n="settings.apiProvider.selectTitle" data-i18n-attr="title">
                   <option value="groq">Groq</option>
                   <option value="openai">OpenAI</option>
-                  <option value="local-nemotron" data-i18n="settings.apiProvider.localNemotron">Local · Nemotron 3.5 ASR · ★ Recommended</option>
-                  <option value="local-qwen" data-i18n="settings.apiProvider.localQwen">Local · Qwen3-ASR</option>
+                  <option value="local-qwen" data-i18n="settings.apiProvider.localQwen">Local · Qwen3-ASR · ★ Recommended</option>
+                  <option value="local-nemotron" data-i18n="settings.apiProvider.localNemotron">Local · Nemotron 3.5 ASR</option>
                 </select>
               </div>
             </div>
@@ -489,6 +489,21 @@
                 <select class="input model-select" id="modelSelect" title="Select transcription model" data-i18n="settings.model.selectTitle" data-i18n-attr="title">
                   <option value="whisper-large-v3-turbo">Whisper Large V3 Turbo (Faster) · ★ Recommended</option>
                   <option value="whisper-large-v3">Whisper Large V3 (Standard)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item hidden" id="nemotronLatencyItem">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.nemotronLatency.title">Nemotron look-ahead</div>
+                <div class="setting-description" data-i18n="settings.nemotronLatency.description">
+                  Model look-ahead; total response time also includes audio and processing.
+                </div>
+              </div>
+              <div class="setting-control">
+                <select class="input model-select" id="nemotronLatencySelect" title="Select Nemotron latency" data-i18n="settings.nemotronLatency.selectTitle" data-i18n-attr="title">
+                  <option value="560" data-i18n="settings.nemotronLatency.balanced">Lower latency · 0.56 s</option>
+                  <option value="1120" data-i18n="settings.nemotronLatency.accuracy">Higher accuracy · 1.12 s</option>
                 </select>
               </div>
             </div>

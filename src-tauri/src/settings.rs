@@ -10,6 +10,8 @@ pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const HISTORY_FILE_NAME: &str = "transcription-history.json";
 pub const DEFAULT_RECORD_SHORTCUT: &str = "Ctrl+Shift";
 pub const TRANSLATE_SHORTCUT: &str = "Shift+Alt";
+pub const DEFAULT_NEMOTRON_LATENCY_MS: u32 = 560;
+pub const NEMOTRON_ACCURACY_LATENCY_MS: u32 = 1_120;
 
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -39,6 +41,17 @@ fn default_microphone() -> String {
 
 fn default_provider() -> String {
   "openai".into()
+}
+
+fn default_nemotron_latency_ms() -> u32 {
+  DEFAULT_NEMOTRON_LATENCY_MS
+}
+
+pub fn normalize_nemotron_latency_ms(value: u32) -> u32 {
+  match value {
+    NEMOTRON_ACCURACY_LATENCY_MS => NEMOTRON_ACCURACY_LATENCY_MS,
+    _ => DEFAULT_NEMOTRON_LATENCY_MS,
+  }
 }
 
 fn default_shortcut() -> String {
@@ -80,6 +93,8 @@ pub struct AppConfig {
   pub provider: String,
   #[serde(default)]
   pub dictionary: String,
+  #[serde(default = "default_nemotron_latency_ms")]
+  pub nemotron_latency_ms: u32,
   #[serde(default)]
   pub onboarding_completed: bool,
 }
@@ -101,6 +116,7 @@ impl Default for AppConfig {
       start_minimized: false,
       provider: default_provider(),
       dictionary: String::new(),
+      nemotron_latency_ms: default_nemotron_latency_ms(),
       onboarding_completed: false,
     }
   }
@@ -123,6 +139,7 @@ pub struct SettingsPayload {
   pub auto_launch: bool,
   pub start_minimized: bool,
   pub provider: String,
+  pub nemotron_latency_ms: u32,
   /// The OS the backend runs on ("macos" | "windows" | "linux"), so the frontend
   /// can choose OS-correct copy and modifier glyphs instead of relying on the
   /// deprecated navigator.platform.
@@ -164,6 +181,7 @@ impl SettingsPayload {
       auto_launch: config.auto_launch,
       start_minimized: config.start_minimized,
       provider: config.provider.clone(),
+      nemotron_latency_ms: normalize_nemotron_latency_ms(config.nemotron_latency_ms),
       os: std::env::consts::OS.to_string(),
       is_dev: cfg!(debug_assertions),
       onboarding_completed: config.onboarding_completed,
@@ -351,6 +369,15 @@ mod tests {
     assert_eq!(config.model, "gpt-4o-mini-transcribe");
     assert_eq!(config.shortcut, DEFAULT_RECORD_SHORTCUT);
     assert_eq!(config.translate_shortcut, TRANSLATE_SHORTCUT);
+    assert_eq!(config.nemotron_latency_ms, DEFAULT_NEMOTRON_LATENCY_MS);
+  }
+
+  #[test]
+  fn nemotron_latency_accepts_only_supported_profiles() {
+    assert_eq!(normalize_nemotron_latency_ms(560), 560);
+    assert_eq!(normalize_nemotron_latency_ms(1_120), 1_120);
+    assert_eq!(normalize_nemotron_latency_ms(0), 560);
+    assert_eq!(normalize_nemotron_latency_ms(999), 560);
   }
 
   #[test]
@@ -386,6 +413,7 @@ mod tests {
     assert_eq!(config.api_key_openai, "osk");
     assert_eq!(config.provider, "groq");
     assert_eq!(config.language, "en");
+    assert_eq!(config.nemotron_latency_ms, DEFAULT_NEMOTRON_LATENCY_MS);
   }
 
   #[test]

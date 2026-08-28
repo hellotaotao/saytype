@@ -167,7 +167,7 @@ function bindEvents() {
   });
   document.querySelectorAll("[data-local-model]").forEach((card) => {
     card.addEventListener("click", () => {
-      const model = card.getAttribute("data-local-model") || NEMOTRON_LOCAL_MODEL;
+      const model = card.getAttribute("data-local-model") || QWEN_LOCAL_MODEL;
       const state = obLocalStatuses[model]?.state || "absent";
       if (state === "downloading") {
         return;
@@ -588,7 +588,7 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
 // choice because there is no second model selector here. Deliberately NOT inside the
 // readiness card: that card is pure status display, and burying an
 // interactive control among status rows made it unfindable. The
-// "recommended" tag on Nemotron is a nudge, so it only shows on local-capable
+// The Qwen recommendation tag only shows on local-capable
 // hardware (Apple Silicon) while another engine is selected. Selecting a local
 // model before its assets are downloaded is rejected by the backend — we then open
 // Settings on the download panel instead of silently switching to an
@@ -600,12 +600,16 @@ const ENGINE_OPTIONS = [
   { value: "groq", label: "Groq" },
   { value: "openai", label: "OpenAI" },
   {
+    value: "local-qwen",
+    labelKey: "home.engineLocalQwen",
+    model: QWEN_LOCAL_MODEL,
+    recommended: true,
+  },
+  {
     value: "local-nemotron",
     labelKey: "home.engineLocalNemotron",
     model: NEMOTRON_LOCAL_MODEL,
-    recommended: true,
   },
-  { value: "local-qwen", labelKey: "home.engineLocalQwen", model: QWEN_LOCAL_MODEL },
 ];
 
 const ENGINE_CAPTION_KEY = {

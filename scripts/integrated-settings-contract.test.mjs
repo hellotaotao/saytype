@@ -66,6 +66,7 @@ test("existing settings are redistributed by purpose", () => {
     "apiKeyGroq",
     "apiKeyOpenAI",
     "modelSelect",
+    "nemotronLatencySelect",
     "localModelItem",
   ]) {
     assert.match(transcription, new RegExp(`id="${id}"`));
@@ -124,6 +125,19 @@ test("backend routes every Settings entry into the main window", () => {
   assert.doesNotMatch(libRs, /label == "main" \|\| label == "settings"/);
   assert.match(trayRs, /commands::open_settings/);
   assert.doesNotMatch(trayRs, /get_webview_window\("settings"\)/);
+});
+
+test("Qwen is the recommended local engine and Nemotron exposes both latency profiles", () => {
+  const transcription = sectionSource("settings-panel-transcription");
+  assert.match(transcription, /option value="local-qwen"[^>]*>Local · Qwen3-ASR · ★ Recommended<\/option>/);
+  assert.match(transcription, /id="nemotronLatencyItem"/);
+  assert.match(transcription, /id="nemotronLatencySelect"/);
+  assert.match(transcription, /option value="560"/);
+  assert.match(transcription, /option value="1120"/);
+  assert.match(settingsJs, /providerChoice !== LOCAL_NEMOTRON_PROVIDER/);
+  assert.match(settingsJs, /nemotronLatencyMs: Number/);
+  assert.match(mainJs, /value: "local-qwen",[\s\S]*?recommended: true/);
+  assert.match(commandsRs, /LOCAL_PROVIDER => crate::local_asr::QWEN_MODEL_ID/);
 });
 
 test("new Settings page labels exist in both locales", () => {
