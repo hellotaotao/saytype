@@ -15,6 +15,7 @@
   const tauriCommands = {
     "get-settings": "get_settings",
     "report-recording-startup": "report_recording_startup",
+    "prewarm-qwen-worker": "prewarm_qwen_worker",
     "get-diagnostic-log": "get_diagnostic_log",
     "get-api-keys": "get_api_keys",
     "save-settings": "save_settings",

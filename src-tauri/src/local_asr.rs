@@ -395,6 +395,9 @@ static RESIDENT_STARTS: AtomicU64 = AtomicU64::new(0);
 const RESIDENT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const RESIDENT_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
+/// A preloaded worker must survive until the frontend's 75 s hard chunk cut.
+/// Once it serves a decode, the normal shorter idle timeout applies again.
+const PREWARM_IDLE_TIMEOUT: Duration = Duration::from_secs(80);
 const CHAT_PROMPT: &[u8] = b"\n> ";
 
 struct ResidentWorker {
@@ -583,9 +586,9 @@ pub fn shutdown_resident_worker() {
   retire_resident_worker(None);
 }
 
-fn schedule_resident_retirement(generation: u64) {
+fn schedule_resident_retirement(generation: u64, idle_timeout: Duration) {
   tauri::async_runtime::spawn(async move {
-    tokio::time::sleep(RESIDENT_IDLE_TIMEOUT).await;
+    tokio::time::sleep(idle_timeout).await;
     retire_resident_worker(Some(generation));
   });
 }
@@ -607,11 +610,11 @@ pub fn keep_resident_worker_warm() -> bool {
     worker.generation = generation;
     generation
   };
-  schedule_resident_retirement(generation);
+  schedule_resident_retirement(generation, RESIDENT_IDLE_TIMEOUT);
   true
 }
 
-fn park_resident_worker(mut worker: ResidentWorker) {
+fn park_resident_worker_for(mut worker: ResidentWorker, idle_timeout: Duration) {
   if !RESIDENT_RUNTIME_SAFE {
     let _ = worker.child.start_kill();
     return;
@@ -623,7 +626,87 @@ fn park_resident_worker(mut worker: ResidentWorker) {
   let generation = RESIDENT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
   worker.generation = generation;
   *RESIDENT_WORKER.lock().unwrap() = Some(worker);
-  schedule_resident_retirement(generation);
+  schedule_resident_retirement(generation, idle_timeout);
+}
+
+fn park_resident_worker(worker: ResidentWorker) {
+  park_resident_worker_for(worker, RESIDENT_IDLE_TIMEOUT);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidentPrewarmOutcome {
+  Unsupported,
+  Ineligible,
+  AssetsMissing,
+  Reused,
+  Spawned,
+}
+
+impl ResidentPrewarmOutcome {
+  pub fn is_ready(self) -> bool {
+    matches!(self, Self::Reused | Self::Spawned)
+  }
+}
+
+/// Load the fixed short-dictation worker while recording is already underway.
+/// The shared inference permit makes this single-flight with both decode and
+/// other prewarm requests. Eligibility is rechecked after waiting for the
+/// permit, so a provider/model switch cannot start a stale worker.
+pub async fn prewarm_resident_worker(
+  eligible: impl FnOnce() -> Result<bool>,
+) -> Result<ResidentPrewarmOutcome> {
+  if !RESIDENT_RUNTIME_SAFE {
+    return Ok(ResidentPrewarmOutcome::Unsupported);
+  }
+
+  let queued_at = std::time::Instant::now();
+  let _inference_permit = LOCAL_INFERENCE
+    .acquire()
+    .await
+    .expect("local inference semaphore is never closed");
+  let queue_ms = queued_at.elapsed().as_millis();
+  let lease_epoch = RESIDENT_EPOCH.load(Ordering::Relaxed);
+
+  if !eligible()? {
+    log::info!("local-asr: prewarm outcome=ineligible queue_ms={queue_ms}");
+    return Ok(ResidentPrewarmOutcome::Ineligible);
+  }
+
+  let base = local_asr_dir()?;
+  ensure_bundled_runtime_at(&base).map_err(anyhow::Error::msg)?;
+  if !assets_ready_at(&base) {
+    log::info!("local-asr: prewarm outcome=assets_missing queue_ms={queue_ms}");
+    return Ok(ResidentPrewarmOutcome::AssetsMissing);
+  }
+
+  let cached = RESIDENT_WORKER.lock().unwrap().take();
+  if let Some(mut worker) = cached {
+    if worker.ctx_size == CTX_FLOOR && worker.is_running() {
+      worker.epoch = lease_epoch;
+      park_resident_worker_for(worker, PREWARM_IDLE_TIMEOUT);
+      log::info!(
+        "local-asr: prewarm outcome=reused ctx={} queue_ms={} resident_spawn_ms=0 idle_ms={}",
+        CTX_FLOOR,
+        queue_ms,
+        PREWARM_IDLE_TIMEOUT.as_millis()
+      );
+      return Ok(ResidentPrewarmOutcome::Reused);
+    }
+  }
+
+  let spawn_started = std::time::Instant::now();
+  let mut worker = ResidentWorker::spawn(&base, CTX_FLOOR).await?;
+  let resident_spawn_ms = spawn_started.elapsed().as_millis();
+  worker.epoch = lease_epoch;
+  park_resident_worker_for(worker, PREWARM_IDLE_TIMEOUT);
+  log::info!(
+    "local-asr: prewarm outcome=spawned ctx={} queue_ms={} resident_spawn_ms={} idle_ms={}",
+    CTX_FLOOR,
+    queue_ms,
+    resident_spawn_ms,
+    PREWARM_IDLE_TIMEOUT.as_millis()
+  );
+  Ok(ResidentPrewarmOutcome::Spawned)
 }
 
 /// Removes the temp WAV on drop -- including when the whole transcribe future
@@ -696,7 +779,7 @@ pub async fn transcribe_wav(
   chunk_index: Option<u32>,
   wav_bytes: &[u8],
 ) -> Result<String> {
-  transcribe_wav_inner(wav_bytes, |text| {
+  transcribe_wav_inner(session_id, chunk_index, wav_bytes, |text| {
     let Some(app) = app else { return };
     // Broadcast, NOT emit_to: the frontend registers its listener with
     // target { kind: "Any" } (ipc-bridge.js), which only receives app.emit()
@@ -717,6 +800,8 @@ pub async fn transcribe_wav(
 /// text actually grew). Split out so tests can observe the streaming without
 /// standing up an AppHandle.
 async fn transcribe_wav_inner(
+  session_id: Option<u64>,
+  chunk_index: Option<u32>,
   wav_bytes: &[u8],
   mut on_partial: impl FnMut(&str),
 ) -> Result<String> {
@@ -730,6 +815,17 @@ async fn transcribe_wav_inner(
   if queue_time >= Duration::from_millis(10) {
     log::info!("local-asr: waited {} ms for inference slot", queue_time.as_millis());
   }
+  let first_visible_partial_ms = AtomicU64::new(u64::MAX);
+  let mut tracked_partial = |text: &str| {
+    let elapsed_ms = queued_at.elapsed().as_millis() as u64;
+    let _ = first_visible_partial_ms.compare_exchange(
+      u64::MAX,
+      elapsed_ms,
+      Ordering::Relaxed,
+      Ordering::Relaxed,
+    );
+    on_partial(text);
+  };
 
   let base = local_asr_dir()?;
   ensure_bundled_runtime_at(&base).map_err(anyhow::Error::msg)?;
@@ -748,23 +844,38 @@ async fn transcribe_wav_inner(
 
   let ctx_size = ctx_size_for_wav(wav_bytes.len());
   let cached = RESIDENT_WORKER.lock().unwrap().take();
-  let reusable = cached.and_then(|mut cached| {
-    let usable = cached.ctx_size == ctx_size && cached.is_running();
-    usable.then_some(cached)
-  });
+  let (reusable, reuse_miss_reason) = match cached {
+    None => (None, "cold"),
+    Some(mut cached) => {
+      if cached.ctx_size != ctx_size {
+        (None, "ctx_mismatch")
+      } else if !cached.is_running() {
+        (None, "worker_exited")
+      } else {
+        (Some(cached), "none")
+      }
+    }
+  };
+  let worker_reused = reusable.is_some();
+  let mut resident_spawn_ms = None;
   // A worker that never reaches its chat prompt must not fail the dictation:
   // fall through to the one-shot path, which captures the child's stderr and
   // so reports the real cause (a broken runtime install, an unreadable model)
   // instead of the opaque "did not reach its initial prompt".
   let started_worker = match reusable {
     Some(worker) => Some(worker),
-    None => match ResidentWorker::spawn(&base, ctx_size).await {
-      Ok(worker) => Some(worker),
-      Err(error) => {
-        log::warn!("local-asr: resident worker could not start, falling back to one-shot: {error:#}");
-        None
+    None => {
+      let spawn_started = std::time::Instant::now();
+      let result = ResidentWorker::spawn(&base, ctx_size).await;
+      resident_spawn_ms = Some(spawn_started.elapsed().as_millis());
+      match result {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+          log::warn!("local-asr: resident worker could not start, falling back to one-shot: {error:#}");
+          None
+        }
       }
-    },
+    }
   };
 
   if let Some(mut worker) = started_worker {
@@ -772,14 +883,28 @@ async fn transcribe_wav_inner(
     let resident_started = std::time::Instant::now();
     match tokio::time::timeout(
       TRANSCRIBE_TIMEOUT,
-      worker.transcribe(&tmp_path, wav_bytes.len(), &mut on_partial),
+      worker.transcribe(&tmp_path, wav_bytes.len(), &mut tracked_partial),
     ).await {
       Ok(Ok(text)) => {
+        let resident_decode_ms = resident_started.elapsed().as_millis();
         park_resident_worker(worker);
+        let total_ms = queued_at.elapsed().as_millis();
         log::info!(
-          "local ASR: decoded {} KB wav in {:.2}s ({} chars, resident)",
+          "local-asr: decode mode=resident session_id={} chunk_index={} ctx={} worker_reused={} reuse_miss={} resident_spawn_ms={} queue_ms={} total_ms={} resident_decode_ms={} first_visible_partial_ms={} wav_kb={} chars={}",
+          session_id.map_or_else(|| "none".into(), |value| value.to_string()),
+          chunk_index.map_or_else(|| "none".into(), |value| value.to_string()),
+          ctx_size,
+          worker_reused,
+          reuse_miss_reason,
+          resident_spawn_ms.map_or_else(|| "0".into(), |value| value.to_string()),
+          queue_time.as_millis(),
+          total_ms,
+          resident_decode_ms,
+          match first_visible_partial_ms.load(Ordering::Relaxed) {
+            u64::MAX => "none".into(),
+            value => value.to_string(),
+          },
           wav_bytes.len() / 1024,
-          resident_started.elapsed().as_secs_f32(),
           text.chars().count()
         );
         return Ok(text);
@@ -802,6 +927,8 @@ async fn transcribe_wav_inner(
   // Compatibility fallback: preserve the original one-process-per-clip path
   // and its detailed stderr diagnostics if chat mode ever drifts in a future
   // pinned llama.cpp build.
+  // This path has no ready prompt, so its phase timing intentionally includes
+  // process start, model initialization, and decode as one `one_shot_ms` value.
   let started = std::time::Instant::now();
   let mut child = local_asr_command(cli_path(&base))
     .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
@@ -856,7 +983,7 @@ async fn transcribe_wav_inner(
           if text.len() != last_sent {
             last_sent = text.len();
             last_emit = Some(std::time::Instant::now());
-            on_partial(&text);
+            tracked_partial(&text);
           }
         }
       }
@@ -930,11 +1057,25 @@ async fn transcribe_wav_inner(
   }
 
   let text = parse_mtmd_output(&String::from_utf8_lossy(&stdout_bytes));
+  let one_shot_ms = started.elapsed().as_millis();
+  let total_ms = queued_at.elapsed().as_millis();
   // Counts only -- no transcribed text in logs.
   log::info!(
-    "local ASR: decoded {} KB wav in {:.2}s ({} chars)",
+    "local-asr: decode mode=one_shot session_id={} chunk_index={} ctx={} worker_reused={} reuse_miss={} resident_spawn_ms={} queue_ms={} total_ms={} one_shot_ms={} first_visible_partial_ms={} wav_kb={} chars={}",
+    session_id.map_or_else(|| "none".into(), |value| value.to_string()),
+    chunk_index.map_or_else(|| "none".into(), |value| value.to_string()),
+    ctx_size,
+    worker_reused,
+    reuse_miss_reason,
+    resident_spawn_ms.map_or_else(|| "0".into(), |value| value.to_string()),
+    queue_time.as_millis(),
+    total_ms,
+    one_shot_ms,
+    match first_visible_partial_ms.load(Ordering::Relaxed) {
+      u64::MAX => "none".into(),
+      value => value.to_string(),
+    },
     wav_bytes.len() / 1024,
-    started.elapsed().as_secs_f32(),
     text.chars().count()
   );
   Ok(text)
@@ -1597,6 +1738,11 @@ mod tests {
   }
 
   #[test]
+  fn prewarm_deadline_outlives_the_frontend_hard_chunk_limit() {
+    assert!(PREWARM_IDLE_TIMEOUT > Duration::from_secs(75));
+  }
+
+  #[test]
   fn first_byte_deadline_scales_with_clip_length_over_a_base() {
     // 16 kHz mono 16-bit WAV = 32000 bytes/s after a 44-byte header.
     let wav = |secs: f64| 44 + (secs * 32000.0) as usize;
@@ -1745,8 +1891,8 @@ mod tests {
     );
   }
 
-  /// Needs the real assets laid out. Runs two decodes to prove the chat worker
-  /// keeps one model process alive between requests. Run manually:
+  /// Needs the real assets laid out. Prewarms before the first decode, then runs
+  /// two decodes to prove all three operations share one model process. Run:
   ///   cargo test real_subprocess_smoke -- --ignored --nocapture
   #[test]
   #[ignore]
@@ -1774,6 +1920,15 @@ mod tests {
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 0);
     let starts_before = RESIDENT_STARTS.load(Ordering::Relaxed);
+    let prewarm = rt
+      .block_on(prewarm_resident_worker(|| Ok(true)))
+      .expect("resident prewarm ok");
+    assert_eq!(prewarm, ResidentPrewarmOutcome::Spawned);
+    assert_eq!(
+      RESIDENT_STARTS.load(Ordering::Relaxed) - starts_before,
+      1,
+      "prewarm must start exactly one resident worker"
+    );
     let first = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("first resident decode ok");
     assert!(keep_resident_worker_warm(), "recording start should touch a warm worker");
     rt.block_on(async {
@@ -1793,7 +1948,7 @@ mod tests {
     assert_eq!(
       RESIDENT_STARTS.load(Ordering::Relaxed) - starts_before,
       1,
-      "two same-context decodes must share one resident worker"
+      "prewarm and two same-context decodes must share one resident worker"
     );
     rt.block_on(async {
       tokio::time::sleep(Duration::from_millis(500)).await;

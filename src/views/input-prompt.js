@@ -17,6 +17,9 @@ const RECORD_DEFAULT_MODEL = { openai: "gpt-4o-mini-transcribe", groq: "whisper-
 const TRANSLATE_MODEL = { openai: "whisper-1", groq: "whisper-large-v3" };
 const QWEN_LOCAL_MODEL_ID = "qwen3-asr-0.6b-q8_0";
 const NEMOTRON_LOCAL_MODEL_ID = "nemotron-3.5-asr-streaming-0.6b-q8_0";
+// Keep this paired with hotkey.rs CANCEL_THRESHOLD. Preloading a model-sized
+// worker before probation ends would make a discarded mis-trigger hold memory.
+const QWEN_PREWARM_PROBATION_MS = 500;
 const MODEL_LABEL = {
   "gpt-4o-transcribe": "OpenAI GPT-4o",
   "gpt-4o-mini-transcribe": "OpenAI GPT-4o mini",
@@ -207,6 +210,33 @@ class VoiceInputPrompt {
   // dictation. window.SayTypeVadGate is defined by vad-gate.js (loaded first).
   primeVad() {
     window.SayTypeVadGate?.warmup?.();
+  }
+
+  prewarmQwenWorker(recordingSession) {
+    if (
+      !this.isRecording ||
+      this.activeRecordingSession !== recordingSession ||
+      recordingSession.translateMode ||
+      this.currentProvider !== "local" ||
+      this.currentModel === NEMOTRON_LOCAL_MODEL_ID
+    ) {
+      return;
+    }
+    void ipc.invoke("prewarm-qwen-worker").catch((error) => {
+      if (isDev) console.warn("Failed to prewarm Qwen worker:", error);
+    });
+  }
+
+  scheduleQwenPrewarm(recordingSession, elapsedSinceHotkeyMs) {
+    const delayMs = Math.max(
+      0,
+      QWEN_PREWARM_PROBATION_MS - nonNegativeMilliseconds(elapsedSinceHotkeyMs)
+    );
+    if (delayMs === 0) {
+      this.prewarmQwenWorker(recordingSession);
+      return;
+    }
+    setTimeout(() => this.prewarmQwenWorker(recordingSession), delayMs);
   }
 
   // Prime the WebKit audio stack once at launch. The first getUserMedia in a
@@ -1248,6 +1278,7 @@ class VoiceInputPrompt {
         const nativeMs = nonNegativeMilliseconds(Number(startupTiming.nativeMs));
         const eventDeliveryMs = nonNegativeMilliseconds(Number(startupTiming.eventDeliveryMs));
         const frontendMs = nonNegativeMilliseconds(paintedAt - startupStartedAt);
+        const endToEndMs = nativeMs + eventDeliveryMs + frontendMs;
         void ipc.invoke("report-recording-startup", {
           recordingNumber: sessionId,
           uptimeMs: nonNegativeMilliseconds(startupStartedAt - this.pageStartedAt),
@@ -1258,10 +1289,13 @@ class VoiceInputPrompt {
           setupMs: nonNegativeMilliseconds(setupReadyAt - microphoneReadyAt),
           renderMs: nonNegativeMilliseconds(paintedAt - setupReadyAt),
           frontendMs,
-          endToEndMs: nativeMs + eventDeliveryMs + frontendMs,
+          endToEndMs,
         }).catch((error) => {
           if (isDev) console.warn("Failed to report recording startup timing:", error);
         });
+        // First paint is complete, and probation discards accidental hotkeys
+        // without allocating the model. The eventual request is fire-and-forget.
+        this.scheduleQwenPrewarm(recordingSession, endToEndMs);
       });
 
       if (this.stopRequested) {

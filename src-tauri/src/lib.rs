@@ -153,6 +153,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       commands::get_settings,
       commands::report_recording_startup,
+      commands::prewarm_qwen_worker,
       commands::get_diagnostic_log,
       commands::get_api_keys,
       commands::save_settings,

@@ -436,6 +436,133 @@ test("recording startup reports native, delivery, microphone, and first-paint ti
   assert.equal(prompt.cancelInProgress, false);
 });
 
+test("Qwen prewarm eligibility requires an active non-translation recording", async () => {
+  const calls = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      calls.push(command);
+      return Promise.resolve(true);
+    },
+  });
+  const recordingSession = { translateMode: false };
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    currentModel: "qwen3-asr-0.6b-q8_0",
+    activeRecordingSession: recordingSession,
+  });
+
+  prompt.prewarmQwenWorker(recordingSession);
+  assert.deepEqual(calls, []);
+
+  prompt.isRecording = true;
+  prompt.prewarmQwenWorker(recordingSession);
+  await Promise.resolve();
+  assert.deepEqual(calls, ["prewarm-qwen-worker"]);
+
+  recordingSession.translateMode = true;
+  prompt.prewarmQwenWorker(recordingSession);
+  recordingSession.translateMode = false;
+  prompt.currentModel = "nemotron-3.5-asr-streaming-0.6b-q8_0";
+  prompt.prewarmQwenWorker(recordingSession);
+  assert.deepEqual(calls, ["prewarm-qwen-worker"]);
+});
+
+test("Qwen prewarm waits for probation after first paint and skips a cancelled recording", async () => {
+  const events = [];
+  let paintCallback = null;
+  let scheduledPrewarm = null;
+  const stream = {};
+  class FakeAudioContext {
+    createMediaStreamSource() {
+      return { connect() {} };
+    }
+
+    createAnalyser() {
+      return { fftSize: 0 };
+    }
+  }
+  class FakeMediaRecorder {
+    static isTypeSupported() {
+      return true;
+    }
+
+    start() {
+      this.state = "recording";
+      events.push("recorder-started");
+    }
+  }
+  const clock = [1000, 1010, 1160, 1170];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      events.push(command);
+      return Promise.resolve(true);
+    },
+    performance: { now: () => clock.shift() },
+    requestAnimationFrame(callback) {
+      paintCallback = callback;
+      return 1;
+    },
+    setTimeout(callback, delay) {
+      scheduledPrewarm = { callback, delay };
+      return 42;
+    },
+    window: { AudioContext: FakeAudioContext },
+    globals: {
+      MediaRecorder: FakeMediaRecorder,
+      navigator: { mediaDevices: { getUserMedia: async () => stream } },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    pageStartedAt: 0,
+    currentProvider: "local",
+    currentModel: "qwen3-asr-0.6b-q8_0",
+    translateMode: false,
+    cancelInProgress: false,
+    stopRequested: false,
+    activeRecordingSession: null,
+    mediaStream: null,
+    mediaRecorder: null,
+    audioChunks: [],
+    promptElement: { classList: { add() {} } },
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    clearTranscriptionPreview() {},
+    updateModelBadge() {},
+    hasUsableApiKey: async () => true,
+    startWaveAnimation() {},
+    startRecordingTimer() {},
+  });
+
+  await prompt.startRecording({ nativeMs: 0, eventDeliveryMs: 0 });
+  assert.deepEqual(events, ["recorder-started"]);
+
+  paintCallback(1200);
+  await Promise.resolve();
+  assert.deepEqual(events, [
+    "recorder-started",
+    "report-recording-startup",
+  ]);
+  assert.equal(scheduledPrewarm.delay, 300);
+
+  prompt.isRecording = false;
+  scheduledPrewarm.callback();
+  await Promise.resolve();
+  assert.deepEqual(events, [
+    "recorder-started",
+    "report-recording-startup",
+  ]);
+
+  prompt.isRecording = true;
+  prompt.scheduleQwenPrewarm(prompt.activeRecordingSession, 500);
+  await Promise.resolve();
+  assert.deepEqual(events, [
+    "recorder-started",
+    "report-recording-startup",
+    "prewarm-qwen-worker",
+  ]);
+});
+
 test("microphone priming does not trigger an unrequested permission prompt", async () => {
   let microphoneOpens = 0;
   const VoiceInputPrompt = loadVoiceInputPrompt({

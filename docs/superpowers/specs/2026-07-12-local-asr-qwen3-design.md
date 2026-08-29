@@ -17,9 +17,25 @@ sherpa 版设计见本文件 git 历史)。
 - **"轻"的守护**:模型与推理二进制都不进安装包(启用时按需下载);推理在**独立子进程**
   里进行。**2026-07-30 性能修订**:利用 b9960 原生 chat mode 在连续听写之间保温,
   转写完成后开始 60 秒 idle timer;期间开始新一轮本地听写会刷新 timer,避免用户正在
-  录音时 worker 到期。若原本没有 warm worker,录音开始不会主动预加载。连续空闲
-  60 秒后自动杀进程并释放约 1.3GB;取消、切换到云端、删除模型和退出应用也会杀
-  worker。chat 协议异常时自动退回原来的一次性子进程路径。
+  录音时 worker 到期。**2026-08-29 性能修订**:千问录音真正开始后会异步预加载固定
+  ctx 2048 的 worker,把首次模型加载隐藏在用户说话期间;录音启动路径本身不等待预加载。
+  预加载与解码共用 `LOCAL_INFERENCE` single-flight,因此不会并发创建两个约 1.3GB 的
+  worker,并在拿到 permit 后重新检查 provider/model/assets。**2026-08-30 review hardening**:
+  前端等待热键 500ms 误触 probation 结束后才发预加载;预加载 worker 的首次 idle deadline
+  是 80 秒,确保覆盖前端 75 秒硬切,完成一次解码后恢复 60 秒 idle retirement。切换到云端
+  或 Nemotron、删除模型和退出应用也会杀 worker。chat 协议异常时自动退回原来的一次性
+  子进程路径。
+
+  **2026-08-29 M4/24GB 实测**:同一段 6.13s WAV 各跑 5 次,每次新进程的中位数为
+  559.0ms;预加载后同一常驻 worker 解码中位数为 255.2ms,松手后的中位数减少 303.8ms。
+  当次 worker 预加载本身为 255.6ms,现在发生在录音期间。该数字只代表此台 M4;历史 M1
+  新进程加载约 0.99s,仍需在 M1 上用新实现复测。
+
+  性能日志按阶段区分:`queue_ms` 是等待本地推理 permit 的时间,`total_ms` 是 native 请求
+  从入队到完成的总时间,`resident_spawn_ms` 是常驻进程到 ready prompt 的初始化时间,
+  `resident_decode_ms` 只计常驻 worker 解码,`one_shot_ms` 明确包含一次性进程启动、模型初始化
+  和解码。`first_visible_partial_ms` 从请求入队计到第一次 partial 发出;resident 失败后 fallback
+  时不重置,因为前一条 partial 已经对用户可见。
 
 ## 引擎选型(已拍板:llama.cpp 子进程;两轮真机实测)
 
@@ -89,9 +105,10 @@ release 均有)。Win/Linux 上 CPU 解码没有 Metal 红利(速度约回到 sh
 3. **子进程转写**:`transcribe_wav(wav_bytes) -> Result<String>`——写临时 WAV →
    复用同 context size 的 chat worker(`/clear`→`/audio <path>`→`a`)→解析 stdout
    (剥 `language <lang><asr_text>` 前缀)→清理临时文件。`--fit off` 避免每次重复
-   device fitting;local-only semaphore 保证全入口最多一个 Metal decode。worker 空闲
-   60 秒卸载;取消会因 `kill_on_drop` 杀掉正在运行的 worker。chat 协议错误或超时后
-   丢弃 worker,并用原有 `--audio ... -p "a"` 一次性子进程重试,保留详细 stderr 诊断。
+   device fitting;local-only semaphore 保证全入口最多一个 Metal decode。预加载 worker
+   首次空闲 80 秒卸载,完成解码后按 60 秒空闲期卸载;取消会因 `kill_on_drop` 杀掉正在运行的
+   worker。chat 协议错误或超时后丢弃 worker,并用原有 `--audio ... -p "a"` 一次性子进程
+   重试,保留详细 stderr 诊断。
 
 ### 3. 转写路径(`commands.rs` 改动最小化)
 

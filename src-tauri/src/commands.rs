@@ -183,6 +183,30 @@ pub fn report_recording_startup(
   Ok(())
 }
 
+fn qwen_prewarm_eligible(config: &AppConfig) -> bool {
+  config.provider == crate::local_asr::LOCAL_PROVIDER
+    && crate::local_asr::normalize_local_model_id(&config.model)
+      == crate::local_asr::QWEN_MODEL_ID
+}
+
+#[tauri::command]
+pub async fn prewarm_qwen_worker(window: tauri::WebviewWindow) -> Result<bool, String> {
+  if window.label() != "input-prompt" {
+    return Err("Qwen prewarm is only accepted from input-prompt".into());
+  }
+
+  let outcome = crate::local_asr::prewarm_resident_worker(|| {
+    settings::read_config().map(|config| qwen_prewarm_eligible(&config))
+  })
+  .await
+  .map_err(|error| {
+    log::warn!("command:prewarm_qwen_worker outcome=error error={error:#}");
+    stringify_error(error)
+  })?;
+  log::info!("command:prewarm_qwen_worker outcome={outcome:?}");
+  Ok(outcome.is_ready())
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKeys {
@@ -1706,6 +1730,19 @@ mod tests {
     config.model = "whisper-1".into();
     switch_provider(&mut config, "openai");
     assert_eq!(config.model, "whisper-1");
+  }
+
+  #[test]
+  fn qwen_prewarm_requires_the_local_qwen_engine() {
+    let mut config = AppConfig::default();
+    assert!(!qwen_prewarm_eligible(&config));
+
+    config.provider = crate::local_asr::LOCAL_PROVIDER.into();
+    config.model = crate::local_asr::QWEN_MODEL_ID.into();
+    assert!(qwen_prewarm_eligible(&config));
+
+    config.model = crate::local_asr::NEMOTRON_MODEL_ID.into();
+    assert!(!qwen_prewarm_eligible(&config));
   }
 
   #[test]
