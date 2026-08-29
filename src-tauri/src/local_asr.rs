@@ -1551,6 +1551,9 @@ mod tests {
     // footprint is unchanged; empty/sub-header input must not underflow.
     assert_eq!(ctx_size_for_wav(wav(1.0)), CTX_FLOOR);
     assert_eq!(ctx_size_for_wav(wav(60.0)), CTX_FLOOR); // 60*20+512=1712 < floor
+    // Keep this paired with chunk-decision.mjs HARD_MAX_S. Every live chunk
+    // must fit the same resident worker created at recording start.
+    assert_eq!(ctx_size_for_wav(wav(75.0)), CTX_FLOOR);
     assert_eq!(ctx_size_for_wav(0), CTX_FLOOR);
     assert_eq!(ctx_size_for_wav(10), CTX_FLOOR); // shorter than the WAV header
     // ~135 s failed at the old fixed 2048; the formula lifts it clear (verified

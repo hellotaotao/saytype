@@ -65,6 +65,35 @@ float samples instead of round-tripping through Int16; Nemotron keeps `"i16"` an
 Platform note: Nemotron is Apple Silicon only (`supported()` = macOS aarch64), so on
 Windows/Linux Qwen chunking stays the only path to long dictation.
 
+### How much audio actually fits in the 2048 floor (measured 2026-08-29)
+
+The 75 s cap is set by resident-worker ctx reuse, not by what ctx 2048 can hold. Measured
+directly against `llama-mtmd-cli` with the app's exact arguments (`-c 2048 --fit off -p "a"`),
+TTS Chinese trimmed to exact durations:
+
+| speech rate | last success | first failure | failure |
+|---|---|---|---|
+| 4.4 chars/s (normal dictation) | 125 s | 135 s | `failed to decode token` |
+| 9.3 chars/s (far faster than anyone dictates) | 105 s | 110 s | `failed to decode token` |
+| 4.4 chars/s | — | 160 s | `failed to decode audio` |
+
+Two ceilings, and only one of them is content-dependent:
+
+- **Audio tokens are fixed at ~15/s** — the encoder emits them per second of audio regardless of
+  what is said. That sets a hard, content-independent ceiling of 2048 / 15 ≈ **136 s**, past
+  which the audio alone overflows: the 160 s run fails with `failed to decode audio`, before any
+  transcript exists.
+- **Transcript tokens depend on the content**, which is why the real cliff sits below that and
+  moves with speech rate: 135 s at normal pace, 110 s at nearly double the pace. Those runs fail
+  with `failed to decode token` — audio fit, audio + transcript did not.
+
+So the 75 s chunk cap carries **1.4x margin against the fastest case measured and 1.7x against
+normal dictation**, and pauses make real dictation cheaper still (audio tokens accrue during a
+pause, transcript tokens do not, so words-per-elapsed-second is what matters). The one case
+these bounds do not cover is a degenerate repetition loop, where the decoder emits tokens until
+ctx is full — a model failure rather than a content property, and one whose blast radius
+chunking already limits to a single chunk.
+
 ## Problem
 
 The local backend decodes a whole clip in one `llama-mtmd-cli` subprocess, with context sized to the clip (`ctx_size_for_wav`, ~20 tok/s, clamped `[2048, 16384]`). Measured 2026-07-22 (Metal, silence sweep, `/usr/bin/time -l`):
@@ -269,6 +298,30 @@ Nemotron 继续用 `"i16"`，保持不变。
 
 平台说明：Nemotron 只支持 Apple Silicon（`supported()` = macOS aarch64），所以在 Windows/Linux
 上，千问分段仍是长听写唯一的路。
+
+### 2048 的 floor 到底能装多长音频（2026-08-29 实测）
+
+75 秒这个上限是常驻 worker 的 ctx 复用定的，不是 ctx 2048 装得下多少定的。用 app 完全相同的参数
+（`-c 2048 --fit off -p "a"`）直接跑 `llama-mtmd-cli`，中文 TTS 截成精确时长：
+
+| 语速 | 最后成功 | 首次失败 | 失败类型 |
+|---|---|---|---|
+| 4.4 字/秒（正常口述） | 125 s | 135 s | `failed to decode token` |
+| 9.3 字/秒（比任何人口述都快得多） | 105 s | 110 s | `failed to decode token` |
+| 4.4 字/秒 | — | 160 s | `failed to decode audio` |
+
+两个天花板，只有一个跟内容有关：
+
+- **音频 token 固定约 15/秒**——编码器按音频秒数产出，说什么都一样。这给出一个内容无关的硬上限
+  2048 / 15 ≈ **136 秒**，超过它光音频就装不下：160 秒那次报 `failed to decode audio`，此时还没有
+  任何转写文本。
+- **转写 token 取决于内容**，所以真正的悬崖落在硬上限以内，且随语速移动：正常语速 135 秒，接近
+  两倍语速时 110 秒。这些失败报的是 `failed to decode token`——音频装得下，音频加文字装不下。
+
+于是 75 秒的块上限**对实测最快语速有 1.4 倍余量、对正常口述有 1.7 倍**，而且真实听写还更省：
+停顿期间音频 token 照涨、转写 token 不涨，真正起作用的是「每流逝秒的字数」。这些边界唯一盖不住的
+是退化的重复循环——解码器一路吐 token 直到填满 ctx，那属于模型故障而非内容属性，而分段已经把它的
+影响面限制在单独一块里。
 
 ## 问题
 
