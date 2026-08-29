@@ -23,6 +23,7 @@
     "hide-input-prompt": "hide_input_prompt",
     "cleanup-microphone": "cleanup_microphone",
     "cancel-transcription": "cancel_transcription",
+    "record-assembled-transcription": "record_assembled_transcription",
     "start-live-transcription": "start_live_transcription",
     "push-live-audio": "push_live_audio",
     "finish-live-transcription": "finish_live_transcription",
@@ -70,6 +71,7 @@
       ["sampleRate", "sample_rate"],
       ["language"],
     ],
+    "record-assembled-transcription": [["text"]],
     "finish-live-transcription": [["sessionId", "session_id"]],
     "cancel-live-transcription": [["sessionId", "session_id"]],
     "save-settings": [["settings", "settingsInput", "settings_input"]],
@@ -103,7 +105,12 @@
     },
     "transcribe-audio": {
       body: 0, // args[0] = audio bytes (Uint8Array / ArrayBuffer)
-      headers: { "translate-mode": 1, "mime-type": 2, "session-id": 3 },
+      headers: {
+        "translate-mode": 1,
+        "mime-type": 2,
+        "session-id": 3,
+        "chunk-index": 4, // chunked local path only; omitted for whole-clip decodes
+      },
     },
     "save-pending-transcription": {
       body: 0, // args[0] = audio bytes (the failed clip's WAV)

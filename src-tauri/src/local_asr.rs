@@ -674,16 +674,26 @@ const PARTIAL_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 /// progress only* — the whole clip is still encoded before the first token, so
 /// total latency and peak memory are unchanged; it is not streaming ASR (the
 /// model is encoder-decoder and cannot be).
-fn partial_event_payload(session_id: Option<u64>, text: &str) -> serde_json::Value {
+fn partial_event_payload(
+  session_id: Option<u64>,
+  chunk_index: Option<u32>,
+  text: &str,
+) -> serde_json::Value {
   serde_json::json!({
     "sessionId": session_id,
+    "chunkIndex": chunk_index,
     "text": text,
   })
 }
 
+/// `chunk_index` is `Some` only on the chunked long-audio path, where one
+/// dictation decodes as an ordered series of ≤75 s chunks; the frontend routes
+/// each partial to that chunk's slot so finalized chunks are not overwritten by
+/// a later chunk's in-progress text. `None` means the whole clip is one decode.
 pub async fn transcribe_wav(
   app: Option<&tauri::AppHandle>,
   session_id: Option<u64>,
+  chunk_index: Option<u32>,
   wav_bytes: &[u8],
 ) -> Result<String> {
   transcribe_wav_inner(wav_bytes, |text| {
@@ -696,7 +706,7 @@ pub async fn transcribe_wav(
     // broadcast is harmless.
     let _ = app.emit(
       "local-transcription-partial",
-      partial_event_payload(session_id, text),
+      partial_event_payload(session_id, chunk_index, text),
     );
   })
   .await
@@ -1498,7 +1508,7 @@ mod tests {
 
   #[test]
   fn partial_event_payload_includes_the_recording_session() {
-    let payload = partial_event_payload(Some(7), "hello");
+    let payload = partial_event_payload(Some(7), None, "hello");
 
     assert_eq!(payload["sessionId"], 7);
     assert_eq!(payload["text"], "hello");
@@ -1761,7 +1771,7 @@ mod tests {
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 0);
     let starts_before = RESIDENT_STARTS.load(Ordering::Relaxed);
-    let first = rt.block_on(transcribe_wav(None, None, &wav)).expect("first resident decode ok");
+    let first = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("first resident decode ok");
     assert!(keep_resident_worker_warm(), "recording start should touch a warm worker");
     rt.block_on(async {
       tokio::time::sleep(Duration::from_millis(75)).await;
@@ -1774,7 +1784,7 @@ mod tests {
       RESIDENT_WORKER.lock().unwrap().is_some(),
       "the refreshed worker must survive beyond its original idle deadline"
     );
-    let second = rt.block_on(transcribe_wav(None, None, &wav)).expect("second resident decode ok");
+    let second = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("second resident decode ok");
     assert_eq!(first, "", "silence must yield empty text");
     assert_eq!(second, "", "warm-worker silence must yield empty text");
     assert_eq!(

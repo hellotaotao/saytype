@@ -577,6 +577,15 @@ fn record_successful_transcription(
   text
 }
 
+/// History for a chunked local dictation: the frontend concatenates the chunk
+/// transcripts and records the result here, exactly once. Returns the scrubbed
+/// text so the inserted string and the history row cannot drift apart, matching
+/// what transcribe_audio returns on the unchunked path.
+#[tauri::command]
+pub fn record_assembled_transcription(app: AppHandle, text: String) -> String {
+  record_successful_transcription(&app, &text, None)
+}
+
 #[tauri::command]
 pub async fn start_live_transcription(
   app: AppHandle,
@@ -665,6 +674,12 @@ pub async fn transcribe_audio(
     .get("session-id")
     .and_then(|value| value.to_str().ok())
     .and_then(|value| value.parse::<u64>().ok());
+  // Present only on the chunked local path: one dictation arrives as an ordered
+  // series of chunks that decode while the user is still speaking.
+  let chunk_index = headers
+    .get("chunk-index")
+    .and_then(|value| value.to_str().ok())
+    .and_then(|value| value.parse::<u32>().ok());
 
   if audio_buffer.is_empty() {
     return Err("Audio buffer is empty".into());
@@ -708,7 +723,8 @@ pub async fn transcribe_audio(
     result = async {
       match &route {
         TranscriptionRoute::Local => {
-          perform_local_transcription(&app, &config, audio_buffer, &mime, session_id).await
+          perform_local_transcription(&app, &config, audio_buffer, &mime, session_id, chunk_index)
+            .await
         }
         TranscriptionRoute::Cloud { provider, api_key } => {
           perform_transcription_request(
@@ -728,6 +744,12 @@ pub async fn transcribe_audio(
   drop(active_transcription);
 
   match result {
+    // A chunked local dictation decodes as several transcribe_audio calls, so
+    // history is written once by record_assembled_transcription after the
+    // frontend joins the chunks -- otherwise a five-minute dictation would leave
+    // a row (and, in dev, a debug-audio copy) per chunk. Scrubbing still runs
+    // per chunk so the streamed preview matches the recorded text.
+    Ok(raw) if chunk_index.is_some() => Ok(crate::scrub::scrub_transcription(&raw)),
     Ok(raw) => Ok(record_successful_transcription(&app, &raw, audio_for_debug)),
     Err(error) => {
       if is_cancellation_error(&error) {
@@ -744,7 +766,7 @@ pub async fn transcribe_audio(
       // give-up saves a single "pending audio" entry (save_pending_transcription).
       // Logging a failed row per attempt here would double-log the retried hang,
       // so skip it for hangs; every other failure still logs once as before.
-      if !is_hang_error(&error) {
+      if !is_hang_error(&error) && chunk_index.is_none() {
         // Best-effort: surface the original API error to the user, not a
         // secondary history-write error.
         if let Err(err) =
@@ -1247,7 +1269,7 @@ pub async fn save_pending_transcription(
 pub async fn retranscribe_pending(app: AppHandle, id: String) -> Result<String, String> {
   let (bytes, mime) = history::read_debug_audio(&id).map_err(stringify_error)?;
   let config = settings::read_config().map_err(stringify_error)?;
-  let raw = perform_local_transcription(&app, &config, bytes, &mime, None)
+  let raw = perform_local_transcription(&app, &config, bytes, &mime, None, None)
     .await
     .map_err(stringify_error)?;
   let text = crate::scrub::scrub_transcription(&raw);
@@ -1403,6 +1425,7 @@ async fn perform_local_transcription(
   audio_buffer: Vec<u8>,
   mime_type: &str,
   session_id: Option<u64>,
+  chunk_index: Option<u32>,
 ) -> Result<String> {
   ensure_wav_mime(mime_type)?;
   let result = if crate::local_asr::normalize_local_model_id(&config.model)
@@ -1415,7 +1438,7 @@ async fn perform_local_transcription(
     )
     .await
   } else {
-    crate::local_asr::transcribe_wav(Some(app), session_id, &audio_buffer).await
+    crate::local_asr::transcribe_wav(Some(app), session_id, chunk_index, &audio_buffer).await
   };
   result.map_err(|err| {
     if err.to_string().starts_with("LOCAL_MODEL_MISSING") {

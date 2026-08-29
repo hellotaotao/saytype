@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import * as chunkDecision from "./chunk-decision.mjs";
+import { encodeWavPcm16 } from "./vad-decision.mjs";
 
 const defaultSourcePath = fileURLToPath(new URL("./input-prompt.js", import.meta.url));
 
@@ -73,6 +75,7 @@ function loadVoiceInputPrompt(options = {}) {
     clearInterval: options.clearInterval || clearInterval,
     setTimeout: options.setTimeout || setTimeout,
     clearTimeout: options.clearTimeout || clearTimeout,
+    Float32Array,
     Uint8Array,
     window,
     ...(options.globals || {}),
@@ -916,4 +919,246 @@ test("a non-retryable transcription error is not retried", async () => {
 
   assert.equal(calls, 1, "deterministic errors must not be retried");
   assert.deepEqual(prompt.pendingInsertionOrder, []);
+});
+
+// ---- chunked local (Qwen) transcription --------------------------------
+
+// A live chunk session as setupChunkedLocal builds it. 16 kHz means
+// resampleTo16k is a no-op, so these tests exercise the real WAV encoding
+// without needing an OfflineAudioContext.
+function makeChunked(overrides = {}) {
+  return {
+    sessionId: 7,
+    sampleRate: 16000,
+    node: null,
+    mutedOutput: null,
+    blocks: [],
+    blockSamples: 0,
+    state: chunkDecision.createChunkState(),
+    nextChunkIndex: 0,
+    results: [],
+    failedChunks: 0,
+    queue: Promise.resolve(),
+    livePartial: null,
+    aborted: false,
+    stopped: false,
+    ...overrides,
+  };
+}
+
+function loadForChunking(invoke) {
+  return loadVoiceInputPrompt({
+    invoke,
+    window: {
+      SayTypeChunk: chunkDecision,
+      SayTypeVad: { encodeWavPcm16 },
+    },
+  });
+}
+
+test("closeChunk splits mid-block and carries the remainder into the next chunk", () => {
+  const VoiceInputPrompt = loadForChunking(async () => null);
+  const enqueued = [];
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    enqueueChunkDecode(_chunked, pcm) {
+      enqueued.push(Array.from(pcm));
+    },
+  });
+
+  const chunked = makeChunked();
+  const blocks = [
+    Float32Array.from([0.1, 0.2, 0.3]),
+    Float32Array.from([0.4, 0.5, 0.6]),
+    Float32Array.from([0.7, 0.8, 0.9]),
+  ];
+  for (const block of blocks) {
+    chunked.blocks.push(block);
+    chunked.blockSamples += block.length;
+    chunkDecision.pushFrame(chunked.state, chunkDecision.frameRms(block), block.length);
+  }
+
+  prompt.closeChunk(chunked, 4); // cut inside the second block
+
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0].length, 4);
+  enqueued[0].forEach((value, index) => {
+    assert.ok(Math.abs(value - (index + 1) / 10) < 1e-6);
+  });
+  assert.equal(chunked.blockSamples, 5, "the tail carries over sample-exactly");
+  assert.equal(chunked.state.samples, 5, "the cut state is re-based with the audio");
+});
+
+test("chunks decode in order, one at a time, each tagged with its chunk index", async () => {
+  const calls = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
+    if (channel !== "transcribe-audio") return null;
+    calls.push(args);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight -= 1;
+    return `chunk${args[4]}`;
+  });
+
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  const chunked = makeChunked();
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  await chunked.queue;
+
+  assert.deepEqual(chunked.results, ["chunk0", "chunk1", "chunk2"]);
+  assert.equal(maxInFlight, 1, "decodes must stay serial — one llama worker");
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0][1], false, "chunked dictation never runs translate mode");
+  assert.equal(calls[0][2], "audio/wav");
+  assert.equal(calls[0][3], 7, "the recording session id rides along");
+  assert.deepEqual(calls.map((args) => args[4]), [0, 1, 2]);
+  assert.ok(calls[0][0].length > 44, "a real WAV, header included, is uploaded");
+});
+
+test("one failed chunk leaves a gap instead of losing the dictation", async () => {
+  const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
+    if (channel !== "transcribe-audio") return null;
+    if (args[4] === 1) throw new Error("chunk decode blew up");
+    return `part${args[4]}`;
+  });
+
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  const chunked = makeChunked();
+  for (let i = 0; i < 3; i++) prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  await chunked.queue;
+
+  assert.deepEqual(chunked.results, ["part0", "", "part2"]);
+  assert.equal(chunked.failedChunks, 1);
+  assert.equal(await prompt.finishChunkedLocal({ chunked }), "part0 part2");
+});
+
+test("finishChunkedLocal fails only when nothing survived, not on silence", async () => {
+  const VoiceInputPrompt = loadForChunking(async () => {
+    throw new Error("every chunk failed");
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt);
+
+  const allFailed = makeChunked();
+  prompt.enqueueChunkDecode(allFailed, new Float32Array(160));
+  await allFailed.queue;
+  await assert.rejects(() => prompt.finishChunkedLocal({ chunked: allFailed }));
+
+  // Silence decodes to empty text with no error — a legitimate "no speech".
+  const silent = makeChunked({ results: ["", ""], failedChunks: 0 });
+  assert.equal(await prompt.finishChunkedLocal({ chunked: silent }), "");
+});
+
+test("releasing the key flushes the buffered remainder as the final chunk", () => {
+  const VoiceInputPrompt = loadForChunking(async () => null);
+  const enqueued = [];
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    enqueueChunkDecode(_chunked, pcm) {
+      enqueued.push(pcm.length);
+    },
+  });
+
+  const chunked = makeChunked();
+  const block = new Float32Array(320);
+  chunked.blocks.push(block);
+  chunked.blockSamples = block.length;
+  chunkDecision.pushFrame(chunked.state, 0.1, block.length);
+
+  prompt.stopChunkedCapture({ chunked });
+
+  assert.deepEqual(enqueued, [320], "the residual audio is not dropped on release");
+  assert.equal(chunked.stopped, true);
+});
+
+test("cancelling stops dispatching chunks that have not started", async () => {
+  const attempted = [];
+  const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
+    if (channel === "transcribe-audio") attempted.push(args[4]);
+    return "text";
+  });
+
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  const chunked = makeChunked();
+  prompt.cancelChunkedLocal({ chunked });
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  await chunked.queue;
+
+  assert.deepEqual(attempted, [], "no audio is sent after a cancel");
+  assert.equal(chunked.aborted, true);
+  assert.equal(chunked.blockSamples, 0, "buffered audio is released on cancel");
+});
+
+test("a chunk's streaming text renders in its own slot, not over finalized chunks", () => {
+  const VoiceInputPrompt = loadForChunking(async () => null);
+  let preview = null;
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    setTranscriptionPreview(text) {
+      preview = text;
+    },
+  });
+
+  const chunked = makeChunked({
+    results: ["the first chunk is done.", ""],
+    livePartial: { index: 1, text: "the second chunk so far" },
+  });
+  prompt.renderChunkedPreview(chunked);
+  assert.equal(preview, "the first chunk is done. the second chunk so far");
+
+  chunked.aborted = true;
+  preview = null;
+  prompt.renderChunkedPreview(chunked);
+  assert.equal(preview, null, "a cancelled session stops updating the preview");
+});
+
+test("the assembled dictation is recorded once, and history never costs the text", async () => {
+  const calls = [];
+  const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
+    calls.push([channel, ...args]);
+    if (channel === "record-assembled-transcription") return "scrubbed text";
+    return null;
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt);
+
+  // The scrubbed text the backend returns is what gets inserted, so the insert
+  // and the history row cannot drift apart.
+  assert.equal(await prompt.recordAssembledTranscription("joined text"), "scrubbed text");
+  assert.deepEqual(calls, [["record-assembled-transcription", "joined text"]]);
+
+  // Empty means silence — nothing to record.
+  calls.length = 0;
+  assert.equal(await prompt.recordAssembledTranscription(""), "");
+  assert.deepEqual(calls, []);
+
+  const failing = loadForChunking(async () => {
+    throw new Error("history write failed");
+  });
+  const failingPrompt = createBarePrompt(failing);
+  assert.equal(
+    await failingPrompt.recordAssembledTranscription("joined text"),
+    "joined text",
+    "a failed history write must not lose the dictation"
+  );
+});
+
+test("cancelling on release does not decode a final chunk that is about to be killed", () => {
+  const VoiceInputPrompt = loadForChunking(async () => null);
+  const enqueued = [];
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    enqueueChunkDecode(_chunked, pcm) {
+      enqueued.push(pcm.length);
+    },
+  });
+
+  const chunked = makeChunked();
+  chunked.blocks.push(new Float32Array(320));
+  chunked.blockSamples = 320;
+  chunkDecision.pushFrame(chunked.state, 0.1, 320);
+
+  prompt.stopChunkedCapture({ chunked }, { flush: false });
+
+  assert.deepEqual(enqueued, []);
+  assert.equal(chunked.stopped, true, "capture still tears down on cancel");
 });

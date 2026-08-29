@@ -161,6 +161,7 @@ pub fn run() {
       commands::hide_input_prompt,
       commands::cleanup_microphone,
       commands::cancel_transcription,
+      commands::record_assembled_transcription,
       commands::start_live_transcription,
       commands::push_live_audio,
       commands::finish_live_transcription,

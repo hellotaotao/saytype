@@ -1,9 +1,69 @@
 # Local ASR long-audio chunking (during-recording, Wispr-style latency hiding)
 
 - **Date:** 2026-07-22
-- **Status:** Design — pending review
+- **Status:** Implemented 2026-08-29 per Revision 2 (frontend chunker, 55 s / 75 s, OfflineAudioContext resampling, single history row). Confirmed working on the author's machine 2026-08-29: about a minute into a dictation the floating window showed the already-decoded earlier text while capture continued, so the first cut, the mid-recording decode, the assembler rendering and uninterrupted capture are all verified end to end. Still unmeasured: multi-minute dictation (several seams, and the old >13 min failure cliff), and seam punctuation quality against a whole-clip baseline.
 - **Scope:** Local provider (`"local"`, Qwen3-ASR-0.6B via `llama-mtmd-cli`) only. Cloud modes untouched.
 - **Related:** `docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md`; memory `local-asr-long-clip-ctx-cap-not-oom`, `local-asr-realtime-evaluated-rejected`.
+
+## Revision 2 (2026-08-29) — risk gate cleared, parameters must change
+
+Three things changed after this design was written. The approach survives; two of its
+specifics do not.
+
+1. **The spike gate is already passed — in production.** Step 1 of the sequencing below made
+   live `getUserMedia` → AudioWorklet capture in WKWebView a go/no-go gate. The Nemotron
+   streaming engine (`9c4b1cf`, `0e16ded`, `3d76768`) shipped exactly that path:
+   `src/views/live-pcm-worklet.js` (PCM16 capture processor) → `setupNemotronLive` →
+   `push-live-audio`. Live capture works. Drop the gate.
+
+2. **A resident worker now exists.** `local_asr.rs` keeps `llama-mtmd-cli` alive in chat mode
+   (`ResidentWorker`, `/audio <path>` + `a` per decode, 60 s idle retirement). Per-chunk
+   decoding no longer reloads the ~1.3 GiB model, which removes the main cost objection to
+   chunking.
+
+3. **…but the resident worker imposes a chunk-length cap this design violates.** Reuse
+   requires `cached.ctx_size == ctx_size` **exactly** (`transcribe_wav_inner`), and
+   `ctx_size_for_wav` = `seconds × 20 + 512` clamped to `[2048, 16384]`. Only clips
+   **≤ 76.8 s** land on the 2048 floor. Variable-length chunks longer than that each compute a
+   different ctx, so every chunk kills the warm worker and spawns a fresh one — chunking would
+   be *slower* than today. **Soft target 45 s → 55 s; hard max 90 s → 75 s**, so every chunk
+   pins ctx at 2048 and a single worker serves the whole dictation.
+
+Three further corrections:
+
+- **Keep the chunker in the frontend — the resampler decides this.** Chunks must reach Qwen as
+  16 kHz mono WAV, and the frontend already produces exactly that: `vad-gate.js` renders every
+  local-mode clip through `new OfflineAudioContext(1, len, 16000)` and `encodeWavPcm16`
+  (`vad-decision.mjs`). Cutting in Rust would mean writing a 48→16 kHz resampler (or pulling in
+  `rubato`) and placing a hand-rolled one in front of the model whose accuracy is the entire
+  reason for staying on Qwen. Reusing WebKit's resampler keeps every chunk identical in
+  provenance to what the model is fed today. The serial decode queue is still free —
+  `LOCAL_INFERENCE` (`Semaphore::const_new(1)`) serializes on the Rust side regardless — and
+  chunks ride the existing `transcribe-audio` raw-body IPC, which already carries `session-id`
+  as a header; `chunk-index` is one more header. No new live-session routing, and Nemotron's
+  path is untouched.
+- **Cut points need energy, not Silero.** Choosing *where* to slice is "find the quietest frame
+  in the 55–75 s window", not a speech/non-speech verdict, so RMS over the captured PCM suffices
+  and avoids running the ONNX VAD during capture. This is also why the
+  `local-asr-realtime-evaluated-rejected` objection — he pauses mid-sentence to pick words, so
+  VAD cuts bisect sentences — does not apply: that argument was against *sentence-level*
+  cutting, where every pause is a cut decision. At one cut per ~60 s the seam picks the best of
+  a 60-second window of candidates, and a bad cut costs one seam's punctuation rather than a
+  lost sentence, since the audio on both sides is still transcribed.
+- **Drop the post-release VAD gate on the chunked path.** Its trimming exists to stop Whisper's
+  zh silence boilerplate — a cloud concern; Qwen returns empty text for silence
+  (`parse_mtmd_output`). An all-empty concatenation gives the same "no speech" UI, and skipping
+  the gate takes an ONNX run out of the post-release tail.
+
+Resolved (this was an open fork): **no 16 kHz realtime `AudioContext` is needed.** The capture
+context stays at the hardware rate exactly as Nemotron uses it, and each closed chunk is
+resampled with `OfflineAudioContext` — the same call already shipping in `vad-gate.js`, so the
+one genuinely unverified piece of this plan is gone. The worklet takes a
+`processorOptions.format` of `"f32"` on this path so the chunker resamples from the original
+float samples instead of round-tripping through Int16; Nemotron keeps `"i16"` and is unchanged.
+
+Platform note: Nemotron is Apple Silicon only (`supported()` = macOS aarch64), so on
+Windows/Linux Qwen chunking stays the only path to long dictation.
 
 ## Problem
 
@@ -156,9 +216,59 @@ release ⇒ stop capture → flush residual speech as final chunk → drain queu
 # 本地 ASR 长音频分段（录音中切分，Wispr 式延迟隐藏）
 
 - **日期：** 2026-07-22
-- **状态：** 设计中 — 待评审
+- **状态：** 已按「修订 2」实现（2026-08-29）：前端 chunker、55s/75s、OfflineAudioContext 重采样、History 只写一条。2026-08-29 真机确认可用：一段听写进行到约一分钟时，悬浮窗显示出前面已解码的文字而录音继续，说明第一刀切分、录音中解码、组装器渲染、采集不中断四件事端到端都成立。仍未实测：多分钟听写（多个接缝，以及原先 >13 分钟的失败悬崖），以及接缝标点质量对照整段基线。
 - **范围：** 仅本地 provider（`"local"`，Qwen3-ASR-0.6B，经 `llama-mtmd-cli`）。云端模式不动。
 - **相关：** `docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md`；记忆 `local-asr-long-clip-ctx-cap-not-oom`、`local-asr-realtime-evaluated-rejected`。
+
+## 修订 2（2026-08-29）—— 前置风险已消除，参数必须改
+
+本设计写完之后有三件事变了。方案本身站得住，但其中两处具体规定不成立了。
+
+1. **spike 闸门已经过了——而且是在生产代码里过的。** 下文实现顺序第 1 步把"WKWebView 里
+   `getUserMedia` → AudioWorklet 实时采集"设为 go/no-go 闸门。Nemotron 流式引擎
+   （`9c4b1cf`、`0e16ded`、`3d76768`）交付的正是这条路：`src/views/live-pcm-worklet.js`
+   （PCM16 采集处理器）→ `setupNemotronLive` → `push-live-audio`。实时采集可用，闸门作废。
+
+2. **常驻 worker 出现了。** `local_asr.rs` 现在让 `llama-mtmd-cli` 以 chat 模式常驻
+   （`ResidentWorker`，每次解码走 `/audio <路径>` + `a`，空闲 60s 退休）。按块解码不再重载
+   ~1.3 GiB 模型——分段最大的成本顾虑就此消失。
+
+3. **……但常驻 worker 给块长加了一条本设计违反的硬约束。** 复用条件是
+   `cached.ctx_size == ctx_size` **精确相等**（`transcribe_wav_inner`），而
+   `ctx_size_for_wav` = `秒数 × 20 + 512`，clamp 到 `[2048, 16384]`。只有 **≤ 76.8 秒** 的音频
+   才落在 2048 的 floor 上。超过这个长度的变长块各自算出不同的 ctx，于是每一块都会杀掉热
+   worker 重开一个——分段反而比现在**更慢**。**软目标 45s → 55s；硬上限 90s → 75s**，让每块
+   的 ctx 都钉在 2048，整段听写由同一个 worker 服务。
+
+另外三处修正：
+
+- **Chunker 留在前端——决定因素是重采样器。** 块必须以 16 kHz 单声道 WAV 送进千问，而前端今天
+  产出的正是这个：`vad-gate.js` 把每一段本地模式的录音都过一遍
+  `new OfflineAudioContext(1, len, 16000)` 加 `encodeWavPcm16`（`vad-decision.mjs`）。改在 Rust
+  切就意味着要写一个 48→16 kHz 重采样器（或者引入 `rubato`），把一个手搓的重采样器摆在那个
+  "识别率正是我们留在千问的全部理由"的模型前面。复用 WebKit 的重采样器，能让每一块的来路跟今天
+  喂给模型的东西完全一致。串行解码队列照样白拿——`LOCAL_INFERENCE`（`Semaphore::const_new(1)`）
+  在 Rust 侧本来就串行——块走现成的 `transcribe-audio` raw-body IPC，它本来就用 header 带
+  `session-id`，`chunk-index` 不过是多一个 header。不需要新的 live 会话路由，Nemotron 那条路
+  一个字都不用动。
+- **切点要的是能量，不是 Silero。** 决定*在哪儿切*是"在 55–75s 窗口里找最安静的一帧"，不是
+  语音/非语音的判定，所以对采集到的 PCM 做 RMS 就够，也免去采集期间跑 ONNX VAD。这同时解释了
+  `local-asr-realtime-evaluated-rejected` 里那条反对意见——他为选词会在句中停顿，VAD 会腰斩
+  句子——在这里为什么不适用：那条是针对*句级*切分的，那种方案每个停顿都是一次切分决策。这里
+  每 ~60s 才切一刀，接缝是在一个 60 秒的候选窗口里挑最好的，而且切错的代价是一个接缝的标点，
+  不是丢一句话——接缝两侧的音频照样都会被转写。
+- **分段路上不再跑松手后的 VAD gate。** 它的裁剪是为了挡 Whisper 中文的静音套话，那是云端的
+  问题；千问对静音返回空文本（`parse_mtmd_output`）。全部块都空，就给出同样的"没听到声音"
+  提示，而省掉 gate 等于把一次 ONNX 运行从松手后的尾巴里拿掉。
+
+已解决（原本是待定岔路）：**不需要 16 kHz 的实时 `AudioContext`。** 采集 context 保持硬件采样率，
+跟 Nemotron 用的完全一样；每块切下来之后用 `OfflineAudioContext` 重采样——就是 `vad-gate.js` 里
+已经在生产跑的那一句，于是这个计划里唯一真正没验证过的东西消失了。worklet 在这条路上接受
+`processorOptions.format` 为 `"f32"`，让 chunker 从原始 float 采样重采样，而不是绕一圈 Int16；
+Nemotron 继续用 `"i16"`，保持不变。
+
+平台说明：Nemotron 只支持 Apple Silicon（`supported()` = macOS aarch64），所以在 Windows/Linux
+上，千问分段仍是长听写唯一的路。
 
 ## 问题
 

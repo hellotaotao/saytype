@@ -253,6 +253,15 @@ class VoiceInputPrompt {
         return;
       }
       const sessionMatches = Number(payload.sessionId) === this.recordingSessionId;
+      // Chunked local decoding streams a chunk's tokens while later audio is
+      // still being captured, so route by chunk slot instead of overwriting the
+      // whole preview with one chunk's text.
+      const chunked = this.activeRecordingSession?.chunked;
+      if (payload.chunkIndex != null && chunked && sessionMatches && !chunked.aborted) {
+        chunked.livePartial = { index: Number(payload.chunkIndex), text };
+        this.renderChunkedPreview(chunked);
+        return;
+      }
       const isLiveNemotron =
         sessionMatches &&
         this.activeRecordingSession?.live?.sessionId === Number(payload.sessionId) &&
@@ -859,6 +868,263 @@ class VoiceInputPrompt {
     void ipc.invoke("cancel-live-transcription", sessionId).catch(() => {});
   }
 
+
+  // ---- Chunked local (Qwen) capture -------------------------------------
+  //
+  // Qwen3-ASR is encoder-decoder: a whole clip is encoded before token 1, so on
+  // the unchunked path every second of decoding lands AFTER the user releases
+  // the key (~7 s for a 5-minute dictation, ~27 s at 13 minutes, and outright
+  // failure past that when audio tokens overflow the context cap). Cutting the
+  // live audio at quiet points during recording moves all but the final chunk
+  // off that tail, so the wait after release is one chunk regardless of how long
+  // the user spoke.
+  //
+  // Fail-open by design: if live capture cannot be set up, `chunked` stays unset
+  // and processRecording takes the original whole-clip path.
+
+  shouldUseChunkedLocal(translateMode = this.translateMode) {
+    return (
+      this.currentProvider === "local" &&
+      this.currentModel !== NEMOTRON_LOCAL_MODEL_ID &&
+      !translateMode &&
+      !!window.SayTypeChunk
+    );
+  }
+
+  async setupChunkedLocal(recordingSession, source) {
+    if (!this.shouldUseChunkedLocal(recordingSession.translateMode)) {
+      return;
+    }
+    try {
+      if (!this.audioContext?.audioWorklet) {
+        throw new Error("AudioWorklet is required for chunked local transcription");
+      }
+      await this.audioContext.audioWorklet.addModule("live-pcm-worklet.js");
+
+      const chunked = {
+        sessionId: recordingSession.id,
+        sampleRate: this.audioContext.sampleRate,
+        node: null,
+        mutedOutput: null,
+        blocks: [], // Float32Array capture blocks of the chunk being filled
+        blockSamples: 0,
+        state: window.SayTypeChunk.createChunkState(),
+        nextChunkIndex: 0,
+        results: [],
+        failedChunks: 0,
+        queue: Promise.resolve(),
+        livePartial: null,
+        aborted: false,
+        stopped: false,
+      };
+
+      // "f32" keeps the original float samples: each closed chunk is resampled
+      // to 16 kHz through an OfflineAudioContext, so a round trip through Int16
+      // here would quantize twice for nothing.
+      const node = new AudioWorkletNode(this.audioContext, "saytype-pcm16-capture", {
+        processorOptions: { format: "f32" },
+      });
+      const mutedOutput = this.audioContext.createGain();
+      mutedOutput.gain.value = 0;
+      chunked.node = node;
+      chunked.mutedOutput = mutedOutput;
+
+      node.port.onmessage = (event) => {
+        if (chunked.stopped || chunked.aborted || !(event.data instanceof ArrayBuffer)) {
+          return;
+        }
+        const samples = new Float32Array(event.data);
+        chunked.blocks.push(samples);
+        chunked.blockSamples += samples.length;
+        window.SayTypeChunk.pushFrame(
+          chunked.state,
+          window.SayTypeChunk.frameRms(samples),
+          samples.length
+        );
+        const cut = window.SayTypeChunk.decideCut(chunked.state, chunked.sampleRate);
+        if (cut) {
+          this.closeChunk(chunked, cut.cutAtSample);
+        }
+      };
+
+      source.connect(node);
+      node.connect(mutedOutput);
+      mutedOutput.connect(this.audioContext.destination);
+      recordingSession.chunked = chunked;
+    } catch (error) {
+      // Never abort a recording over this: the whole-clip path still works, it
+      // just pays the old tail latency.
+      console.warn("chunked local capture unavailable; using the whole-clip path:", error);
+    }
+  }
+
+  // Split the buffered blocks at `cutAtSample`, hand the head off to decode, and
+  // carry the tail over as the opening of the next chunk.
+  closeChunk(chunked, requestedCut) {
+    const cutAtSample = Math.min(requestedCut, chunked.blockSamples);
+    const head = new Float32Array(cutAtSample);
+    const tail = [];
+    let offset = 0;
+    for (const block of chunked.blocks) {
+      const start = offset;
+      offset += block.length;
+      if (offset <= head.length) {
+        head.set(block, start);
+      } else if (start >= head.length) {
+        tail.push(block);
+      } else {
+        const split = head.length - start;
+        head.set(block.subarray(0, split), start);
+        tail.push(block.slice(split));
+      }
+    }
+    chunked.blocks = tail;
+    chunked.blockSamples = tail.reduce((total, block) => total + block.length, 0);
+    chunked.state = window.SayTypeChunk.stateAfterCut(chunked.state, cutAtSample);
+    if (head.length) {
+      this.enqueueChunkDecode(chunked, head);
+    }
+  }
+
+  enqueueChunkDecode(chunked, pcm) {
+    const chunkIndex = chunked.nextChunkIndex++;
+    chunked.results[chunkIndex] = "";
+    chunked.queue = chunked.queue.then(async () => {
+      if (chunked.aborted) {
+        return;
+      }
+      try {
+        const wav = await this.encodeChunkWav(pcm, chunked.sampleRate);
+        if (chunked.aborted) {
+          return;
+        }
+        const text = await ipc.invoke(
+          "transcribe-audio",
+          wav,
+          false,
+          "audio/wav",
+          chunked.sessionId,
+          chunkIndex
+        );
+        chunked.results[chunkIndex] = typeof text === "string" ? text : "";
+      } catch (error) {
+        // One failed chunk leaves a gap; the rest of a long dictation survives.
+        chunked.failedChunks += 1;
+        console.warn(`local chunk ${chunkIndex} failed to decode:`, error);
+      }
+      if (chunked.livePartial?.index === chunkIndex) {
+        chunked.livePartial = null;
+      }
+      this.renderChunkedPreview(chunked);
+    });
+  }
+
+  // Chunks reach Qwen the same way whole clips already do: resampled to 16 kHz
+  // mono by WebKit's own resampler (the OfflineAudioContext call vad-gate.js has
+  // shipped all along) and written as PCM16 WAV. Reusing that path keeps chunk
+  // audio identical in provenance to what the model is fed today.
+  async encodeChunkWav(pcm, sampleRate) {
+    const pcm16k = await this.resampleTo16k(pcm, sampleRate);
+    return window.SayTypeVad.encodeWavPcm16(pcm16k, 16000);
+  }
+
+  async resampleTo16k(pcm, sampleRate) {
+    if (sampleRate === 16000) {
+      return pcm;
+    }
+    const length = Math.max(1, Math.ceil((pcm.length * 16000) / sampleRate));
+    const offline = new OfflineAudioContext(1, length, 16000);
+    const buffer = offline.createBuffer(1, pcm.length, sampleRate);
+    buffer.copyToChannel(pcm, 0);
+    const source = offline.createBufferSource();
+    source.buffer = buffer;
+    source.connect(offline.destination);
+    source.start();
+    const rendered = await offline.startRendering();
+    return rendered.getChannelData(0);
+  }
+
+  // Finalized chunks plus the in-flight chunk's streaming text. Preview only —
+  // the assembled final from finishChunkedLocal is what gets inserted.
+  renderChunkedPreview(chunked) {
+    if (chunked.aborted) {
+      return;
+    }
+    const parts = chunked.results.slice();
+    if (chunked.livePartial) {
+      parts[chunked.livePartial.index] = chunked.livePartial.text;
+    }
+    const text = window.SayTypeChunk.joinChunkTexts(parts);
+    if (text) {
+      this.setTranscriptionPreview(text);
+    }
+  }
+
+  stopChunkedCapture(recordingSession, { flush = true } = {}) {
+    const chunked = recordingSession?.chunked;
+    if (!chunked || chunked.stopped) {
+      return;
+    }
+    chunked.stopped = true;
+    if (chunked.node) {
+      chunked.node.port.onmessage = null;
+    }
+    try {
+      chunked.node?.disconnect();
+      chunked.mutedOutput?.disconnect();
+    } catch {
+      // The AudioContext may already be closing.
+    }
+    // Everything since the last cut becomes the final chunk — unless the user
+    // cancelled, in which case decoding it would only be killed moments later.
+    if (flush && chunked.blockSamples > 0 && !chunked.aborted) {
+      this.closeChunk(chunked, chunked.blockSamples);
+    }
+  }
+
+  async finishChunkedLocal(recordingSession) {
+    const chunked = recordingSession?.chunked;
+    if (!chunked) {
+      throw new Error("chunked local session was not initialized");
+    }
+    await chunked.queue;
+    const text = window.SayTypeChunk.joinChunkTexts(chunked.results);
+    // Silence decodes to empty text, which is a legitimate "no speech" result;
+    // only report failure when every chunk actually errored.
+    if (!text && chunked.failedChunks > 0) {
+      throw new Error("local chunked transcription failed");
+    }
+    return text;
+  }
+
+  // Chunk decodes deliberately skip the history write, so the joined dictation
+  // is recorded here as a single entry. Best-effort: a failed history write must
+  // never cost the user their text, so fall back to the local join.
+  async recordAssembledTranscription(text) {
+    if (!text) {
+      return text;
+    }
+    try {
+      const recorded = await ipc.invoke("record-assembled-transcription", text);
+      return typeof recorded === "string" && recorded ? recorded : text;
+    } catch (error) {
+      console.warn("failed to record the assembled transcription in history:", error);
+      return text;
+    }
+  }
+
+  cancelChunkedLocal(recordingSession) {
+    const chunked = recordingSession?.chunked;
+    if (!chunked || chunked.aborted) {
+      return;
+    }
+    chunked.aborted = true;
+    chunked.blocks = [];
+    chunked.blockSamples = 0;
+    chunked.livePartial = null;
+    void ipc.invoke("cancel-transcription", chunked.sessionId).catch(() => {});
+  }
+
   async startRecording(startupTiming = {}) {
     if (this.isRecording || this.starting) return;
 
@@ -959,6 +1225,7 @@ class VoiceInputPrompt {
       };
 
       await this.setupNemotronLive(recordingSession, source);
+      await this.setupChunkedLocal(recordingSession, source);
 
       // Reveal the prompt only after every selected engine is ready to receive
       // audio. The visible Listening state therefore never drops first words.
@@ -1004,6 +1271,7 @@ class VoiceInputPrompt {
       console.error("Error starting recording:", error);
       if (this.activeRecordingSession) {
         this.cancelNemotronLive(this.activeRecordingSession);
+        this.cancelChunkedLocal(this.activeRecordingSession);
         this.removePendingInsertion(this.activeRecordingSession.id);
       }
       await this.handleRecordingError(error);
@@ -1041,6 +1309,7 @@ class VoiceInputPrompt {
       this.mediaRecorder.stop();
     }
     this.stopNemotronCapture(this.activeRecordingSession);
+    this.stopChunkedCapture(this.activeRecordingSession, { flush: !shouldCancel });
 
     // Release the mic as soon as recording stops; we keep the recorded audio
     // chunks for transcription. The mic indicator only shows while recording.
@@ -1095,6 +1364,9 @@ class VoiceInputPrompt {
       ipc.invoke("cancel-transcription", sessionId).catch(() => {});
       if (this.activeRecordingSession?.live?.sessionId === sessionId) {
         ipc.invoke("cancel-live-transcription", sessionId).catch(() => {});
+      }
+      if (this.activeRecordingSession?.chunked?.sessionId === sessionId) {
+        this.cancelChunkedLocal(this.activeRecordingSession);
       }
       this.promptText.textContent = t("inputPrompt.cancelled");
       this.statusText.textContent = "";
@@ -1234,6 +1506,7 @@ class VoiceInputPrompt {
     let releaseLocalTranscriptionSlot = null;
     let audioBlob = null;
     const useNemotronLive = !!recordingSession.live && !translateMode;
+    const useChunkedLocal = !!recordingSession.chunked && !translateMode;
 
     this.transcriptionInProgressCount += 1;
     this.activeTranscriptionSessionIds.add(sessionId);
@@ -1244,6 +1517,7 @@ class VoiceInputPrompt {
         this.cancelledTranscriptionSessionIds.has(sessionId)
       ) {
         this.cancelNemotronLive(recordingSession);
+        this.cancelChunkedLocal(recordingSession);
         this.removePendingInsertion(sessionId);
         if (allowUi()) {
           this.cancelledShortPress = false;
@@ -1257,6 +1531,7 @@ class VoiceInputPrompt {
       }
       if (!chunks.length) {
         this.cancelNemotronLive(recordingSession);
+        this.cancelChunkedLocal(recordingSession);
         console.warn("No audio chunks captured; skipping transcription request");
         this.removePendingInsertion(sessionId);
         if (allowUi()) {
@@ -1268,7 +1543,10 @@ class VoiceInputPrompt {
       }
 
       const useLocalWav =
-        this.currentProvider === "local" && !translateMode && !useNemotronLive;
+        this.currentProvider === "local" &&
+        !translateMode &&
+        !useNemotronLive &&
+        !useChunkedLocal;
       if (useLocalWav) {
         // Keep the full local pipeline single-flight, not just the stateful VAD
         // call. Waiting sessions retain only compressed MediaRecorder chunks;
@@ -1293,6 +1571,17 @@ class VoiceInputPrompt {
           return;
         }
         transcription = await this.finishNemotronLive(recordingSession);
+      } else if (useChunkedLocal) {
+        // Every chunk but the last decoded while the user was still speaking;
+        // only the flushed remainder is still in flight here.
+        if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
+          this.cancelChunkedLocal(recordingSession);
+          this.removePendingInsertion(sessionId);
+          return;
+        }
+        transcription = await this.recordAssembledTranscription(
+          await this.finishChunkedLocal(recordingSession)
+        );
       } else {
         // Batch engines run the neural VAD after release. Nemotron has already
         // processed the live PCM stream and returns an empty final for silence.
@@ -1360,6 +1649,7 @@ class VoiceInputPrompt {
     } catch (error) {
       console.error("Transcription error:", error);
       this.cancelNemotronLive(recordingSession);
+      this.cancelChunkedLocal(recordingSession);
       this.removePendingInsertion(sessionId);
       // Tauri rejects with the command's Err value, which is the raw string for
       // a Result<_, String>, so handle both string and Error shapes.
@@ -1374,7 +1664,7 @@ class VoiceInputPrompt {
       // (so this runs regardless of allowUi()). Best-effort; a save failure just
       // logs. Cloud audio isn't persisted; retries always use a local engine.
       let savedPending = false;
-      if (!isCancelled && useNemotronLive && !uploadBuffer && audioBlob) {
+      if (!isCancelled && (useNemotronLive || useChunkedLocal) && !uploadBuffer && audioBlob) {
         try {
           uploadBuffer = await window.SayTypeVadGate.encodeFullWav(audioBlob);
           uploadMime = "audio/wav";
@@ -1384,8 +1674,8 @@ class VoiceInputPrompt {
       }
       if (
         !isCancelled &&
-        (useNemotronLive || this.currentProvider === "local") &&
-        (useNemotronLive || isRetryableTranscriptionError(message)) &&
+        (useNemotronLive || useChunkedLocal || this.currentProvider === "local") &&
+        (useNemotronLive || useChunkedLocal || isRetryableTranscriptionError(message)) &&
         uploadBuffer
       ) {
         try {
