@@ -15,6 +15,7 @@
   const tauriCommands = {
     "get-settings": "get_settings",
     "report-recording-startup": "report_recording_startup",
+    "report-transcription-lifecycle": "report_transcription_lifecycle",
     "prewarm-qwen-worker": "prewarm_qwen_worker",
     "get-diagnostic-log": "get_diagnostic_log",
     "get-api-keys": "get_api_keys",
@@ -25,6 +26,7 @@
     "cleanup-microphone": "cleanup_microphone",
     "cancel-transcription": "cancel_transcription",
     "record-assembled-transcription": "record_assembled_transcription",
+    "save-recovered-transcription": "save_recovered_transcription",
     "start-live-transcription": "start_live_transcription",
     "push-live-audio": "push_live_audio",
     "finish-live-transcription": "finish_live_transcription",
@@ -66,6 +68,7 @@
 
   const tauriArgs = {
     "report-recording-startup": [["timing"]],
+    "report-transcription-lifecycle": [["report"]],
     "cancel-transcription": [["sessionId", "session_id"]],
     "start-live-transcription": [
       ["sessionId", "session_id"],
@@ -73,6 +76,7 @@
       ["language"],
     ],
     "record-assembled-transcription": [["text"]],
+    "save-recovered-transcription": [["recovery"]],
     "finish-live-transcription": [["sessionId", "session_id"]],
     "cancel-live-transcription": [["sessionId", "session_id"]],
     "save-settings": [["settings", "settingsInput", "settings_input"]],
@@ -115,7 +119,7 @@
     },
     "save-pending-transcription": {
       body: 0, // args[0] = audio bytes (the failed clip's WAV)
-      headers: { "mime-type": 1 }, // args[1]
+      headers: { "mime-type": 1, "recovery-id": 2 }, // optional stable id for late audio
     },
   };
 

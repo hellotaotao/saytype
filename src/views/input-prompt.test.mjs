@@ -40,7 +40,12 @@ function loadVoiceInputPrompt(options = {}) {
   const window = {
     __sayTypeInputPromptStarted: true,
     __SAYTYPE_IPC__: {
-      invoke: options.invoke || (async () => null),
+      invoke(command, ...args) {
+        if (command === "report-transcription-lifecycle" && !options.captureLifecycle) {
+          return Promise.resolve(null);
+        }
+        return options.invoke ? options.invoke(command, ...args) : Promise.resolve(null);
+      },
       on: options.on || (() => {}),
     },
     SayTypeI18n: {
@@ -983,6 +988,7 @@ test("a local hang surviving the retry is saved as a pending entry", async () =>
       if (command === "save-pending-transcription") return Promise.resolve("entry-1");
       return null;
     },
+    window: { SayTypeVadGate: { analyze: async () => ({ speech: true, wav: new Uint8Array([1, 2, 3]) }) } },
   });
   const prompt = createBarePrompt(VoiceInputPrompt, {
     currentProvider: "local",
@@ -993,6 +999,7 @@ test("a local hang surviving the retry is saved as a pending entry", async () =>
   });
 
   await processOneRecording(prompt);
+  await settlePromises();
 
   assert.equal(commands.filter((c) => c === "transcribe-audio").length, 2);
   assert.ok(
@@ -1146,7 +1153,7 @@ test("chunks decode in order, one at a time, each tagged with its chunk index", 
   assert.ok(calls[0][0].length > 44, "a real WAV, header included, is uploaded");
 });
 
-test("one failed chunk leaves a gap instead of losing the dictation", async () => {
+test("one failed chunk stops queued work and refuses to return a gapped final", async () => {
   const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
     if (channel !== "transcribe-audio") return null;
     if (args[4] === 1) throw new Error("chunk decode blew up");
@@ -1158,12 +1165,12 @@ test("one failed chunk leaves a gap instead of losing the dictation", async () =
   for (let i = 0; i < 3; i++) prompt.enqueueChunkDecode(chunked, new Float32Array(160));
   await chunked.queue;
 
-  assert.deepEqual(chunked.results, ["part0", "", "part2"]);
+  assert.deepEqual(chunked.results, ["part0", "", ""]);
   assert.equal(chunked.failedChunks, 1);
-  assert.equal(await prompt.finishChunkedLocal({ chunked }), "part0 part2");
+  await assert.rejects(() => prompt.finishChunkedLocal({ chunked }), /chunk decode blew up/);
 });
 
-test("finishChunkedLocal fails only when nothing survived, not on silence", async () => {
+test("finishChunkedLocal reports failed chunks but accepts silence", async () => {
   const VoiceInputPrompt = loadForChunking(async () => {
     throw new Error("every chunk failed");
   });
@@ -1288,4 +1295,997 @@ test("cancelling on release does not decode a final chunk that is about to be ki
 
   assert.deepEqual(enqueued, []);
   assert.equal(chunked.stopped, true, "capture still tears down on cancel");
+});
+
+// ---- Session lifecycle and recorder-event recovery ---------------------
+
+function createFakeTimers() {
+  const pending = new Map();
+  let nextId = 0;
+  return {
+    pending,
+    setTimeout(callback, delay) {
+      const id = ++nextId;
+      pending.set(id, { callback, delay });
+      return id;
+    },
+    clearTimeout(id) {
+      pending.delete(id);
+    },
+    fire(delay) {
+      const timer = [...pending.entries()].find(([, item]) => item.delay === delay);
+      assert.ok(timer, `expected a pending ${delay}ms timer`);
+      pending.delete(timer[0]);
+      timer[1].callback();
+    },
+  };
+}
+
+async function settlePromises() {
+  for (let i = 0; i < 40; i++) await Promise.resolve();
+}
+
+async function createLifecycleHarness(options = {}) {
+  const timers = createFakeTimers();
+  const calls = [];
+  const inserted = [];
+  const recovered = [];
+  const streams = [];
+  let hides = 0;
+  class FakeAudioContext {
+    constructor() { this.sampleRate = 16000; this.state = "running"; }
+    createMediaStreamSource() { return { connect() {} }; }
+    createAnalyser() { return { fftSize: 0 }; }
+    async close() { this.state = "closed"; }
+  }
+  class FakeMediaRecorder {
+    static isTypeSupported() { return true; }
+    start() { this.state = "recording"; }
+    stop() { this.state = "inactive"; }
+  }
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    captureLifecycle: options.captureLifecycle,
+    invoke(command, ...args) {
+      calls.push([command, ...args]);
+      if (options.invoke) return options.invoke(command, ...args);
+      if (command === "transcribe-audio") return Promise.resolve(`final ${args[4]}`);
+      if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
+      return Promise.resolve(null);
+    },
+    window: {
+      AudioContext: FakeAudioContext,
+      SayTypeChunk: chunkDecision,
+      SayTypeVad: { encodeWavPcm16 },
+      SayTypeVadGate: options.vadGate || null,
+    },
+    globals: {
+      MediaRecorder: FakeMediaRecorder,
+      navigator: { mediaDevices: { async getUserMedia() {
+        const stream = { stops: 0, getTracks() { return [{ stop() { stream.stops++; } }]; } };
+        streams.push(stream);
+        return options.getUserMedia ? options.getUserMedia(stream, streams.length) : stream;
+      } } },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    currentModel: "qwen3-asr-0.6b-q8_0",
+    translateMode: false,
+    cancelInProgress: false,
+    stopRequested: false,
+    promptElement: { classList: { add() {}, remove() {} } },
+    clearHidePromptTimer: VoiceInputPrompt.prototype.clearHidePromptTimer,
+    clearActualHideTimer() {},
+    clearInsertFailedUi: VoiceInputPrompt.prototype.clearInsertFailedUi,
+    clearTranscriptionPreview() {},
+    updateModelBadge() {},
+    hasUsableApiKey: async () => true,
+    startWaveAnimation() {},
+    stopWaveAnimation() {},
+    startRecordingTimer() {},
+    stopRecordingTimer() {},
+    async setupNemotronLive() {},
+    async setupChunkedLocal(session) {
+      if (options.batch) return;
+      session.chunked = makeChunked({ sessionId: session.id, sampleRate: options.sampleRate || 16000 });
+      const pcm = new Float32Array(320);
+      session.chunked.blocks.push(pcm);
+      session.chunked.blockSamples = pcm.length;
+      chunkDecision.pushFrame(session.chunked.state, 0.1, pcm.length);
+    },
+    async typeText(text) { inserted.push(text); return { ok: true, direct: true }; },
+    showInsertFailed(text) { recovered.push(text); this._failedText = text; },
+    hidePrompt() { hides++; },
+  });
+  await prompt.startRecording();
+  return { prompt, session: prompt.activeRecordingSession, recorder: prompt.mediaRecorder,
+    calls, inserted, recovered, streams, timers, get hides() { return hides; } };
+}
+
+test("a chunked session finalizes on release, and late onstop events cannot repeat it", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.stopRecording();
+  await settlePromises();
+  // Chunked audio is captured through the worklet and its final segment is
+  // closed by stopRecording, so the dictation is finished before the recorder
+  // reports anything at all.
+  assert.deepEqual(h.inserted, ["final 0"]);
+  assert.equal(h.calls.filter(([command]) => command === "record-assembled-transcription").length, 1);
+  h.recorder.onstop();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["final 0"]);
+  assert.equal(h.calls.filter(([command]) => command === "record-assembled-transcription").length, 1);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  // A real stop clears the diagnostic watch, so it cannot log a false absence.
+  assert.equal([...h.timers.pending.values()].some((timer) => timer.delay === 2000), false);
+});
+
+test("the chunked stop watch is diagnostic only and changes nothing when it fires", async () => {
+  const h = await createLifecycleHarness({ captureLifecycle: true });
+  h.prompt.stopRecording();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["final 0"]);
+  h.timers.fire(2000);
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["final 0"]);
+  assert.equal(h.calls.filter(([command]) => command === "record-assembled-transcription").length, 1);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  // It reports the missing stop event and nothing else.
+  const reports = h.calls.filter(([command]) => command === "report-transcription-lifecycle");
+  assert.equal(reports.some(([, report]) => report.phase === "recorder-stop" && report.event === "timeout"), true);
+  assert.equal(reports.some(([, report]) => report.phase === "recorder-stop" && report.event === "complete"), false);
+});
+
+test("a failed chunked dictation still keeps retry audio the recorder delivers after release", async () => {
+  const h = await createLifecycleHarness({
+    vadGate: { encodeFullWav: async () => new Uint8Array([1, 2, 3]) },
+    invoke(command) {
+      if (command === "transcribe-audio") return Promise.reject(new Error("decode failed"));
+      if (command === "save-pending-transcription") return Promise.resolve("audio-history-id");
+      return Promise.resolve(null);
+    },
+  });
+  h.prompt.stopRecording();
+  // Finalization now starts before the recorder hands over its Blob, so the
+  // container arrives while the chunk decode is still in flight.
+  h.recorder.ondataavailable({ data: new Blob(["late container"]) });
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+  assert.equal(h.calls.filter(([command]) => command === "save-pending-transcription").length, 1);
+});
+
+test("a chunked failure before any recorder data still saves the late container", async () => {
+  const h = await createLifecycleHarness({
+    vadGate: { encodeFullWav: async () => new Uint8Array([4, 5, 6]) },
+    invoke(command) {
+      if (command === "transcribe-audio") return Promise.reject(new Error("decode failed"));
+      if (command === "save-pending-transcription") return Promise.resolve("audio-history-id");
+      return Promise.resolve(null);
+    },
+  });
+  h.prompt.stopRecording();
+  await settlePromises();
+  assert.equal(h.calls.some(([command]) => command === "save-pending-transcription"), false);
+  h.recorder.ondataavailable({ data: new Blob(["container after the failure"]) });
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.calls.filter(([command]) => command === "save-pending-transcription").length, 1);
+  assert.deepEqual(h.inserted, []);
+});
+
+test("a chunked failure saves the late container even when onstop never arrives", async () => {
+  const h = await createLifecycleHarness({
+    vadGate: { encodeFullWav: async () => new Uint8Array([7, 8, 9]) },
+    invoke(command) {
+      if (command === "transcribe-audio") return Promise.reject(new Error("decode failed"));
+      if (command === "save-pending-transcription") return Promise.resolve("audio-history-id");
+      return Promise.resolve(null);
+    },
+  });
+  h.prompt.stopRecording();
+  await settlePromises();
+  // The container is delivered by its own dataavailable event; the stop event
+  // that follows it is exactly the one WebKit is known to drop.
+  h.recorder.ondataavailable({ data: new Blob(["container, no stop event"]) });
+  await settlePromises();
+  assert.equal(h.calls.filter(([command]) => command === "save-pending-transcription").length, 1);
+});
+
+test("a chunked final survives an empty MediaRecorder Blob", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.session.chunks.length, 0);
+  assert.deepEqual(h.inserted, ["final 0"]);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+});
+
+test("a missing batch onstop never submits an unfinalized Blob", async () => {
+  const h = await createLifecycleHarness({ batch: true });
+  h.recorder.ondataavailable({ data: new Blob(["partial container"]) });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  h.timers.fire(15000);
+  await settlePromises();
+  assert.equal(h.calls.some(([command]) => command === "transcribe-audio"), false);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+});
+
+test("resampling timeout terminates the session and cannot repaint a newer recording", async () => {
+  const resample = createDeferred();
+  const h = await createLifecycleHarness({ sampleRate: 48000 });
+  h.prompt.resampleTo16k = () => resample.promise;
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.prompt.stopRequested = false;
+  await h.prompt.startRecording();
+  h.prompt.statusText.textContent = "new recording";
+  h.timers.fire(30000);
+  await settlePromises();
+  assert.equal(h.prompt.pendingInsertionOrder.includes(h.session.id), false);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  assert.equal(h.streams[1].stops, 0);
+  assert.equal(h.prompt.isRecording, true);
+  assert.equal(h.prompt.statusText.textContent, "new recording");
+  resample.resolve(new Float32Array(320));
+  await settlePromises();
+  assert.equal(h.calls.some(([command]) => command === "transcribe-audio"), false);
+  assert.deepEqual(h.inserted, []);
+});
+
+test("a chunk IPC timeout releases the queue and ignores a late final", async () => {
+  const transcription = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command, ...args) {
+    if (command === "transcribe-audio") return transcription.promise;
+    if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
+    return Promise.resolve(null);
+  } });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.timers.fire(450000);
+  await settlePromises();
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  transcription.resolve("too late");
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+  assert.equal(h.calls.some(([command]) => command === "record-assembled-transcription"), false);
+});
+
+test("history timeout preserves a complete final and late history never inserts twice", async () => {
+  const history = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "transcribe-audio") return Promise.resolve("complete final");
+    if (command === "record-assembled-transcription") return history.promise;
+    return Promise.resolve(null);
+  } });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.timers.fire(5000);
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["complete final"]);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  history.resolve("late scrubbed final");
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["complete final"]);
+});
+
+test("Escape cancels a nonsettling chunk immediately and late results cannot reenter", async () => {
+  const transcription = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command, ...args) {
+    if (command === "transcribe-audio") return transcription.promise;
+    if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
+    return Promise.resolve(null);
+  } });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  transcription.resolve("cancelled final");
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+});
+
+test("Escape cancels a waiting recorder session without cancelling an earlier transcription", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.pendingInsertionOrder.unshift(0);
+  h.prompt.activeTranscriptionSessionIds.add(0);
+  h.prompt.transcriptionInProgressCount = 1;
+  h.prompt.stopRecording();
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.deepEqual(Array.from(h.prompt.pendingInsertionOrder), [0]);
+  assert.equal(h.session.chunked.aborted, true);
+  assert.equal(h.calls.some(([command, id]) => command === "cancel-transcription" && id === 0), false);
+  h.recorder.onstop();
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+});
+
+test("an incomplete chunked dictation keeps completed text for Copy and never inserts a gap", async () => {
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "transcribe-audio") return Promise.reject(new Error("chunk failure"));
+    return Promise.resolve(null);
+  } });
+  h.session.chunked.results = ["preserved first chunk"];
+  h.session.chunked.nextChunkIndex = 1;
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+  assert.deepEqual(h.recovered, ["preserved first chunk"]);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+});
+
+test("a completed newer session keeps FIFO order behind an older valid session", async () => {
+  const first = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command, ...args) {
+    if (command === "transcribe-audio") return args[3] === 1 ? first.promise : Promise.resolve("second final");
+    if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
+    return Promise.resolve(null);
+  } });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.prompt.stopRequested = false;
+  await h.prompt.startRecording();
+  const secondRecorder = h.prompt.mediaRecorder;
+  h.prompt.stopRecording();
+  secondRecorder.onstop();
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+  assert.deepEqual(Array.from(h.prompt.pendingInsertionOrder), [1, 2]);
+  first.resolve("first final");
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["first final", "second final"]);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+});
+
+test("old incomplete text stays hidden after the newer successful recording finishes", async () => {
+  const first = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command, ...args) {
+    if (command === "transcribe-audio") return args[3] === 1 ? first.promise : Promise.resolve("new final");
+    if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
+    return Promise.resolve(null);
+  } });
+  h.session.chunked.results = ["old recovered text"];
+  h.session.chunked.nextChunkIndex = 1;
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.prompt.stopRequested = false;
+  await h.prompt.startRecording();
+  const secondRecorder = h.prompt.mediaRecorder;
+  first.reject(new Error("old chunk failed"));
+  await settlePromises();
+  assert.deepEqual(h.recovered, [], "an old failure must not cover the new recording");
+  assert.equal(h.streams[1].stops, 0);
+  h.prompt.stopRecording();
+  secondRecorder.onstop();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["new final"]);
+  assert.deepEqual(h.recovered, []);
+  assert.equal(h.hides, 1, "old recovery custody must not block a later successful hide");
+  assert.equal(h.prompt.recoverableTranscriptions.get(1).text, "old recovered text");
+});
+
+test("cancelling during history ignores a late result and does not revive recovery UI", async () => {
+  const history = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "transcribe-audio") return Promise.resolve("final before cancel");
+    if (command === "record-assembled-transcription") return history.promise;
+    return Promise.resolve(null);
+  } });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  history.resolve("late history final");
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+  assert.deepEqual(h.recovered, []);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+});
+
+test("an old cleanup cannot close the microphone owned by a newer session", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.stopRecording();
+  h.prompt.stopRequested = false;
+  await h.prompt.startRecording();
+  h.prompt.cleanup({ recordingSession: h.session });
+  assert.equal(h.streams[1].stops, 0);
+  assert.equal(h.prompt.audioContext.state, "running");
+  assert.equal(h.prompt.mediaStream, h.streams[1]);
+});
+
+test("late chunk partials cannot overwrite a final waiting on history", async () => {
+  const handlers = new Map();
+  const VoiceInputPrompt = loadVoiceInputPrompt({ on(channel, callback) { handlers.set(channel, callback); } });
+  const previews = [];
+  const chunked = makeChunked({ inFlightChunkIndex: null, results: ["final text"] });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 7,
+    transcriptionInProgressCount: 1,
+    transcriptionText: {},
+    activeRecordingSession: { id: 7, lifecycle: { state: "processing" }, chunked },
+    setTranscriptionPreview(text) { previews.push(text); },
+  });
+  prompt.setupEventListeners();
+  handlers.get("local-transcription-partial")(null, { sessionId: 7, chunkIndex: 0, text: "late partial" });
+  assert.deepEqual(previews, []);
+});
+
+test("lifecycle diagnostics contain phase metadata but never transcription content", async () => {
+  const reports = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    captureLifecycle: true,
+    invoke(command, ...args) {
+      if (command === "report-transcription-lifecycle") reports.push(args[0]);
+      if (command === "transcribe-audio") return Promise.resolve("private dictation content");
+      return Promise.resolve(null);
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 1,
+    pendingInsertionOrder: [1],
+    async flushPendingInsertions() {},
+  });
+  await processOneRecording(prompt);
+  assert.ok(reports.some(({ phase, event }) => phase === "chunk-ipc" && event === "complete"));
+  for (const report of reports) {
+    assert.equal(report.sessionId, 1);
+    assert.ok(Number.isInteger(report.elapsedMs) && report.elapsedMs >= 0);
+    assert.ok(Object.keys(report).every((key) => ["sessionId", "phase", "event", "elapsedMs", "pendingCount", "chunkIndex"].includes(key)));
+  }
+  assert.equal(JSON.stringify(reports).includes("private"), false);
+});
+
+test("cancelling a queued local slot cannot let its successor overtake the holder", async () => {
+  const VoiceInputPrompt = loadVoiceInputPrompt();
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  const first = { id: 1 };
+  const second = { id: 2 };
+  const third = { id: 3 };
+  const releaseFirst = await prompt.acquireLocalTranscriptionSlot(first);
+  const secondSlot = prompt.acquireLocalTranscriptionSlot(second);
+  await settlePromises();
+  prompt.cancelRecordingSession(second);
+  await assert.rejects(secondSlot, /TRANSCRIPTION_CANCELLED/);
+  let thirdAcquired = false;
+  const thirdSlot = prompt.acquireLocalTranscriptionSlot(third).then((release) => {
+    thirdAcquired = true;
+    return release;
+  });
+  await settlePromises();
+  assert.equal(thirdAcquired, false);
+  releaseFirst();
+  const releaseThird = await thirdSlot;
+  assert.equal(thirdAcquired, true);
+  releaseThird();
+});
+
+function createInsertionHarness(options = {}) {
+  const timers = createFakeTimers();
+  const firstInsertion = createDeferred();
+  const attempts = [];
+  const uiEvents = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    invoke: async () => null,
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    recordingSessionId: 2,
+    pendingInsertionOrder: [1, 2],
+    pendingInsertionsById: new Map([[1, "first"], [2, "second"]]),
+    async typeText(text) {
+      attempts.push(text);
+      return text === "first" ? firstInsertion.promise : { ok: true, direct: true };
+    },
+    updateStatusText() { uiEvents.push("update"); },
+    hidePrompt() { uiEvents.push("hide"); },
+    showInsertFailed(text) { uiEvents.push(`copy:${text}`); },
+    scheduleHidePrompt() { uiEvents.push("schedule-hide"); },
+    ...options,
+  });
+  const firstSession = { id: 1 };
+  const secondSession = { id: 2 };
+  prompt.ensureRecordingSession(firstSession).state = "ready";
+  prompt.ensureRecordingSession(secondSession).state = "ready";
+  return { prompt, firstSession, firstInsertion, attempts, uiEvents, timers };
+}
+
+test("insertion holds FIFO until the actual native reply without a synthetic timeout", async () => {
+  const h = createInsertionHarness();
+  const flushing = h.prompt.flushPendingInsertions();
+  await settlePromises();
+  assert.deepEqual(h.attempts, ["first"]);
+  assert.equal([...h.timers.pending.values()].some(({ delay }) => delay === 15000), false);
+  assert.equal(h.prompt.isFlushingInsertQueue, true);
+  h.firstInsertion.resolve({ ok: true, direct: true });
+  await flushing;
+  assert.deepEqual(h.attempts, ["first", "second"]);
+});
+
+test("cancelling an already dispatched insertion cannot release its FIFO lock", async () => {
+  const h = createInsertionHarness();
+  const flushing = h.prompt.flushPendingInsertions();
+  await settlePromises();
+  h.prompt.cancelRecordingSession(h.firstSession);
+  await settlePromises();
+  assert.deepEqual(h.attempts, ["first"], "the second native side effect must still wait");
+  assert.equal(h.prompt.isFlushingInsertQueue, true);
+  h.firstInsertion.resolve({ ok: true, direct: true });
+  await flushing;
+  assert.deepEqual(h.attempts, ["first", "second"]);
+  assert.equal(h.uiEvents.some((event) => event.startsWith("copy:")), false);
+});
+
+test("a cancelled native insertion reply cannot update or hide a newer recording", async () => {
+  const h = createInsertionHarness();
+  const flushing = h.prompt.flushPendingInsertions();
+  await settlePromises();
+  h.prompt.cancelRecordingSession(h.firstSession);
+  h.prompt.recordingSessionId = 3;
+  h.prompt.isRecording = true;
+  h.prompt.statusText.textContent = "new recording";
+  h.uiEvents.length = 0;
+  h.firstInsertion.resolve({ ok: false, message: "late native result" });
+  await flushing;
+  assert.deepEqual(h.attempts, ["first"]);
+  assert.deepEqual(h.uiEvents, []);
+  assert.equal(h.prompt.statusText.textContent, "new recording");
+  assert.deepEqual(Array.from(h.prompt.pendingInsertionOrder), [2]);
+});
+
+test("Escape cancels the selected recording without discarding hidden older recovery", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.preserveCompletedChunks({ id: 0, finalText: "older recoverable text" });
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.isRecording, false);
+  assert.equal(h.prompt.cancelInProgress, false, "the recording-cancel gate must be released");
+  assert.deepEqual(h.recovered, []);
+  h.timers.fire(300);
+  assert.equal(h.hides, 1, "hidden recovery is not a pending UI operation");
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.size, 1);
+  h.timers.fire(300);
+  assert.equal(h.hides, 2);
+});
+
+test("an old cancel callback cannot clear a newer startup cancellation gate", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.cancelRecording();
+  const preflight = createDeferred();
+  h.prompt.hasUsableApiKey = () => preflight.promise;
+  h.prompt.stopRequested = false;
+  const starting = h.prompt.startRecording();
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.starting, true);
+  assert.equal(h.prompt.cancelInProgress, true, "the new startup cancellation still owns the gate");
+  preflight.resolve(true);
+  await starting;
+});
+
+test("current failed final remains copyable without resurfacing older recovery", async () => {
+  const copied = [];
+  const h = await createLifecycleHarness({ invoke(command, ...args) {
+    if (command === "transcribe-audio") return Promise.resolve("new complete final");
+    if (command === "record-assembled-transcription") return Promise.reject(new Error("history unavailable"));
+    if (command === "copy-to-clipboard") copied.push(args[0]);
+    return Promise.resolve(null);
+  } });
+  h.prompt.preserveCompletedChunks({ id: 0, finalText: "older recovered text" });
+  const showInsertFailed = Object.getPrototypeOf(h.prompt).showInsertFailed;
+  h.prompt.showInsertFailed = function(text) {
+    h.recovered.push(text);
+    showInsertFailed.call(this, text);
+  };
+  h.prompt.typeText = async () => ({ ok: false, message: "No editable text field" });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.size, 2);
+  assert.equal(h.prompt.recoverableTranscriptions.get(0).kind, "incomplete");
+  assert.equal(h.prompt.recoverableTranscriptions.get(h.session.id).kind, "insert-failed");
+  assert.equal(h.prompt._failedText, "new complete final");
+  assert.equal(h.prompt.promptText.textContent, "inputPrompt.insertFailedTitle");
+  assert.deepEqual(h.recovered, ["new complete final"]);
+  await h.prompt.copyFailedText();
+  assert.equal(h.prompt.recoverableTranscriptions.size, 2, "Copy is not a persistence ACK");
+  assert.deepEqual(copied, ["new complete final"]);
+  h.timers.fire(1200);
+  assert.equal(h.hides, 1);
+});
+
+test("startup cancellation keeps its gate through worklet setup and releases it after stop", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  h.prompt.preserveCompletedChunks({ id: 0, finalText: "old recovery" });
+  const setup = createDeferred();
+  const originalSetup = h.prompt.setupChunkedLocal;
+  h.prompt.setupChunkedLocal = async function(session, source) {
+    await setup.promise;
+    return originalSetup.call(this, session, source);
+  };
+  h.prompt.stopRequested = false;
+  const starting = h.prompt.startRecording();
+  await settlePromises();
+  const cancelledSessionId = h.prompt.activeRecordingSession.id;
+  assert.equal(cancelledSessionId, 2, "the session exists before AudioWorklet setup completes");
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.starting, true);
+  assert.equal(h.prompt.cancelInProgress, true, "setup must still see the pending cancellation");
+  setup.resolve();
+  await starting;
+  await settlePromises();
+  assert.equal(h.prompt.cancelInProgress, false, "completed startup cancellation must release its gate");
+  assert.equal(h.prompt.isRecording, false);
+  assert.equal(h.calls.some(([command, ...args]) => command === "transcribe-audio" && args[3] === cancelledSessionId), false);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  assert.deepEqual(h.recovered, []);
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.size, 1);
+});
+
+test("cancelling pending microphone acquisition does not hide older recovery text", async () => {
+  const microphone = createDeferred();
+  const h = await createLifecycleHarness({ getUserMedia(stream, count) {
+    return count === 2 ? microphone.promise.then(() => stream) : stream;
+  } });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  const hidesBeforeStartup = h.hides;
+  h.prompt.preserveCompletedChunks({ id: 0, finalText: "old recovery" });
+  h.prompt.stopRequested = false;
+  const starting = h.prompt.startRecording();
+  await settlePromises();
+  h.prompt.cancelRecording();
+  microphone.resolve();
+  await starting;
+  await settlePromises();
+  assert.equal(h.streams[1].stops, 1, "the late microphone stream is released");
+  assert.equal(h.hides, hidesBeforeStartup, "older recovery must not disappear with the cancelled startup");
+  assert.deepEqual(h.recovered, []);
+  assert.equal(h.prompt.cancelInProgress, false);
+});
+
+function useRealRecoveryUi(h) {
+  const show = Object.getPrototypeOf(h.prompt).showInsertFailed;
+  h.prompt.showInsertFailed = function(text) { h.recovered.push(text); show.call(this, text); };
+}
+
+test("hidden old recovery neither resurfaces nor prevents a later successful dictation from hiding", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.preserveCompletedChunks({ id: 0, finalText: "old unsaved text" });
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["final 0"]);
+  assert.equal(h.hides, 1);
+  assert.deepEqual(h.recovered, []);
+  assert.equal(h.prompt.recoverableTranscriptions.get(0).text, "old unsaved text");
+});
+
+test("current recovery auto-hides after fifteen seconds without deleting unsaved content", async () => {
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "transcribe-audio") return Promise.reject(new Error("decode failed"));
+    if (command === "save-recovered-transcription") return Promise.reject(new Error("disk unavailable"));
+    return Promise.resolve(null);
+  } });
+  useRealRecoveryUi(h);
+  h.session.chunked.results = ["recover me"];
+  h.session.chunked.nextChunkIndex = 1;
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.deepEqual(h.recovered, ["recover me"]);
+  h.timers.fire(15000);
+  assert.equal(h.hides, 1);
+  assert.equal(h.prompt.recoverableTranscriptions.get(1).text, "recover me");
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+});
+
+test("recovery timeout retains content until its late durable acknowledgment arrives", async () => {
+  const saved = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "save-recovered-transcription") return saved.promise;
+    return Promise.resolve(null);
+  } });
+  h.prompt.preserveCompletedChunks({ id: 0, finalText: "durable text" });
+  await settlePromises();
+  const save = h.calls.find(([command]) => command === "save-recovered-transcription");
+  assert.ok(save);
+  assert.equal(save[1].text, "durable text");
+  assert.equal(save[1].kind, "incomplete");
+  assert.match(save[1].id, /^recovery-/);
+  h.timers.fire(5000);
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.get(0).text, "durable text");
+  saved.resolve("existing-history-id");
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.has(0), false);
+  assert.deepEqual(h.recovered, []);
+});
+
+test("failed recovery persistence retries with its same id on the next recording result", async () => {
+  let saves = 0;
+  const h = await createLifecycleHarness({ invoke(command, ...args) {
+    if (command === "save-recovered-transcription") {
+      saves++;
+      return saves === 1 ? Promise.reject(new Error("disk unavailable")) : Promise.resolve("history-id");
+    }
+    if (command === "transcribe-audio") return Promise.resolve("new text");
+    if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
+    return Promise.resolve(null);
+  } });
+  h.prompt.preserveCompletedChunks({ id: 0, finalText: "retry me" });
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.size, 1);
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  const ids = h.calls.filter(([command]) => command === "save-recovered-transcription").map(([, request]) => request.id);
+  assert.equal(ids.length, 2);
+  assert.equal(ids[0], ids[1]);
+  assert.equal(h.prompt.recoverableTranscriptions.size, 0);
+  assert.deepEqual(h.inserted, ["new text"]);
+  assert.equal(h.hides, 1);
+});
+
+test("batch onstop after its two-second warning still transcribes before the hard deadline", async () => {
+  const h = await createLifecycleHarness({ batch: true,
+    vadGate: { analyze: async () => ({ speech: true, wav: new Uint8Array([1, 2, 3]) }) } });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  await settlePromises();
+  assert.deepEqual(Array.from(h.prompt.pendingInsertionOrder), [1]);
+  assert.equal(h.calls.some(([command]) => command === "transcribe-audio"), false);
+  h.recorder.ondataavailable({ data: new Blob(["complete container"]) });
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.inserted.length, 1);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+});
+
+test("a batch hard timeout recovers a late final once without inserting or touching the new recording", async () => {
+  const encoded = createDeferred();
+  const h = await createLifecycleHarness({ batch: true,
+    vadGate: { encodeFullWav: () => encoded.promise },
+    invoke(command) { return Promise.resolve(command === "save-pending-transcription" ? "audio-history-id" : null); } });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  h.timers.fire(15000);
+  await settlePromises();
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  h.prompt.stopRequested = false;
+  await h.prompt.startRecording();
+  h.prompt.statusText.textContent = "new recording";
+  h.recorder.ondataavailable({ data: new Blob(["complete late container"]) });
+  h.recorder.onstop();
+  h.recorder.onstop();
+  await settlePromises();
+  encoded.resolve(new Uint8Array([1, 2, 3]));
+  await settlePromises();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.calls.filter(([command]) => command === "save-pending-transcription").length, 1);
+  assert.equal(h.calls.some(([command]) => command === "transcribe-audio"), false);
+  assert.deepEqual(h.inserted, []);
+  assert.equal(h.prompt.statusText.textContent, "new recording");
+  assert.equal(h.streams[1].stops, 0);
+});
+
+test("cancelling a hard-timed-out batch discards late recorder recovery", async () => {
+  const h = await createLifecycleHarness({ batch: true,
+    vadGate: { encodeFullWav: async () => new Uint8Array([1, 2, 3]) } });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  h.timers.fire(15000);
+  await settlePromises();
+  h.prompt.cancelRecording();
+  h.recorder.ondataavailable({ data: new Blob(["cancelled container"]) });
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.calls.some(([command]) => command === "save-pending-transcription"), false);
+  assert.deepEqual(h.inserted, []);
+});
+
+test("late batch recovery retains its original Blob when WAV encoding times out", async () => {
+  const h = await createLifecycleHarness({ batch: true,
+    vadGate: { encodeFullWav: () => new Promise(() => {}) } });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  h.timers.fire(15000);
+  await settlePromises();
+  h.recorder.ondataavailable({ data: new Blob(["complete late container"]) });
+  h.recorder.onstop();
+  await settlePromises();
+  h.timers.fire(30000);
+  await settlePromises();
+  assert.ok(h.session.audioRecovery.blob.size > 0);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+});
+
+test("a stale recovery ACK cannot delete replacement text for the same session", async () => {
+  const first = createDeferred();
+  const second = createDeferred();
+  let saves = 0;
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "save-recovered-transcription") return ++saves === 1 ? first.promise : second.promise;
+    return Promise.resolve(null);
+  } });
+  h.prompt.preserveRecoveryText(0, "old value", "incomplete");
+  await settlePromises();
+  const oldId = h.prompt.recoverableTranscriptions.get(0).id;
+  h.prompt.preserveRecoveryText(0, "replacement value", "insert-failed");
+  await settlePromises();
+  const replacement = h.prompt.recoverableTranscriptions.get(0);
+  assert.notEqual(replacement.id, oldId);
+  first.resolve("first-history-row");
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.get(0), replacement);
+  second.resolve("replacement-history-row");
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.size, 0);
+});
+
+test("idle Escape dismisses current recovery without discarding current or older text", async () => {
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "transcribe-audio") return Promise.reject(new Error("decode failed"));
+    return Promise.resolve(null);
+  } });
+  h.prompt.preserveRecoveryText(0, "hidden older text", "incomplete");
+  h.session.chunked.results = ["current recovered text"];
+  h.session.chunked.nextChunkIndex = 1;
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.prompt.recoveryShownId, 1);
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.get(1).text, "current recovered text");
+  assert.equal(h.prompt.recoverableTranscriptions.get(0).text, "hidden older text");
+});
+
+test("late batch persistence retries the same request id and keeps source audio until ACK", async () => {
+  const firstSave = createDeferred();
+  let saves = 0;
+  const h = await createLifecycleHarness({ batch: true,
+    vadGate: { encodeFullWav: async () => new Uint8Array([1, 2, 3]) },
+    invoke(command) {
+      if (command === "save-pending-transcription") return ++saves === 1 ? firstSave.promise : Promise.resolve("pending-row");
+      return Promise.resolve(null);
+    } });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  h.timers.fire(15000);
+  await settlePromises();
+  h.recorder.ondataavailable({ data: new Blob(["late complete container"]) });
+  h.recorder.onstop();
+  await settlePromises();
+  h.timers.fire(5000);
+  await settlePromises();
+  assert.ok(h.session.audioRecovery.blob.size > 0);
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  h.prompt.retryRecoveryPersistence();
+  await settlePromises();
+  const requests = h.calls.filter(([command]) => command === "save-pending-transcription");
+  assert.equal(requests.length, 2);
+  assert.match(requests[0][3], /^pending-/);
+  assert.equal(requests[0][3], requests[1][3]);
+  assert.equal(h.session.audioRecovery.blob, null);
+  firstSave.resolve("pending-row");
+  await settlePromises();
+  assert.equal(h.prompt.recoverableAudioSessions.size, 0);
+});
+
+test("late batch onstop before its final data still saves exactly once", async () => {
+  const h = await createLifecycleHarness({ batch: true,
+    vadGate: { encodeFullWav: async () => new Uint8Array([1, 2, 3]) },
+    invoke(command) { return Promise.resolve(command === "save-pending-transcription" ? "pending-row" : null); } });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  h.timers.fire(15000);
+  await settlePromises();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.calls.some(([command]) => command === "save-pending-transcription"), false);
+  h.recorder.ondataavailable({ data: new Blob(["late final container"]) });
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.calls.filter(([command]) => command === "save-pending-transcription").length, 1);
+  assert.deepEqual(h.inserted, []);
+});
+
+test("cancelling late WAV encoding prevents a subsequent audio persistence request", async () => {
+  const encoded = createDeferred();
+  const h = await createLifecycleHarness({ batch: true, vadGate: { encodeFullWav: () => encoded.promise } });
+  h.prompt.stopRecording();
+  h.timers.fire(2000);
+  h.timers.fire(15000);
+  await settlePromises();
+  h.recorder.ondataavailable({ data: new Blob(["late final container"]) });
+  h.recorder.onstop();
+  await settlePromises();
+  h.prompt.cancelRecording();
+  encoded.resolve(new Uint8Array([1, 2, 3]));
+  await settlePromises();
+  assert.equal(h.calls.some(([command]) => command === "save-pending-transcription"), false);
+  assert.equal(h.prompt.recoverableAudioSessions.size, 0);
+});
+
+test("late cloud and translation audio stays in memory without raw persistence or rerouting", async () => {
+  for (const route of [{ provider: "openai", translateMode: false }, { provider: "local", translateMode: true }]) {
+    const h = await createLifecycleHarness({ batch: true,
+      vadGate: { encodeFullWav: async () => { throw new Error("must not encode cloud recovery"); } } });
+    Object.assign(h.session, route);
+    h.prompt.stopRecording();
+    h.timers.fire(2000);
+    h.timers.fire(15000);
+    await settlePromises();
+    h.recorder.ondataavailable({ data: new Blob(["late private cloud audio"]) });
+    h.recorder.onstop();
+    await settlePromises();
+    h.prompt.retryRecoveryPersistence();
+    await settlePromises();
+    assert.ok(h.session.audioRecovery.blob.size > 0);
+    assert.equal(h.calls.some(([command]) => ["save-pending-transcription", "transcribe-audio"].includes(command)), false);
+    assert.deepEqual(h.inserted, []);
+  }
+});
+
+test("idle Escape keeps unsaved current text until its durable ACK without reviving the card", async () => {
+  const saved = createDeferred();
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "transcribe-audio") return Promise.reject(new Error("decode failed"));
+    if (command === "save-recovered-transcription") return saved.promise;
+    return Promise.resolve(null);
+  } });
+  useRealRecoveryUi(h);
+  h.session.chunked.results = ["completed words to preserve"];
+  h.session.chunked.nextChunkIndex = 1;
+  h.prompt.stopRecording();
+  h.recorder.onstop();
+  await settlePromises();
+  assert.equal(h.prompt.transcriptionInProgressCount, 0);
+  assert.equal(h.prompt.recoveryShownId, 1);
+  const recovery = h.prompt.recoverableTranscriptions.get(1);
+  h.prompt.cancelRecording();
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.get(1), recovery);
+  assert.equal(recovery.discarded, undefined);
+  assert.equal(h.prompt.pendingRecoveryUi, null);
+  h.timers.fire(300);
+  assert.equal(h.hides, 1);
+  saved.resolve("durable-history-row");
+  await settlePromises();
+  assert.equal(h.prompt.recoverableTranscriptions.has(1), false);
+  assert.equal(h.prompt.pendingRecoveryUi, null);
+  assert.equal(h.prompt.statusText.textContent, "");
+  assert.deepEqual(h.recovered, ["completed words to preserve"]);
 });

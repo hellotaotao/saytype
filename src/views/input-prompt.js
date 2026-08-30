@@ -20,6 +20,13 @@ const NEMOTRON_LOCAL_MODEL_ID = "nemotron-3.5-asr-streaming-0.6b-q8_0";
 // Keep this paired with hotkey.rs CANCEL_THRESHOLD. Preloading a model-sized
 // worker before probation ends would make a discarded mis-trigger hold memory.
 const QWEN_PREWARM_PROBATION_MS = 500;
+const RECORDER_STOP_TIMEOUT_MS = 2000;
+const BATCH_RECORDER_STOP_TIMEOUT_MS = 15000;
+const AUDIO_STAGE_TIMEOUT_MS = 30000;
+// Native transcription has its own 420 s whole-request deadline. Leave time
+// for IPC delivery without imposing one deadline on a multi-chunk recording.
+const TRANSCRIPTION_STAGE_TIMEOUT_MS = 450000;
+const HISTORY_STAGE_TIMEOUT_MS = 5000;
 const MODEL_LABEL = {
   "gpt-4o-transcribe": "OpenAI GPT-4o",
   "gpt-4o-mini-transcribe": "OpenAI GPT-4o mini",
@@ -168,12 +175,18 @@ class VoiceInputPrompt {
     this.recordingStartedAt = null;
     this.cancelledShortPress = false;
     this.cancelInProgress = false;
+    this.cancelGateToken = null;
     this.transcriptionInProgressCount = 0;
     this.activeTranscriptionSessionIds = new Set();
     this.cancelledTranscriptionSessionIds = new Set();
     this.localTranscriptionTail = Promise.resolve();
     this.recordingSessionId = 0;
     this.activeRecordingSession = null;
+    this.recordingSessions = new Map();
+    this.recoverableTranscriptions = new Map();
+    this.recoverableAudioSessions = new Map();
+    this.recoverySequence = 0;
+    this.pendingRecoveryUi = null;
     this.pendingInsertionOrder = [];
     this.pendingInsertionsById = new Map();
     this.isFlushingInsertQueue = false;
@@ -283,13 +296,17 @@ class VoiceInputPrompt {
         return;
       }
       const sessionMatches = Number(payload.sessionId) === this.recordingSessionId;
+      if (sessionMatches && ["ready", "completed", "cancelled", "failed"].includes(
+        this.activeRecordingSession?.lifecycle?.state)) return;
       // Chunked local decoding streams a chunk's tokens while later audio is
       // still being captured, so route by chunk slot instead of overwriting the
       // whole preview with one chunk's text.
       const chunked = this.activeRecordingSession?.chunked;
-      if (payload.chunkIndex != null && chunked && sessionMatches && !chunked.aborted) {
-        chunked.livePartial = { index: Number(payload.chunkIndex), text };
-        this.renderChunkedPreview(chunked);
+      if (payload.chunkIndex != null && chunked) {
+        if (sessionMatches && !chunked.aborted && chunked.inFlightChunkIndex === Number(payload.chunkIndex)) {
+          chunked.livePartial = { index: Number(payload.chunkIndex), text };
+          this.renderChunkedPreview(chunked);
+        }
         return;
       }
       const isLiveNemotron =
@@ -500,8 +517,16 @@ class VoiceInputPrompt {
     if (!hasMeaningfulText(this._failedText)) {
       return;
     }
+    const text = this._failedText;
+    const recoveryId = this.recoveryShownId;
+    const recordingId = this.recordingSessionId;
     try {
-      await ipc.invoke("copy-to-clipboard", this._failedText, textShape(this._failedText));
+      await ipc.invoke("copy-to-clipboard", text, textShape(text));
+      if (recoveryId != null) {
+        if (this.recoveryShownId === recoveryId) this.recoveryShownId = null;
+      }
+      if (recordingId !== this.recordingSessionId || this.isRecording || this.starting) return;
+      this.pendingRecoveryUi = null;
       this.statusText.textContent = t("inputPrompt.copied");
       this.statusText.style.color = "var(--status-success)";
       if (this.copyBtn) this.copyBtn.hidden = true;
@@ -514,6 +539,8 @@ class VoiceInputPrompt {
 
   clearInsertFailedUi() {
     this._failedText = "";
+    this.recoveryShownId = null;
+    this.pendingRecoveryUi = null;
     if (this.copyBtn) this.copyBtn.hidden = true;
     if (this.waveContainer) this.waveContainer.style.display = "";
     if (this.promptElement) this.promptElement.classList.remove("insert-failed");
@@ -632,9 +659,399 @@ class VoiceInputPrompt {
     );
   }
 
+  ensureRecordingSession(recordingSession) {
+    if (!recordingSession.lifecycle) {
+      recordingSession.lifecycle = {
+        state: "recording",
+        startedAt: Date.now(),
+        stopTimer: null,
+        hardStopTimer: null,
+        stopWatchTimer: null,
+        stopSeen: false,
+        processPromise: null,
+        cancelWaiters: new Set(),
+      };
+    }
+    this.recordingSessions ||= new Map();
+    const state = recordingSession.lifecycle.state;
+    if (!["completed", "cancelled", "failed"].includes(state)) {
+      this.recordingSessions.set(recordingSession.id, recordingSession);
+    }
+    if (recordingSession.chunked) {
+      recordingSession.chunked.recordingSession = recordingSession;
+    }
+    return recordingSession.lifecycle;
+  }
+
+  reportLifecycle(recordingSession, phase, event, elapsedMs = 0, chunkIndex) {
+    if (!Number.isSafeInteger(recordingSession?.id)) return;
+    const payload = {
+      sessionId: recordingSession.id,
+      phase,
+      event,
+      elapsedMs: nonNegativeMilliseconds(elapsedMs),
+      pendingCount: this.pendingInsertionOrder.length,
+    };
+    if (Number.isSafeInteger(chunkIndex)) payload.chunkIndex = chunkIndex;
+    // A diagnostic failure must never become part of the transcription chain.
+    try {
+      void Promise.resolve(ipc.invoke("report-transcription-lifecycle", payload)).catch(() => {});
+    } catch {
+      // The bridge may be unavailable while the window is shutting down.
+    }
+  }
+
+  isSessionCancelled(recordingSession) {
+    return recordingSession?.lifecycle?.state === "cancelled" ||
+      this.cancelledTranscriptionSessionIds.has(recordingSession?.id);
+  }
+
+  assertSessionActive(recordingSession) {
+    if (this.isSessionCancelled(recordingSession)) {
+      const error = new Error("TRANSCRIPTION_CANCELLED");
+      error.name = "TranscriptionCancelledError";
+      throw error;
+    }
+  }
+
+  async waitForSessionStage(recordingSession, phase, operation, timeoutMs, chunkIndex) {
+    const lifecycle = this.ensureRecordingSession(recordingSession);
+    this.assertSessionActive(recordingSession);
+    const startedAt = Date.now();
+    this.reportLifecycle(recordingSession, phase, "start", 0, chunkIndex);
+    let timer = null;
+    let cancelWaiter;
+    try {
+      const value = await new Promise((resolve, reject) => {
+        let settled = false;
+        const settle = (handler, result) => {
+          if (settled) return;
+          settled = true;
+          handler(result);
+        };
+        cancelWaiter = () => {
+          const error = new Error("TRANSCRIPTION_CANCELLED");
+          error.name = "TranscriptionCancelledError";
+          settle(reject, error);
+        };
+        lifecycle.cancelWaiters.add(cancelWaiter);
+        if (timeoutMs) {
+          timer = setTimeout(() => {
+            const error = new Error(`Transcription stage timed out: ${phase}`);
+            error.name = "TranscriptionStageTimeoutError";
+            error.phase = phase;
+            settle(reject, error);
+          }, timeoutMs);
+        }
+        Promise.resolve().then(() => {
+          this.assertSessionActive(recordingSession);
+          return operation();
+        }).then(
+          (value) => {
+            if (settled) {
+              this.reportLifecycle(recordingSession, phase, "late", Date.now() - startedAt, chunkIndex);
+            }
+            settle(resolve, value);
+          },
+          (error) => settle(reject, error)
+        );
+      });
+      this.assertSessionActive(recordingSession);
+      this.reportLifecycle(recordingSession, phase, "complete", Date.now() - startedAt, chunkIndex);
+      return value;
+    } catch (error) {
+      const event = error?.name === "TranscriptionStageTimeoutError" ? "timeout" :
+        error?.name === "TranscriptionCancelledError" ? "cancel" : "error";
+      this.reportLifecycle(recordingSession, phase, event, Date.now() - startedAt, chunkIndex);
+      throw error;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+      lifecycle.cancelWaiters.delete(cancelWaiter);
+    }
+  }
+
+  completeRecordingSession(recordingSession, state = "completed") {
+    const lifecycle = this.ensureRecordingSession(recordingSession);
+    if (lifecycle.stopTimer !== null) clearTimeout(lifecycle.stopTimer);
+    if (lifecycle.hardStopTimer !== null) clearTimeout(lifecycle.hardStopTimer);
+    lifecycle.stopTimer = null;
+    lifecycle.hardStopTimer = null;
+    lifecycle.state = state;
+    this.recordingSessions.delete(recordingSession.id);
+    this.reportLifecycle(recordingSession, "session", state === "cancelled" ? "cancel" :
+      state === "failed" ? "error" : "complete", Date.now() - lifecycle.startedAt);
+  }
+
+  cancelRecordingSession(recordingSession) {
+    const lifecycle = this.ensureRecordingSession(recordingSession);
+    if (["completed", "cancelled", "failed"].includes(lifecycle.state)) return;
+    this.cancelledTranscriptionSessionIds.add(recordingSession.id);
+    this.completeRecordingSession(recordingSession, "cancelled");
+    for (const cancelWaiter of lifecycle.cancelWaiters) cancelWaiter();
+    this.cancelNemotronLive(recordingSession);
+    if (recordingSession.chunked) {
+      this.cancelChunkedLocal(recordingSession);
+    } else {
+      void ipc.invoke("cancel-transcription", recordingSession.id).catch(() => {});
+    }
+    this.removePendingInsertion(recordingSession.id);
+    this.discardSessionRecovery(recordingSession.id);
+    if (!lifecycle.processPromise || lifecycle.processingFinished) {
+      this.cancelledTranscriptionSessionIds.delete(recordingSession.id);
+    }
+  }
+
+  finalizeRecordingSession(recordingSession, reason = "onstop") {
+    if (!recordingSession) return Promise.resolve();
+    if (reason === "onstop" && this.isRecording && this.activeRecordingSession === recordingSession) {
+      // An ended track can stop the recorder before the hotkey is released.
+      // Close the matching PCM capture before joining its queue as a final.
+      this.stopRecording();
+    }
+    const lifecycle = this.ensureRecordingSession(recordingSession);
+    if (reason === "onstop") {
+      lifecycle.stopSeen = true;
+      if (lifecycle.stopWatchTimer !== null) clearTimeout(lifecycle.stopWatchTimer);
+      lifecycle.stopWatchTimer = null;
+    }
+    // "release" finalizes without waiting for the recorder, so it must not
+    // report the recorder as having stopped: a real stop still logs its own
+    // event, and the watch timer logs its absence. Conflating the two would
+    // hide exactly the dropped event this whole change is about.
+    if (reason !== "release") {
+      this.reportLifecycle(recordingSession, "recorder-stop",
+        ["timeout", "hard-timeout"].includes(reason) ? "timeout" : lifecycle.processPromise ? "late" : "complete",
+        lifecycle.stopRequestedAt ? Date.now() - lifecycle.stopRequestedAt : 0);
+    }
+    if (lifecycle.stopTimer !== null) clearTimeout(lifecycle.stopTimer);
+    lifecycle.stopTimer = null;
+    if (reason === "timeout" && !recordingSession.chunked && !recordingSession.live) {
+      // Large batch containers can take longer to finish. Two seconds is a
+      // diagnostic warning; only the separate hard deadline fails the session.
+      return Promise.resolve();
+    }
+    if (lifecycle.hardStopTimer !== null) clearTimeout(lifecycle.hardStopTimer);
+    lifecycle.hardStopTimer = null;
+    if (reason === "onstop" && lifecycle.recoverLateRecorder) {
+      return this.adoptLateRecorderAudio(recordingSession);
+    }
+    if (lifecycle.processPromise || ["completed", "cancelled", "failed"].includes(lifecycle.state)) {
+      return lifecycle.processPromise || Promise.resolve();
+    }
+    if (reason === "hard-timeout") {
+      // Periodic dataavailable blobs do not prove the media container is final.
+      recordingSession.finalizationError = new Error("Audio recorder did not finish");
+      lifecycle.recoverLateRecorder = true;
+      this.preserveRecoveryAudio(recordingSession, { waitingRecorder: true });
+    }
+    return this.processRecording(recordingSession);
+  }
+
+  processRecording(recordingSession) {
+    if (!recordingSession) return Promise.resolve();
+    recordingSession.provider ||= this.currentProvider;
+    const lifecycle = this.ensureRecordingSession(recordingSession);
+    if (lifecycle.processPromise || ["completed", "cancelled", "failed"].includes(lifecycle.state)) {
+      return lifecycle.processPromise || Promise.resolve();
+    }
+    lifecycle.state = "processing";
+    this.reportLifecycle(recordingSession, "finalize", "start");
+    lifecycle.processPromise = this.processRecordingOnce(recordingSession);
+    return lifecycle.processPromise;
+  }
+
   storeTranscriptionResult(sessionId, transcription) {
+    const session = this.recordingSessions?.get(sessionId);
+    if (this.cancelledTranscriptionSessionIds.has(sessionId) || this.isSessionCancelled(session)) return;
+    this.retryRecoveryPersistence();
     this.pendingInsertionsById.set(sessionId, transcription);
-    this.setTranscriptionPreview(transcription);
+    if (sessionId === this.recordingSessionId && !this.isRecording && !this.starting) {
+      this.setTranscriptionPreview(transcription);
+    }
+  }
+
+  preserveCompletedChunks(recordingSession) {
+    const text = recordingSession.finalText || (recordingSession.chunked &&
+      window.SayTypeChunk.joinChunkTexts(recordingSession.chunked.results));
+    if (!hasMeaningfulText(text)) return false;
+    this.preserveRecoveryText(recordingSession.id, text, "incomplete");
+    return true;
+  }
+
+  preserveRecoveryText(sessionId, text, kind) {
+    this.recoverableTranscriptions ||= new Map();
+    let recovery = this.recoverableTranscriptions.get(sessionId);
+    if (!recovery || recovery.text !== text || recovery.kind !== kind) {
+      this.recoverySequence = (this.recoverySequence || 0) + 1;
+      recovery = { id: `recovery-${Date.now()}-${sessionId}-${this.recoverySequence}`, text, kind };
+      this.recoverableTranscriptions.set(sessionId, recovery);
+    }
+    if (sessionId === this.recordingSessionId && !this.isRecording && !this.starting) {
+      this.pendingRecoveryUi = { sessionId, recovery };
+    }
+    void this.persistRecoveryText(sessionId, recovery);
+  }
+
+  async persistRecoveryText(sessionId, recovery) {
+    if (recovery.saving || recovery.persisted || recovery.discarded) return;
+    recovery.saving = true;
+    const startedAt = Date.now();
+    const session = { id: sessionId };
+    this.reportLifecycle(session, "recovery", "start");
+    let timer;
+    try {
+      const request = Promise.resolve().then(() => {
+        if (recovery.discarded) throw new Error("TRANSCRIPTION_CANCELLED");
+        return ipc.invoke("save-recovered-transcription", {
+          id: recovery.id, text: recovery.text, kind: recovery.kind,
+        });
+      }).then((historyId) => {
+        if (typeof historyId !== "string" || !historyId.trim()) {
+          throw new Error("Missing recovery persistence acknowledgment");
+        }
+        recovery.persisted = true;
+        // A delayed ACK belongs to this exact immutable recovery, not a newer
+        // value that may have replaced it under the same recording session id.
+        if (this.recoverableTranscriptions.get(sessionId) === recovery) {
+          this.recoverableTranscriptions.delete(sessionId);
+        }
+        if (this.pendingRecoveryUi?.recovery === recovery &&
+          this.recoveryShownId === sessionId && sessionId === this.recordingSessionId &&
+          !this.isRecording && !this.starting) {
+          this.statusText.textContent = t("inputPrompt.recoverySavedHint");
+        }
+        this.reportLifecycle(session, "recovery", "complete", Date.now() - startedAt);
+      });
+      await Promise.race([request, new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error("Recovery persistence timed out");
+          error.name = "TranscriptionStageTimeoutError";
+          reject(error);
+        }, HISTORY_STAGE_TIMEOUT_MS);
+      })]);
+    } catch (error) {
+      this.reportLifecycle(session, "recovery",
+        error?.name === "TranscriptionStageTimeoutError" ? "timeout" : "error", Date.now() - startedAt);
+    } finally {
+      clearTimeout(timer);
+      recovery.saving = false;
+    }
+  }
+
+  preserveRecoveryAudio(session, { blob = null, wav = null, waitingRecorder = false } = {}) {
+    this.recoverableAudioSessions ||= new Map();
+    session.audioRecovery ||= {
+      id: `pending-${Date.now()}-${session.id}`, blob, wav, waitingRecorder,
+    };
+    this.recoverableAudioSessions.set(session.id, session);
+    void this.persistRecoveryAudio(session);
+  }
+
+  // The recorder delivers its container on dataavailable, which is a separate
+  // event from stop. Recovery must key off the data: waiting for a stop that
+  // may never arrive is what loses the audio entirely. There is no timeslice,
+  // so that single data event carries the whole container — and persistence
+  // proves it by decoding it, keeping the bytes for a later retry if it cannot.
+  adoptLateRecorderAudio(session) {
+    const recovery = session.audioRecovery;
+    if (!recovery || recovery.saved || recovery.blob || this.isSessionCancelled(session) ||
+      !session.chunks.length) {
+      return Promise.resolve();
+    }
+    recovery.blob = new Blob(session.chunks, { type: session.mimeType });
+    recovery.waitingRecorder = false;
+    return this.persistRecoveryAudio(session);
+  }
+
+  async persistRecoveryAudio(session) {
+    const recovery = session.audioRecovery;
+    if (!recovery || recovery.waitingRecorder || recovery.saving || recovery.saved ||
+      this.isSessionCancelled(session)) return;
+    // The regular command rereads current settings. Without a native route
+    // snapshot, late cloud/translation audio must remain in memory: neither
+    // silently send it to a changed provider nor persist it as local raw audio.
+    if (session.provider !== "local" || session.translateMode) {
+      if (!recovery.routeDeferred) this.reportLifecycle(session, "recovery", "fallback");
+      recovery.routeDeferred = true;
+      return;
+    }
+    recovery.saving = true;
+    try {
+      if (!recovery.wav) {
+        if (!recovery.blob?.size) throw new Error("No complete audio available for recovery");
+        recovery.wav = await this.waitForSessionStage(session, "recovery",
+          () => window.SayTypeVadGate.encodeFullWav(recovery.blob), AUDIO_STAGE_TIMEOUT_MS);
+      }
+      this.assertSessionActive(session);
+      await this.waitForSessionStage(session, "recovery", () =>
+        Promise.resolve(ipc.invoke("save-pending-transcription", recovery.wav, "audio/wav", recovery.id))
+          .then((historyId) => {
+            if (typeof historyId !== "string" || !historyId.trim()) {
+              throw new Error("Missing audio recovery acknowledgment");
+            }
+            recovery.saved = true;
+            if (session.audioRecovery === recovery) {
+              recovery.blob = null;
+              recovery.wav = null;
+              session.chunks = [];
+              this.recoverableAudioSessions.delete(session.id);
+            }
+            return historyId;
+          }), HISTORY_STAGE_TIMEOUT_MS);
+    } catch {
+      // Each failed/timed-out stage is diagnosed by waitForSessionStage. Keep
+      // the original Blob (and any completed WAV) until ACK or explicit cancel.
+    } finally {
+      recovery.saving = false;
+    }
+  }
+
+  retryRecoveryPersistence() {
+    for (const [sessionId, recovery] of this.recoverableTranscriptions || []) {
+      void this.persistRecoveryText(sessionId, recovery);
+    }
+    for (const session of this.recoverableAudioSessions?.values() || []) {
+      void this.persistRecoveryAudio(session);
+    }
+  }
+
+  discardSessionRecovery(sessionId) {
+    const recovery = this.recoverableTranscriptions?.get(sessionId);
+    if (recovery) recovery.discarded = true;
+    this.recoverableTranscriptions?.delete(sessionId);
+    if (this.pendingRecoveryUi?.sessionId === sessionId) this.pendingRecoveryUi = null;
+    this.cancelSessionAudioRecovery(sessionId);
+  }
+
+  cancelSessionAudioRecovery(sessionId) {
+    const session = this.recoverableAudioSessions?.get(sessionId);
+    if (session) {
+      session.lifecycle.state = "cancelled";
+      for (const cancelWaiter of session.lifecycle.cancelWaiters) cancelWaiter();
+      session.chunks = [];
+      session.audioRecovery = null;
+      this.recoverableAudioSessions.delete(sessionId);
+    }
+  }
+
+  showRecoveryIfIdle() {
+    if (this.isRecording || this.starting || this.transcriptionInProgressCount > 0 ||
+      this.pendingInsertionOrder.length || this.isFlushingInsertQueue ||
+      !this.pendingRecoveryUi) return false;
+    const { sessionId, recovery } = this.pendingRecoveryUi;
+    if (sessionId !== this.recordingSessionId || recovery.discarded) return false;
+    if (this.recoveryShownId !== sessionId) {
+      this.setTranscriptionPreview(recovery.text);
+      this.showInsertFailed(recovery.text);
+      if (recovery.kind === "incomplete") {
+        this.promptText.textContent = t("inputPrompt.transcriptionIncompleteTitle");
+        this.statusText.textContent = t("inputPrompt.transcriptionIncompleteHint");
+      }
+      if (recovery.persisted) this.statusText.textContent = t("inputPrompt.recoverySavedHint");
+      this.recoveryShownId = sessionId;
+      this.scheduleHidePrompt(15000);
+    }
+    return true;
   }
 
   /// Shows `text` in the height-capped preview bubble, pinned to the tail so
@@ -672,6 +1089,20 @@ class VoiceInputPrompt {
     }
 
     if (!this.pendingInsertionOrder.length) {
+      this.showRecoveryIfIdle();
+      return;
+    }
+
+    // Only explicit terminal states are disposable. A recorder still awaiting
+    // its stop event is valid pending work, even before processing increments.
+    while (this.pendingInsertionOrder.length) {
+      const headId = this.pendingInsertionOrder[0];
+      const state = this.recordingSessions?.get(headId)?.lifecycle?.state;
+      if (!["cancelled", "failed", "completed"].includes(state)) break;
+      this.removePendingInsertion(headId);
+    }
+    if (!this.pendingInsertionOrder.length) {
+      this.showRecoveryIfIdle();
       return;
     }
 
@@ -684,36 +1115,66 @@ class VoiceInputPrompt {
     this.updateStatusText();
     let insertedAny = false;
     let allDirect = true;
-    let lastFailureMessage = null;
-    let lastFailedText = null;
+    let cancelledAny = false;
 
     try {
-      while (this.pendingInsertionOrder.length) {
+      while (this.pendingInsertionOrder.length && !this.isRecording && !this.starting) {
         const nextId = this.pendingInsertionOrder[0];
         if (!this.pendingInsertionsById.has(nextId)) {
           // Result not yet available — wait for next flush trigger
           break;
         }
         const text = this.pendingInsertionsById.get(nextId);
+        const session = this.recordingSessions?.get(nextId);
         this.pendingInsertionsById.delete(nextId);
         this.pendingInsertionOrder.shift();
         if (hasMeaningfulText(text)) {
-          const result = await this.typeText(text, { suppressUi: true });
+          let result;
+          const insertionStartedAt = Date.now();
+          try {
+            if (session) this.assertSessionActive(session);
+            this.reportLifecycle(session, "insert", "start");
+            // Native text insertion is irreversible once dispatched. Keep the
+            // FIFO lock until its actual reply, even if the session is cancelled;
+            // a JS deadline must not permit a second insertion to overtake it.
+            result = await this.typeText(text, { suppressUi: true });
+            this.reportLifecycle(session, "insert",
+              session && this.isSessionCancelled(session) ? "late" :
+                result?.ok || result?.noText ? "complete" : "error",
+              Date.now() - insertionStartedAt);
+          } catch (error) {
+            result = { ok: false, message: errorMessage(error) };
+            this.reportLifecycle(session, "insert",
+              session && this.isSessionCancelled(session) ? "cancel" : "error",
+              Date.now() - insertionStartedAt);
+          }
+          if (session && this.isSessionCancelled(session)) {
+            cancelledAny = true;
+            continue;
+          }
           if (result?.ok) {
             insertedAny = true;
             if (!result.direct) allDirect = false;
           } else if (result && !result.noText) {
             allDirect = false;
-            if (result.message) lastFailureMessage = result.message;
-            lastFailedText = text;
+            // Preserve every failed final, including when another recovery is
+            // already visible or the history write failed. No clipboard write
+            // occurs until the user explicitly copies each queued entry.
+            this.preserveRecoveryText(nextId, text, "insert-failed");
           }
         }
+        if (session && !this.isSessionCancelled(session)) this.completeRecordingSession(session);
       }
     } finally {
       this.isFlushingInsertQueue = false;
     }
 
     if (!this.isRecording && !this.starting && !this.pendingInsertionOrder.length) {
+      if (this.pendingRecoveryUi?.sessionId === this.recordingSessionId) {
+        this.showRecoveryIfIdle();
+        return;
+      }
+      if (cancelledAny && !insertedAny) return;
       // Best path: text already appeared in the focused field — close silently.
       if (insertedAny && allDirect) {
         this.hidePrompt();
@@ -725,17 +1186,12 @@ class VoiceInputPrompt {
         this.statusText.textContent = t("inputPrompt.textInserted");
         this.statusText.style.color = "var(--status-success)";
         this.scheduleHidePrompt(1200);
-      } else if (lastFailureMessage) {
-        // Keep the window open with a calm "click Copy" affordance instead of
-        // auto-hiding: the text isn't in the focused app and there's no auto
-        // clipboard fallback, so let the user copy it on an explicit click.
-        this.showInsertFailed(lastFailedText);
       } else {
         this.statusText.textContent = t("inputPrompt.noSpeech");
         this.statusText.style.color = "var(--status-warning)";
         this.scheduleHidePrompt(1500);
       }
-    } else {
+    } else if (!this.isRecording && !this.starting) {
       this.updateStatusText();
     }
   }
@@ -745,13 +1201,25 @@ class VoiceInputPrompt {
     this.pendingInsertionsById.clear();
   }
 
-  async acquireLocalTranscriptionSlot() {
+  async acquireLocalTranscriptionSlot(recordingSession) {
     const previous = this.localTranscriptionTail || Promise.resolve();
     let release = null;
-    this.localTranscriptionTail = new Promise((resolve) => {
+    const released = new Promise((resolve) => {
       release = resolve;
     });
-    await previous;
+    // A cancelled waiter releases its own slot, but its successor still waits
+    // for earlier work. Skipping a waiter must not break FIFO serialization.
+    this.localTranscriptionTail = previous.then(() => released);
+    try {
+      if (recordingSession) {
+        await this.waitForSessionStage(recordingSession, "finalize", () => previous, null);
+      } else {
+        await previous;
+      }
+    } catch (error) {
+      release();
+      throw error;
+    }
     return release;
   }
 
@@ -872,7 +1340,7 @@ class VoiceInputPrompt {
     live.pendingPcm = [];
     live.pendingPcmBytes = 0;
     live.uploadTail = live.uploadTail
-      .then(() => ipc.invoke("push-live-audio", bytes, live.sessionId))
+      .then(() => live.cancelled ? undefined : ipc.invoke("push-live-audio", bytes, live.sessionId))
       .catch((error) => {
         live.uploadError = error;
       });
@@ -884,6 +1352,8 @@ class VoiceInputPrompt {
       throw new Error("Nemotron realtime session was not initialized");
     }
     await live.uploadTail;
+    this.assertSessionActive(recordingSession);
+    if (live.cancelled) throw new Error("TRANSCRIPTION_CANCELLED");
     if (live.uploadError) {
       throw live.uploadError;
     }
@@ -895,6 +1365,9 @@ class VoiceInputPrompt {
     if (sessionId == null) {
       return;
     }
+    recordingSession.live.cancelled = true;
+    recordingSession.live.pendingPcm = [];
+    recordingSession.live.pendingPcmBytes = 0;
     void ipc.invoke("cancel-live-transcription", sessionId).catch(() => {});
   }
 
@@ -981,6 +1454,7 @@ class VoiceInputPrompt {
       node.connect(mutedOutput);
       mutedOutput.connect(this.audioContext.destination);
       recordingSession.chunked = chunked;
+      chunked.recordingSession = recordingSession;
     } catch (error) {
       // Never abort a recording over this: the whole-clip path still works, it
       // just pays the old tail latency.
@@ -1017,6 +1491,9 @@ class VoiceInputPrompt {
   }
 
   enqueueChunkDecode(chunked, pcm) {
+    const recordingSession = chunked.recordingSession ||
+      this.recordingSessions?.get(chunked.sessionId) || { id: chunked.sessionId, chunked };
+    this.ensureRecordingSession(recordingSession);
     const chunkIndex = chunked.nextChunkIndex++;
     chunked.results[chunkIndex] = "";
     chunked.queue = chunked.queue.then(async () => {
@@ -1024,23 +1501,37 @@ class VoiceInputPrompt {
         return;
       }
       try {
-        const wav = await this.encodeChunkWav(pcm, chunked.sampleRate);
+        const wav = await this.waitForSessionStage(recordingSession, "resample",
+          () => this.encodeChunkWav(pcm, chunked.sampleRate), AUDIO_STAGE_TIMEOUT_MS, chunkIndex);
         if (chunked.aborted) {
           return;
         }
-        const text = await ipc.invoke(
+        chunked.inFlightChunkIndex = chunkIndex;
+        const text = await this.waitForSessionStage(recordingSession, "chunk-ipc", () => ipc.invoke(
           "transcribe-audio",
           wav,
           false,
           "audio/wav",
           chunked.sessionId,
           chunkIndex
-        );
+        ), TRANSCRIPTION_STAGE_TIMEOUT_MS, chunkIndex);
+        if (chunked.aborted || this.isSessionCancelled(recordingSession)) return;
         chunked.results[chunkIndex] = typeof text === "string" ? text : "";
       } catch (error) {
-        // One failed chunk leaves a gap; the rest of a long dictation survives.
+        if (this.isSessionCancelled(recordingSession) || chunked.aborted) return;
+        // Never label or insert a join with a missing chunk as a complete final.
+        // Preserve successful chunks for explicit Copy instead, and stop queued
+        // work so a failed stage cannot hold later recordings behind this one.
         chunked.failedChunks += 1;
+        chunked.failure = error;
+        chunked.aborted = true;
+        chunked.cancelSent = true;
+        chunked.blocks = [];
+        chunked.blockSamples = 0;
+        void ipc.invoke("cancel-transcription", chunked.sessionId).catch(() => {});
         console.warn(`local chunk ${chunkIndex} failed to decode:`, error);
+      } finally {
+        if (chunked.inFlightChunkIndex === chunkIndex) chunked.inFlightChunkIndex = null;
       }
       if (chunked.livePartial?.index === chunkIndex) {
         chunked.livePartial = null;
@@ -1077,7 +1568,8 @@ class VoiceInputPrompt {
   // Finalized chunks plus the in-flight chunk's streaming text. Preview only —
   // the assembled final from finishChunkedLocal is what gets inserted.
   renderChunkedPreview(chunked) {
-    if (chunked.aborted) {
+    if (chunked.aborted || (this.recordingSessionId > 0 &&
+      chunked.sessionId !== this.recordingSessionId)) {
       return;
     }
     const parts = chunked.results.slice();
@@ -1118,11 +1610,11 @@ class VoiceInputPrompt {
       throw new Error("chunked local session was not initialized");
     }
     await chunked.queue;
+    this.assertSessionActive(recordingSession);
     const text = window.SayTypeChunk.joinChunkTexts(chunked.results);
-    // Silence decodes to empty text, which is a legitimate "no speech" result;
-    // only report failure when every chunk actually errored.
-    if (!text && chunked.failedChunks > 0) {
-      throw new Error("local chunked transcription failed");
+    // Silence is legitimate; a missing chunk is not a complete dictation.
+    if (chunked.failedChunks > 0) {
+      throw chunked.failure || new Error("local chunked transcription incomplete");
     }
     return text;
   }
@@ -1130,14 +1622,20 @@ class VoiceInputPrompt {
   // Chunk decodes deliberately skip the history write, so the joined dictation
   // is recorded here as a single entry. Best-effort: a failed history write must
   // never cost the user their text, so fall back to the local join.
-  async recordAssembledTranscription(text) {
+  async recordAssembledTranscription(text, recordingSession) {
     if (!text) {
       return text;
     }
     try {
-      const recorded = await ipc.invoke("record-assembled-transcription", text);
+      const recorded = recordingSession ? await this.waitForSessionStage(recordingSession, "history",
+        () => ipc.invoke("record-assembled-transcription", text), HISTORY_STAGE_TIMEOUT_MS) :
+        await ipc.invoke("record-assembled-transcription", text);
       return typeof recorded === "string" && recorded ? recorded : text;
     } catch (error) {
+      if (recordingSession) {
+        this.assertSessionActive(recordingSession);
+        this.reportLifecycle(recordingSession, "history", "fallback");
+      }
       console.warn("failed to record the assembled transcription in history:", error);
       return text;
     }
@@ -1145,9 +1643,10 @@ class VoiceInputPrompt {
 
   cancelChunkedLocal(recordingSession) {
     const chunked = recordingSession?.chunked;
-    if (!chunked || chunked.aborted) {
+    if (!chunked || chunked.cancelSent) {
       return;
     }
+    chunked.cancelSent = true;
     chunked.aborted = true;
     chunked.blocks = [];
     chunked.blockSamples = 0;
@@ -1162,10 +1661,12 @@ class VoiceInputPrompt {
     // the prompt yet. A new recording is a fresh operation and must not inherit
     // that cancellation state when stopRecording decides whether to process it.
     this.cancelInProgress = false;
+    this.cancelGateToken = null;
     const startupStartedAt = performance.now();
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
     this.clearInsertFailedUi();
+    this.retryRecoveryPersistence();
     this.starting = true;
     try {
       // Pre-flight: without an API key the request can only fail, so tell the
@@ -1194,9 +1695,10 @@ class VoiceInputPrompt {
       const microphoneReadyAt = performance.now();
 
       if (this.stopRequested) {
-        this.mediaStream = stream;
-        this.cleanup();
-        this.hidePrompt();
+        // This stream has not been assigned to a recording session. Release it
+        // directly without clearing older work or hiding recoverable text.
+        stream.getTracks().forEach((track) => track.stop());
+        this.scheduleHidePrompt(300);
         return;
       }
 
@@ -1234,7 +1736,12 @@ class VoiceInputPrompt {
         mimeType: mimeType,
         translateMode: this.translateMode,
         cancelledShortPress: false,
+        provider: this.currentProvider,
+        mediaStream: this.mediaStream,
+        audioContext: this.audioContext,
       };
+      this.ensureRecordingSession(recordingSession);
+      this.reportLifecycle(recordingSession, "capture", "start");
       this.activeRecordingSession = recordingSession;
       this.pendingInsertionOrder.push(sessionId);
       this.audioChunks = recordingSession.chunks;
@@ -1243,15 +1750,31 @@ class VoiceInputPrompt {
       this.mediaRecorder = new MediaRecorder(this.mediaStream, {
         mimeType: mimeType,
       });
+      recordingSession.mediaRecorder = this.mediaRecorder;
 
       this.mediaRecorder.ondataavailable = (event) => {
+        const lifecycle = recordingSession.lifecycle;
+        if (lifecycle.state === "cancelled") return;
+        if (["completed", "failed"].includes(lifecycle.state) && !lifecycle.recoverLateRecorder) return;
+        if (lifecycle.recoverLateRecorder && (recordingSession.audioRecovery?.blob || recordingSession.audioRecovery?.saved)) return;
         if (event.data.size > 0) {
           recordingSession.chunks.push(event.data);
+          if (recordingSession.chunks.length === 1) this.reportLifecycle(recordingSession, "capture", "complete");
+          if (lifecycle.recoverLateRecorder) {
+            void this.adoptLateRecorderAudio(recordingSession);
+          }
         }
       };
 
       this.mediaRecorder.onstop = () => {
-        this.processRecording(recordingSession);
+        void this.finalizeRecordingSession(recordingSession);
+      };
+      this.mediaRecorder.onerror = () => {
+        recordingSession.finalizationError = new Error("Audio recorder failed");
+        this.reportLifecycle(recordingSession, "recorder-stop", "error");
+        if (!this.isRecording || this.activeRecordingSession !== recordingSession) {
+          void this.finalizeRecordingSession(recordingSession, "error");
+        }
       };
 
       await this.setupNemotronLive(recordingSession, source);
@@ -1266,6 +1789,11 @@ class VoiceInputPrompt {
         this.promptText.textContent = t("inputPrompt.listening");
       }
 
+      // No timeslice, and requestData() is never called: the recorder emits
+      // exactly one dataavailable, carrying the complete container. Late-audio
+      // recovery (adoptLateRecorderAudio) leans on that contract — introducing
+      // a timeslice here would make a partial container look adoptable, and
+      // decoding is a check, not a general proof of a finished recording.
       this.mediaRecorder.start();
       this.recordingStartedAt = Date.now();
       this.cancelledShortPress = false;
@@ -1304,13 +1832,20 @@ class VoiceInputPrompt {
     } catch (error) {
       console.error("Error starting recording:", error);
       if (this.activeRecordingSession) {
-        this.cancelNemotronLive(this.activeRecordingSession);
-        this.cancelChunkedLocal(this.activeRecordingSession);
-        this.removePendingInsertion(this.activeRecordingSession.id);
+        this.cancelRecordingSession(this.activeRecordingSession);
       }
       await this.handleRecordingError(error);
     } finally {
       this.starting = false;
+      if (this.stopRequested && !this.isRecording) {
+        if (this.cancelInProgress) {
+          // Keep cancellation latched until setup and stop have both finished;
+          // releasing it while AudioWorklet setup awaits could submit the clip.
+          this.deferCancelGateRelease(this.cancelGateToken, true);
+        } else {
+          void this.flushPendingInsertions();
+        }
+      }
     }
   }
 
@@ -1320,14 +1855,49 @@ class VoiceInputPrompt {
     }
 
     this.isRecording = false;
+    const recordingSession = this.activeRecordingSession;
     this.stopRecordingTimer();
     // Mis-trigger discarding now lives in the Rust hotkey layer, which measures
     // the real key-hold time (independent of mic cold-start). The frontend only
     // cancels when explicitly told to (Esc, or Rust's Cancel → cancelRecording).
     const shouldCancel = this.cancelledShortPress || this.cancelInProgress;
     this.cancelledShortPress = shouldCancel;
-    if (this.activeRecordingSession) {
-      this.activeRecordingSession.cancelledShortPress = shouldCancel;
+    let finalizeOnRelease = false;
+    if (recordingSession) {
+      recordingSession.cancelledShortPress = shouldCancel;
+      const lifecycle = this.ensureRecordingSession(recordingSession);
+      lifecycle.state = "waiting-stop";
+      lifecycle.stopRequestedAt = Date.now();
+      this.reportLifecycle(recordingSession, "recorder-stop", "start");
+      if (shouldCancel) {
+        this.cancelRecordingSession(recordingSession);
+      } else if (recordingSession.chunked || recordingSession.live) {
+        // Chunked/live audio is captured through the AudioWorklet, and the
+        // stop* calls below close the final segment — the whole set of segments
+        // is known the moment the hotkey is released. The recorder's Blob is
+        // not this session's audio, so its stop event adds nothing to wait for,
+        // and waiting on it is exactly what wedged the prompt when WebKit
+        // dropped that event. Finalize on release instead.
+        finalizeOnRelease = true;
+        // Purely diagnostic, and deliberately not cleared by the finalize
+        // below: nothing waits on the recorder any more, but whether its stop
+        // event ever arrives is still the open question from the original
+        // stall. Only a real stop clears this.
+        lifecycle.stopWatchTimer = setTimeout(() => {
+          lifecycle.stopWatchTimer = null;
+          this.reportLifecycle(recordingSession, "recorder-stop", "timeout",
+            Date.now() - lifecycle.stopRequestedAt);
+        }, RECORDER_STOP_TIMEOUT_MS);
+      } else {
+        // Whole-clip (cloud/translate) dictation genuinely needs the recorder's
+        // finished container, so it still waits: a warning at 2s, failure at 15s.
+        lifecycle.stopTimer = setTimeout(() => {
+          void this.finalizeRecordingSession(recordingSession, "timeout");
+        }, RECORDER_STOP_TIMEOUT_MS);
+        lifecycle.hardStopTimer = setTimeout(() => {
+          void this.finalizeRecordingSession(recordingSession, "hard-timeout");
+        }, BATCH_RECORDER_STOP_TIMEOUT_MS);
+      }
     }
 
     if (shouldCancel) {
@@ -1339,17 +1909,37 @@ class VoiceInputPrompt {
       this.statusText.textContent = t("inputPrompt.transcribing");
     }
 
-    if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
-      this.mediaRecorder.stop();
+    this.stopNemotronCapture(recordingSession);
+    this.stopChunkedCapture(recordingSession, { flush: !shouldCancel });
+    try {
+      const recorder = recordingSession?.mediaRecorder || this.mediaRecorder;
+      if (recorder?.state === "recording") recorder.stop();
+    } catch {
+      if (recordingSession) {
+        recordingSession.finalizationError = new Error("Audio recorder failed to stop");
+        void this.finalizeRecordingSession(recordingSession, "error");
+      }
     }
-    this.stopNemotronCapture(this.activeRecordingSession);
-    this.stopChunkedCapture(this.activeRecordingSession, { flush: !shouldCancel });
 
     // Release the mic as soon as recording stops; we keep the recorded audio
     // chunks for transcription. The mic indicator only shows while recording.
-    this.cleanup({ preserveAudioChunks: true });
+    this.cleanup({ preserveAudioChunks: true, recordingSession });
     this.stopWaveAnimation();
+    // The captures above have closed their final segment, so the queue this
+    // joins is already complete. A late recorder stop finds processing under
+    // way and returns the same promise instead of starting a second one.
+    if (finalizeOnRelease) void this.finalizeRecordingSession(recordingSession, "release");
     this.flushPendingInsertions();
+    if (shouldCancel) this.scheduleHidePrompt(300);
+  }
+
+  deferCancelGateRelease(token, flush = false) {
+    void Promise.resolve().then(() => {
+      if (this.cancelGateToken !== token) return;
+      this.cancelGateToken = null;
+      this.cancelInProgress = false;
+      if (flush) return this.flushPendingInsertions();
+    });
   }
 
   cancelRecording() {
@@ -1357,6 +1947,9 @@ class VoiceInputPrompt {
       return;
     }
     this.cancelInProgress = true;
+    const cancelToken = {};
+    const selectedRecoveryId = this.recoveryShownId;
+    this.cancelGateToken = cancelToken;
     this.stopRequested = true;
     this.stopRecordingTimer();
     this.clearHidePromptTimer();
@@ -1375,6 +1968,7 @@ class VoiceInputPrompt {
         this.activeRecordingSession.cancelledShortPress = true;
       }
       this.stopRecording();
+      this.deferCancelGateRelease(cancelToken);
       return;
     }
 
@@ -1387,30 +1981,34 @@ class VoiceInputPrompt {
       return;
     }
 
-    if (this.transcriptionInProgressCount > 0) {
-      const sessionId = this.activeTranscriptionSessionIds.size
-        ? Math.max(...this.activeTranscriptionSessionIds)
-        : null;
-      if (sessionId !== null) {
+    const cancellableIds = new Set(this.activeTranscriptionSessionIds);
+    for (const [id, session] of this.recordingSessions || []) {
+      if (["waiting-stop", "processing", "ready"].includes(session.lifecycle.state)) cancellableIds.add(id);
+    }
+    if (cancellableIds.size || this.transcriptionInProgressCount > 0) {
+      const sessionId = cancellableIds.size ? Math.max(...cancellableIds) : null;
+      const session = this.recordingSessions?.get(sessionId);
+      if (session) {
+        this.cancelRecordingSession(session);
+      } else if (sessionId !== null) {
         this.cancelledTranscriptionSessionIds.add(sessionId);
         this.removePendingInsertion(sessionId);
-      }
-      ipc.invoke("cancel-transcription", sessionId).catch(() => {});
-      if (this.activeRecordingSession?.live?.sessionId === sessionId) {
-        ipc.invoke("cancel-live-transcription", sessionId).catch(() => {});
-      }
-      if (this.activeRecordingSession?.chunked?.sessionId === sessionId) {
-        this.cancelChunkedLocal(this.activeRecordingSession);
+        void ipc.invoke("cancel-transcription", sessionId).catch(() => {});
       }
       this.promptText.textContent = t("inputPrompt.cancelled");
       this.statusText.textContent = "";
-      this.cleanup();
+      if (session) this.cleanup({ recordingSession: session });
       this.stopWaveAnimation();
       this.scheduleHidePrompt(300);
+      this.deferCancelGateRelease(cancelToken, true);
       return;
     }
 
-    this.clearPendingInsertions();
+    const selectedSessionId = selectedRecoveryId ?? this.recordingSessionId;
+    // Idle Escape dismisses the card, not completed words awaiting a durable
+    // ACK. It still cancels unfinished late-audio work for this session.
+    this.cancelSessionAudioRecovery(selectedSessionId);
+    this.removePendingInsertion(selectedSessionId);
     this.promptText.textContent = t("inputPrompt.cancelled");
     this.statusText.textContent = "";
     this.cleanup();
@@ -1419,13 +2017,17 @@ class VoiceInputPrompt {
   }
 
   cleanup(options = {}) {
-    const { preserveAudioChunks = false } = options;
+    const { preserveAudioChunks = false, recordingSession } = options;
+    const mediaStream = recordingSession ? recordingSession.mediaStream : this.mediaStream;
+    const audioContext = recordingSession ? recordingSession.audioContext : this.audioContext;
+    const mediaRecorder = recordingSession ? recordingSession.mediaRecorder : this.mediaRecorder;
+    const ownsCurrentResources = !recordingSession || this.activeRecordingSession === recordingSession;
     logMicrophoneCleanup("Starting microphone cleanup...");
 
     // Stop all media tracks — the mic is released as soon as a recording ends.
-    if (this.mediaStream) {
+    if (mediaStream) {
       logMicrophoneCleanup("Stopping media stream tracks...");
-      this.mediaStream.getTracks().forEach((track) => {
+      mediaStream.getTracks().forEach((track) => {
         logMicrophoneCleanup(
           `Stopping track: ${track.kind}, state: ${track.readyState}`
         );
@@ -1434,45 +2036,47 @@ class VoiceInputPrompt {
           `Track stopped: ${track.kind}, new state: ${track.readyState}`
         );
       });
-      this.mediaStream = null;
+      if (this.mediaStream === mediaStream) this.mediaStream = null;
+      if (recordingSession) recordingSession.mediaStream = null;
       logMicrophoneCleanup("Media stream cleared");
     }
 
     // Close audio context
-    if (this.audioContext) {
+    if (audioContext) {
       logMicrophoneCleanup(
-        `Closing audio context, current state: ${this.audioContext.state}`
+        `Closing audio context, current state: ${audioContext.state}`
       );
-      if (this.audioContext.state !== 'closed') {
-        this.audioContext.close().then(() => {
+      if (audioContext.state !== 'closed') {
+        audioContext.close().then(() => {
           logMicrophoneCleanup("Audio context closed successfully");
         }).catch(err => {
           console.error('Error closing audio context:', err);
         });
       }
-      this.audioContext = null;
+      if (this.audioContext === audioContext) this.audioContext = null;
+      if (recordingSession) recordingSession.audioContext = null;
     }
 
     // Clean up media recorder
-    if (this.mediaRecorder) {
+    if (mediaRecorder) {
       logMicrophoneCleanup("Cleaning up media recorder...");
       if (!preserveAudioChunks) {
-        this.mediaRecorder = null;
+        if (this.mediaRecorder === mediaRecorder) this.mediaRecorder = null;
       }
     }
 
     // Clean up analyser
-    if (this.analyser) {
+    if (ownsCurrentResources && this.analyser) {
       logMicrophoneCleanup("Cleaning up analyser...");
       this.analyser = null;
     }
     
-    if (this.dataArray) {
+    if (ownsCurrentResources && this.dataArray) {
       this.dataArray = null;
     }
 
     // Reset audio chunks
-    if (!preserveAudioChunks) {
+    if (ownsCurrentResources && !preserveAudioChunks) {
       this.audioChunks = [];
     }
     
@@ -1487,18 +2091,23 @@ class VoiceInputPrompt {
   // session, surface the failure). Deterministic errors rethrow immediately.
   async transcribeWithRetry(uploadBuffer, translateMode, uploadMime, sessionId) {
     const MAX_ATTEMPTS = 2; // original + one retry
+    const session = this.recordingSessions?.get(sessionId);
     for (let attempt = 1; ; attempt++) {
       try {
-        return await ipc.invoke(
+        const transcribe = () => ipc.invoke(
           "transcribe-audio",
           uploadBuffer,
           translateMode,
           uploadMime,
           sessionId
         );
+        return session ? await this.waitForSessionStage(session, "chunk-ipc",
+          transcribe, TRANSCRIPTION_STAGE_TIMEOUT_MS) : await transcribe();
       } catch (error) {
         if (
           attempt >= MAX_ATTEMPTS ||
+          error?.name === "TranscriptionStageTimeoutError" ||
+          (session && this.isSessionCancelled(session)) ||
           !isRetryableTranscriptionError(errorMessage(error))
         ) {
           throw error;
@@ -1512,7 +2121,7 @@ class VoiceInputPrompt {
     }
   }
 
-  async processRecording(recordingSession) {
+  async processRecordingOnce(recordingSession) {
     if (!recordingSession) {
       console.warn("Missing recording session; skipping transcription.");
       return;
@@ -1520,7 +2129,7 @@ class VoiceInputPrompt {
 
     const {
       id: sessionId,
-      chunks,
+      chunks = [],
       mimeType,
       translateMode,
       cancelledShortPress,
@@ -1541,15 +2150,20 @@ class VoiceInputPrompt {
     let audioBlob = null;
     const useNemotronLive = !!recordingSession.live && !translateMode;
     const useChunkedLocal = !!recordingSession.chunked && !translateMode;
+    let terminalState = "completed";
 
     this.transcriptionInProgressCount += 1;
     this.activeTranscriptionSessionIds.add(sessionId);
     this.updateStatusText();
     try {
+      if (recordingSession.finalizationError && !useChunkedLocal && !useNemotronLive) {
+        throw recordingSession.finalizationError;
+      }
       if (
         cancelledShortPress ||
         this.cancelledTranscriptionSessionIds.has(sessionId)
       ) {
+        terminalState = "cancelled";
         this.cancelNemotronLive(recordingSession);
         this.cancelChunkedLocal(recordingSession);
         this.removePendingInsertion(sessionId);
@@ -1563,7 +2177,7 @@ class VoiceInputPrompt {
         }
         return;
       }
-      if (!chunks.length) {
+      if (!chunks.length && !useChunkedLocal && !useNemotronLive) {
         this.cancelNemotronLive(recordingSession);
         this.cancelChunkedLocal(recordingSession);
         console.warn("No audio chunks captured; skipping transcription request");
@@ -1577,7 +2191,7 @@ class VoiceInputPrompt {
       }
 
       const useLocalWav =
-        this.currentProvider === "local" &&
+        (recordingSession.provider || this.currentProvider) === "local" &&
         !translateMode &&
         !useNemotronLive &&
         !useChunkedLocal;
@@ -1586,16 +2200,16 @@ class VoiceInputPrompt {
         // call. Waiting sessions retain only compressed MediaRecorder chunks;
         // they do not each hold decoded PCM, a WAV copy, and a queued native
         // request while llama.cpp is already using its model-sized memory.
-        releaseLocalTranscriptionSlot = await this.acquireLocalTranscriptionSlot();
+        releaseLocalTranscriptionSlot = await this.acquireLocalTranscriptionSlot(recordingSession);
         if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
           this.removePendingInsertion(sessionId);
           return;
         }
       }
 
-      audioBlob = new Blob(chunks, {
+      audioBlob = chunks.length ? new Blob(chunks, {
         type: mimeType || "audio/webm", // Use actual recording format
-      });
+      }) : null;
 
       let transcription;
       if (useNemotronLive) {
@@ -1604,7 +2218,8 @@ class VoiceInputPrompt {
           this.removePendingInsertion(sessionId);
           return;
         }
-        transcription = await this.finishNemotronLive(recordingSession);
+        transcription = await this.waitForSessionStage(recordingSession, "finalize",
+          () => this.finishNemotronLive(recordingSession), TRANSCRIPTION_STAGE_TIMEOUT_MS);
       } else if (useChunkedLocal) {
         // Every chunk but the last decoded while the user was still speaking;
         // only the flushed remainder is still in flight here.
@@ -1613,15 +2228,17 @@ class VoiceInputPrompt {
           this.removePendingInsertion(sessionId);
           return;
         }
-        transcription = await this.recordAssembledTranscription(
-          await this.finishChunkedLocal(recordingSession)
-        );
+        transcription = await this.finishChunkedLocal(recordingSession);
+        this.assertSessionActive(recordingSession);
+        recordingSession.finalText = transcription;
+        transcription = await this.recordAssembledTranscription(transcription, recordingSession);
       } else {
         // Batch engines run the neural VAD after release. Nemotron has already
         // processed the live PCM stream and returns an empty final for silence.
         try {
           if (window.SayTypeVadGate) {
-            const verdict = await window.SayTypeVadGate.analyze(audioBlob, { forceWav: useLocalWav });
+            const verdict = await this.waitForSessionStage(recordingSession, "resample",
+              () => window.SayTypeVadGate.analyze(audioBlob, { forceWav: useLocalWav }), AUDIO_STAGE_TIMEOUT_MS);
             if (!verdict.speech) {
               this.removePendingInsertion(sessionId);
               if (allowUi()) {
@@ -1641,13 +2258,18 @@ class VoiceInputPrompt {
             }
           }
         } catch (vadError) {
+          this.assertSessionActive(recordingSession);
+          if (vadError?.name === "TranscriptionStageTimeoutError") throw vadError;
           console.warn("VAD gate failed; proceeding to transcription:", vadError);
         }
         if (useLocalWav && !uploadBuffer) {
           try {
-            uploadBuffer = await window.SayTypeVadGate.encodeFullWav(audioBlob);
+            uploadBuffer = await this.waitForSessionStage(recordingSession, "resample",
+              () => window.SayTypeVadGate.encodeFullWav(audioBlob), AUDIO_STAGE_TIMEOUT_MS);
             uploadMime = "audio/wav";
           } catch (wavError) {
+            this.assertSessionActive(recordingSession);
+            if (wavError?.name === "TranscriptionStageTimeoutError") throw wavError;
             console.warn("full-WAV fallback failed; sending original bytes:", wavError);
           }
         }
@@ -1658,7 +2280,8 @@ class VoiceInputPrompt {
         }
 
         if (!uploadBuffer) {
-          uploadBuffer = new Uint8Array(await audioBlob.arrayBuffer());
+          uploadBuffer = new Uint8Array(await this.waitForSessionStage(recordingSession, "resample",
+            () => audioBlob.arrayBuffer(), AUDIO_STAGE_TIMEOUT_MS));
         }
 
         transcription = await this.transcribeWithRetry(
@@ -1669,7 +2292,10 @@ class VoiceInputPrompt {
         );
       }
 
+      this.assertSessionActive(recordingSession);
       if (transcription && transcription.trim()) {
+        recordingSession.finalText = transcription;
+        recordingSession.lifecycle.state = "ready";
         this.storeTranscriptionResult(sessionId, transcription);
         this.updateStatusText();
         await this.flushPendingInsertions();
@@ -1688,39 +2314,48 @@ class VoiceInputPrompt {
       // Tauri rejects with the command's Err value, which is the raw string for
       // a Result<_, String>, so handle both string and Error shapes.
       const message = errorMessage(error);
-      const isCancelled =
+      let isCancelled =
+        this.isSessionCancelled(recordingSession) ||
         (error && error.name === "TranscriptionCancelledError") ||
         message.includes("TRANSCRIPTION_CANCELLED");
+      terminalState = isCancelled ? "cancelled" : "failed";
+      let recoveredText = !isCancelled && this.preserveCompletedChunks(recordingSession);
 
-      // Give-up recovery: preserve a failed local dictation for manual retry.
-      // Stash the exact WAV as a re-transcribable pending history entry so the
-      // clip isn't lost — even when the user has moved on and the prompt is gone
-      // (so this runs regardless of allowUi()). Best-effort; a save failure just
-      // logs. Cloud audio isn't persisted; retries always use a local engine.
-      let savedPending = false;
-      if (!isCancelled && (useNemotronLive || useChunkedLocal) && !uploadBuffer && audioBlob) {
-        try {
-          uploadBuffer = await window.SayTypeVadGate.encodeFullWav(audioBlob);
-          uploadMime = "audio/wav";
-        } catch (wavError) {
-          console.warn("failed to preserve Nemotron recording as WAV:", wavError);
-        }
-      }
-      if (
-        !isCancelled &&
-        (useNemotronLive || useChunkedLocal || this.currentProvider === "local") &&
-        (useNemotronLive || useChunkedLocal || isRetryableTranscriptionError(message)) &&
-        uploadBuffer
-      ) {
-        try {
-          await ipc.invoke("save-pending-transcription", uploadBuffer, uploadMime);
-          savedPending = true;
-        } catch (saveError) {
-          console.warn("failed to save pending audio for retry:", saveError);
-        }
+      // Finalizing on release runs before the recorder delivers its Blob, so
+      // audioBlob was computed empty. `chunks` is the session's live array and
+      // ondataavailable has since filled it, so re-read it here — a failed
+      // chunked dictation keeps the same retry audio it had when finalization
+      // waited for the recorder.
+      if (!audioBlob && chunks.length) {
+        audioBlob = new Blob(chunks, { type: mimeType || "audio/webm" });
       }
 
-      if (allowUi()) {
+      // Audio/text recovery is background content custody, never pending FIFO
+      // work. Keep source bytes until a real persistence ACK releases them.
+      const wantsRecoveryAudio = !isCancelled && recordingSession.provider === "local" &&
+        !translateMode &&
+        (useNemotronLive || useChunkedLocal || isRetryableTranscriptionError(message));
+      if (wantsRecoveryAudio && (audioBlob || uploadBuffer)) {
+        this.preserveRecoveryAudio(recordingSession, {
+          blob: audioBlob,
+          wav: uploadMime === "audio/wav" ? uploadBuffer : null,
+        });
+      } else if (wantsRecoveryAudio && !recordingSession.lifecycle.stopSeen) {
+        // Failing before the recorder delivered anything at all — a chunk that
+        // already errored mid-recording resolves the queue the instant the
+        // hotkey is released. Register the session so the container that is
+        // still on its way is saved for a manual retry.
+        recordingSession.lifecycle.recoverLateRecorder = true;
+        this.preserveRecoveryAudio(recordingSession, { waitingRecorder: true });
+      }
+
+      isCancelled ||= this.isSessionCancelled(recordingSession);
+      if (isCancelled) {
+        terminalState = "cancelled";
+        this.recoverableTranscriptions?.delete(sessionId);
+        recoveredText = false;
+      }
+      if (allowUi() && !recoveredText) {
         if (isCancelled) {
           this.statusText.textContent = t("inputPrompt.cancelled");
           this.statusText.style.color = "var(--status-warning)";
@@ -1733,12 +2368,6 @@ class VoiceInputPrompt {
           this.statusText.textContent = t("inputPrompt.invalidApiKey");
           this.statusText.style.color = "var(--status-warning-strong)";
           this.scheduleHidePrompt(3500);
-        } else if (savedPending) {
-          // Hung and unrecoverable now, but the audio is saved — point the user
-          // to History rather than showing a dead-end failure.
-          this.statusText.textContent = t("inputPrompt.transcriptionHungSaved");
-          this.statusText.style.color = "var(--status-warning)";
-          this.scheduleHidePrompt(4000);
         } else {
           this.statusText.textContent = message
             ? t("inputPrompt.transcriptionFailedReason", { reason: message })
@@ -1754,6 +2383,13 @@ class VoiceInputPrompt {
       this.cancelledTranscriptionSessionIds.delete(sessionId);
       this.activeTranscriptionSessionIds.delete(sessionId);
       this.transcriptionInProgressCount = Math.max(0, this.transcriptionInProgressCount - 1);
+      recordingSession.lifecycle.processingFinished = true;
+      if ((recordingSession.lifecycle.state !== "ready" || terminalState !== "completed") &&
+        !["completed", "cancelled", "failed"].includes(recordingSession.lifecycle.state)) {
+        this.completeRecordingSession(recordingSession, terminalState);
+      }
+      this.reportLifecycle(recordingSession, "finalize", terminalState === "failed" ? "error" :
+        terminalState === "cancelled" ? "cancel" : "complete");
       // Only refresh status when concurrent transcriptions are still running.
       // If count reached 0, the try/catch or flushPendingInsertions have already
       // set the terminal status ("Cancelled", "No speech", "Text inserted", etc.)
@@ -1959,6 +2595,7 @@ class VoiceInputPrompt {
     this.recordingStartedAt = null;
     this.cancelledShortPress = false;
     this.cancelInProgress = false;
+    this.cancelGateToken = null;
     // translateMode is set per-session on start-recording and is reset NOWHERE
     // else; without this the model badge would stick on the translate model
     // after any Shift+Alt session.
