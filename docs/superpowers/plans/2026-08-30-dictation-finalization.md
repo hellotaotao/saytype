@@ -2,7 +2,7 @@
 
 ## Scope and status
 
-Implementation and isolated validation: PASS. Work remains uncommitted in the existing `main` checkout, based on `3b77cd6` (1.9.0). No version bump, installation, or release was performed.
+Implementation and isolated validation: PASS. The changes were developed from `3b77cd6` (1.9.0), reviewed, and committed on the existing `main` checkout for the 1.9.1 release. No local application installation was performed by this task.
 
 This document describes the final contract after the external review. It supersedes the first pass's choices to keep recovery cards visible indefinitely and to fail all batch recorders after 2 seconds. The original intermittent production stall has not been naturally reproduced; missing/late events and stalled promises are injected in regression tests.
 
@@ -11,7 +11,7 @@ This document describes the final contract after the external review. It superse
 ### Session completion and cancellation
 
 - Recorder completion is separate from transcription completion. Each session owns its microphone resources, lifecycle state, stop timers, and one finalization promise. Duplicate or late events cannot automatically insert the same dictation twice.
-- Chunked and live paths retain the 2-second missing-stop fallback because their audio does not depend on the final MediaRecorder Blob. Empty recorder chunks do not invalidate complete captured PCM.
+- Chunked and live paths finalize immediately after release closes their PCM capture queues; they do not wait for the MediaRecorder Blob or its stop event. Empty recorder chunks do not invalidate complete captured PCM. A separate 2-second watch only diagnoses a missing stop callback and never changes transcription or insertion behavior.
 - Batch paths log a warning at 2 seconds and keep waiting until a 15-second hard deadline. A stop event within that grace period processes normally. Periodic or first data events are not, by themselves, proof of a finalized media container.
 - A batch hard timeout releases its FIFO position and reports failure. A later complete local, non-translation recording is encoded to 16 kHz WAV and saved to pending History for manual retry. It is not automatically inserted and does not repaint a newer session. Missing/reordered data, duplicate events, cancellation during encoding, and cancellation after the hard timeout are covered.
 - Active Escape cancels the selected recording or latest transcription without discarding older valid work. Escape on an idle recovery card only dismisses the card; already obtained text awaiting persistence is retained. It still cancels unfinished late-audio recovery for that session.
@@ -25,14 +25,14 @@ This document describes the final contract after the external review. It superse
 - A successful persistence response is an actual History write acknowledgement. Errors do not become successful acknowledgements. After a renderer timeout, a late acknowledgement can release only the exact recovery object it belongs to, never a replacement or newer session's content.
 - Text writes are idempotent under the History lock. Complete failed-insertion text can reuse the most recent matching successful History row instead of creating a duplicate. Incomplete text is stored separately, with `success:false` and recovery metadata. Existing 100-entry retention and associated audio cleanup remain in effect.
 - Late local audio uses an optional stable `recovery-id` on `save-pending-transcription`. Retrying an unacknowledged save reuses the pending row/audio rather than duplicating them. Different bytes or MIME under the same ID are rejected; a failed History write rolls back its unreferenced audio. Legacy two-argument callers retain their existing behavior.
-- Encoding or persistence failure retains the original Blob/text in memory for later retry rather than silently dropping it. An explicitly cancelled active transcription may discard its unfinished result, as before.
+- Late recovery audio is adopted on `dataavailable`, independently of `onstop`. The recorder currently uses neither a timeslice nor `requestData`, so recovery expects one final container. WAV encoding checks that the container can be decoded; decode success is not a general proof that every possible recording is complete. Encoding or persistence failure retains the original Blob/text in memory for later retry. An explicitly cancelled active transcription may discard its unfinished result, as before.
 
 ### Deadlines and diagnostics
 
 - Resampling/encoding waits: 30 seconds. Individual transcription IPC waits: 450 seconds. Best-effort History/recovery IPC waits: 5 seconds. A healthy multi-chunk dictation may drain serially without an arbitrary aggregate deadline.
 - Native Qwen requests: 420-second outer deadline covering inference queue acquisition, worker startup, decode/fallback, and child exit. Prewarm: 30 seconds. Existing 180-second per-attempt and no-progress watchdogs remain.
 - Dropping a timed-out native future releases its semaphore permit and owned child/temporary WAV resources. Tests include a real child process whose output pipes close before it exits.
-- Lifecycle logs contain fixed phase/event labels and numeric IDs/counts/timings, not transcripts or arbitrary renderer errors. Release enables this dedicated target at Info; other logging remains Warn.
+- Lifecycle logs contain fixed phase/event labels and numeric IDs/counts/timings, not transcripts or arbitrary renderer errors. Release enables this dedicated target at Info; other logging remains Warn. Release-triggered finalization does not report a recorder-stop completion. A timeout without a later callback only establishes that the frontend did not observe that callback; it does not, by itself, identify a WebKit root cause.
 - Native phase changes now use one line containing the new phase plus the previous phase's duration, instead of separate leave/start lines. Rotation uses 2 MB per file with two archived files plus the active file, approximately 6 MB total for the configured plugin version. No fixed number of retention days is promised. The in-app diagnostic viewer still shows a bounded tail of the active log.
 
 ## Files changed
@@ -49,14 +49,14 @@ This document describes the final contract after the external review. It superse
 | `src/views/ipc-bridge.test.mjs` | Wire-shape and legacy-call compatibility regressions |
 | `src/views/i18n.js` | Incomplete-transcription and confirmed-History recovery hints |
 
-## Validation record (2026-08-30)
+## Validation record (2026-08-30 to 2026-08-31)
 
 The affected recovery, batch-grace, persistence and log-transition regressions were observed RED before implementation, then GREEN. The first-pass tests that intentionally required old recovery to keep the window open were changed to assert the approved replacement contract.
 
 | Command / runtime check | Result |
 | --- | --- |
 | `node --check src/views/input-prompt.js`, `node --check src/views/ipc-bridge.js`, `node --check src/views/i18n.js` | Passed |
-| `node --test src/views/*.test.mjs scripts/*.test.mjs` | 155/155 passed; 74 input-prompt tests |
+| `node --test src/views/*.test.mjs scripts/*.test.mjs` | 159/159 passed; 78 input-prompt tests |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 132 passed; opt-in ASR smoke and one platform documentation test ignored in the default run |
 | `cargo check --manifest-path src-tauri/Cargo.toml` | Passed |
 | `npm run tauri -- build --no-bundle` | Passed; release executable built without installing or changing version |
@@ -64,7 +64,7 @@ The affected recovery, batch-grace, persistence and log-transition regressions w
 | Native WKWebView review-follow-up suite | 10 scenarios passed, including actual 15-second auto-hide, batch grace, late local audio recovery, post-timeout Escape and late-cloud privacy; no uncaught JavaScript errors |
 | Native WKWebView final idle-Escape suite | 3 checks passed: Escape retains unsaved text, next successful dictation closes normally, later persistence does not reopen the card |
 | Prior native WKWebView long-audio check | 78 seconds of continuous synthetic capture crossed the 75-second chunk boundary, producing two chunks and one assembled result; this check preceded the recovery-display follow-up |
-| Independent review | No remaining blocker identified; Node 155/155, targeted Rust 8/8 and four additional isolated hide/ACK/Copy/provider-change checks passed |
+| Independent review | No remaining blocker identified; the missing-stop late-audio regression now passes in native WKWebView with one save and no duplicate after a late stop. Five additional live/upload/cancellation/setup checks passed. Earlier persistence, hide/ACK/Copy/provider-change checks also passed |
 | `git diff --check` | Passed |
 
 WKWebView used real MediaRecorder, AudioWorklet and OfflineAudioContext with synthetic 48 kHz input and validated 16 kHz WAV output. ASR, History and text insertion IPC were simulated in this isolated window. Separate Rust tests exercised actual temporary-file persistence, and the separate Qwen smoke exercised the real model/backend. The full Rust suite ran in a normal macOS session for the system clipboard test, with a wrapper restoring the test's clipboard mutation without overwriting a newer user change. No test inserted text into another application or modified the user's transcription History.
