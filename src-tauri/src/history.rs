@@ -1,5 +1,6 @@
 use crate::settings;
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -56,6 +57,187 @@ pub fn append_entry_in(path: &Path, entry: Value, cap: usize) -> Result<Vec<Stri
   };
   write_history_entries_to(path, &entries)?;
   Ok(dropped)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecoveryKind {
+  Incomplete,
+  InsertFailed,
+}
+
+impl RecoveryKind {
+  fn as_str(self) -> &'static str {
+    match self {
+      Self::Incomplete => "incomplete",
+      Self::InsertFailed => "insert-failed",
+    }
+  }
+}
+
+pub struct RecoveryWrite {
+  pub entry_id: String,
+  pub dropped_audio_ids: Vec<String>,
+}
+
+pub fn save_recovered_entry(
+  recovery_id: &str,
+  text: &str,
+  kind: RecoveryKind,
+  cap: usize,
+) -> Result<RecoveryWrite> {
+  save_recovered_entry_in(&settings::history_path()?, recovery_id, text, kind, cap)
+}
+
+// A successful return is an acknowledgement that this exact text is on disk.
+// Unlike best-effort activity appends, recovery must not repair an unreadable
+// log or acknowledge a failed write: the renderer still owns the only copy.
+pub fn save_recovered_entry_in(
+  path: &Path,
+  recovery_id: &str,
+  text: &str,
+  kind: RecoveryKind,
+  cap: usize,
+) -> Result<RecoveryWrite> {
+  anyhow::ensure!(cap > 0, "recovery history capacity must be positive");
+  let _guard = history_lock();
+  let mut entries = read_history_entries_from(path)?;
+  for entry in &entries {
+    let matches_id = entry.get("id").and_then(Value::as_str) == Some(recovery_id)
+      || entry.get("recoveryIds").and_then(Value::as_array).is_some_and(|ids| {
+        ids.iter().any(|id| id.as_str() == Some(recovery_id))
+      });
+    if matches_id {
+      let matches_kind = match entry.get("recoveryKind").and_then(Value::as_str) {
+        Some(saved_kind) => saved_kind == kind.as_str(),
+        None => kind == RecoveryKind::InsertFailed && entry["success"] == true,
+      };
+      anyhow::ensure!(
+        entry.get("text").and_then(Value::as_str) == Some(text)
+          && matches_kind && entry["pending"] != true,
+        "recovery id already belongs to different content"
+      );
+      return Ok(RecoveryWrite {
+        entry_id: entry.get("id").and_then(Value::as_str)
+          .context("recovered history entry has no id")?.to_owned(),
+        dropped_audio_ids: Vec::new(),
+      });
+    }
+  }
+
+  // Complete text normally already has a successful History row. Reuse the
+  // most recent exact match, retaining its audio and position. Persist the
+  // stable recovery id too, so a retry cannot later create a second row.
+  if kind == RecoveryKind::InsertFailed {
+    if let Some(entry) = entries.iter_mut().find(|entry| {
+      entry.get("id").and_then(Value::as_str).is_some()
+        && entry.get("text").and_then(Value::as_str) == Some(text)
+        && entry["success"] == true
+        && entry["pending"] != true
+        && entry["recoveryKind"] != "incomplete"
+    }) {
+      let entry_id = entry["id"].as_str().unwrap().to_owned();
+      let mut ids = entry.get("recoveryIds").and_then(Value::as_array)
+        .cloned().unwrap_or_default();
+      ids.push(json!(recovery_id));
+      entry["recoveryIds"] = json!(ids);
+      write_history_entries_to(path, &entries)?;
+      return Ok(RecoveryWrite { entry_id, dropped_audio_ids: Vec::new() });
+    }
+  }
+
+  entries.insert(0, json!({
+    "id": recovery_id,
+    "text": text,
+    "timestamp": chrono::Utc::now().to_rfc3339(),
+    "success": kind == RecoveryKind::InsertFailed,
+    "error": if kind == RecoveryKind::Incomplete { Some("Transcription incomplete") } else { None },
+    "recovered": true,
+    "recoveryKind": kind,
+  }));
+  let dropped_audio_ids = entries.iter().skip(cap)
+    .filter_map(|entry| entry.get("audioId").and_then(Value::as_str).map(String::from))
+    .collect();
+  entries.truncate(cap);
+  write_history_entries_to(path, &entries)?;
+  Ok(RecoveryWrite { entry_id: recovery_id.to_owned(), dropped_audio_ids })
+}
+
+pub fn save_pending_audio(
+  recovery_id: &str,
+  bytes: &[u8],
+  mime: &str,
+  cap: usize,
+) -> Result<RecoveryWrite> {
+  save_pending_audio_in(
+    &settings::history_path()?, &settings::debug_audio_dir()?, recovery_id, bytes, mime, cap,
+  )
+}
+
+// The stable-id path is for late recorder audio. An IPC acknowledgement can
+// time out after native persistence succeeds, so retries must compare the
+// actual stored audio and must never overwrite a different clip with that id.
+pub fn save_pending_audio_in(
+  path: &Path,
+  audio_dir: &Path,
+  recovery_id: &str,
+  bytes: &[u8],
+  mime: &str,
+  cap: usize,
+) -> Result<RecoveryWrite> {
+  anyhow::ensure!(cap > 0, "recovery history capacity must be positive");
+  let _guard = history_lock();
+  let mut entries = read_history_entries_from(path)?;
+  if let Some(entry) = entries.iter().find(|entry| entry["id"] == recovery_id) {
+    anyhow::ensure!(
+      entry["pending"] == true && entry["audioId"] == recovery_id && entry["audioMime"] == mime,
+      "pending recovery id already belongs to different content"
+    );
+    let (stored, _) = read_debug_audio_in(audio_dir, recovery_id)?;
+    anyhow::ensure!(stored == bytes, "pending recovery id already belongs to different audio");
+    return Ok(RecoveryWrite { entry_id: recovery_id.into(), dropped_audio_ids: Vec::new() });
+  }
+
+  let audio_path = audio_dir.join(format!("{recovery_id}.{}", ext_for_mime(mime)));
+  let existing_audio: Vec<_> = AUDIO_EXTS.iter()
+    .map(|ext| audio_dir.join(format!("{recovery_id}.{ext}")))
+    .filter(|path| path.exists())
+    .collect();
+  if !existing_audio.is_empty() {
+    anyhow::ensure!(
+      existing_audio.len() == 1 && existing_audio[0] == audio_path
+        && fs::read(&audio_path)? == bytes,
+      "pending recovery id already belongs to different audio"
+    );
+  } else {
+    // With the History lock held, no other recovery writer can create this id.
+    // Remove a partial write on failure rather than leaving unreferenced audio.
+    if let Err(error) = write_debug_audio_in(audio_dir, recovery_id, bytes, mime) {
+      let _ = fs::remove_file(&audio_path);
+      return Err(error);
+    }
+  }
+  entries.insert(0, json!({
+    "id": recovery_id,
+    "text": "",
+    "timestamp": chrono::Utc::now().to_rfc3339(),
+    "success": false,
+    "error": null,
+    "pending": true,
+    "audioId": recovery_id,
+    "audioMime": mime,
+  }));
+  let dropped_audio_ids = entries.iter().skip(cap)
+    .filter_map(|entry| entry.get("audioId").and_then(Value::as_str).map(String::from))
+    .collect();
+  entries.truncate(cap);
+  if let Err(error) = write_history_entries_to(path, &entries) {
+    if let Err(cleanup_error) = fs::remove_file(&audio_path) {
+      return Err(error.context(format!("recovery audio cleanup also failed: {cleanup_error}")));
+    }
+    return Err(error);
+  }
+  Ok(RecoveryWrite { entry_id: recovery_id.into(), dropped_audio_ids })
 }
 
 pub fn read_history_entries() -> Result<Vec<Value>> {
@@ -218,6 +400,190 @@ pub fn clear_debug_audio() -> Result<()> {
 mod tests {
   use super::*;
   use tempfile::TempDir;
+
+  #[test]
+  fn recovered_entry_retries_are_idempotent_and_preserve_raw_text() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    let id = "recovery-100-1";
+    let text = "  Raw recovered words.\n";
+    for _ in 0..2 {
+      let saved = save_recovered_entry_in(&path, id, text, RecoveryKind::InsertFailed, 100)
+        .unwrap();
+      assert_eq!(saved.entry_id, id);
+      assert!(saved.dropped_audio_ids.is_empty());
+    }
+    let entries = read_history_entries_from(&path).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["text"], text);
+    assert_eq!(entries[0]["recovered"], true);
+    assert_eq!(entries[0]["recoveryKind"], "insert-failed");
+    assert_eq!(entries[0]["success"], true);
+    assert!(save_recovered_entry_in(&path, id, "different", RecoveryKind::InsertFailed, 100)
+      .is_err());
+    assert!(save_recovered_entry_in(&path, id, text, RecoveryKind::Incomplete, 100).is_err());
+  }
+
+  #[test]
+  fn complete_recovery_reuses_most_recent_successful_history_entry() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    write_history_entries_to(&path, &[
+      json!({"id": "new", "text": "same words", "success": true, "audioId": "clip"}),
+      json!({"id": "old", "text": "same words", "success": true}),
+    ]).unwrap();
+    for _ in 0..2 {
+      let saved = save_recovered_entry_in(
+        &path, "recovery-100-2", "same words", RecoveryKind::InsertFailed, 100,
+      ).unwrap();
+      assert_eq!(saved.entry_id, "new");
+    }
+    let entries = read_history_entries_from(&path).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["audioId"], "clip");
+    assert_eq!(entries[0]["recoveryIds"], json!(["recovery-100-2"]));
+    assert!(save_recovered_entry_in(
+      &path, "recovery-100-2", "different", RecoveryKind::InsertFailed, 100,
+    ).is_err());
+  }
+
+  #[test]
+  fn incomplete_recovery_keeps_a_separate_failed_entry_even_when_text_matches() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    append_entry_in(&path, json!({"id": "complete", "text": "some words", "success": true}), 100)
+      .unwrap();
+    save_recovered_entry_in(
+      &path, "recovery-100-3", "some words", RecoveryKind::Incomplete, 100,
+    ).unwrap();
+    let entries = read_history_entries_from(&path).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["id"], "recovery-100-3");
+    assert_eq!(entries[0]["text"], "some words");
+    assert_eq!(entries[0]["success"], false);
+    assert_eq!(entries[0]["recovered"], true);
+    assert_eq!(entries[0]["recoveryKind"], "incomplete");
+    assert!(entries[0]["pending"].is_null());
+  }
+
+  #[test]
+  fn complete_recovery_does_not_reuse_failed_incomplete_or_pending_rows() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    write_history_entries_to(&path, &[
+      json!({"id": "failed", "text": "same words", "success": false}),
+      json!({"id": "pending", "text": "same words", "success": true, "pending": true}),
+      json!({"id": "partial", "text": "same words", "success": true, "recoveryKind": "incomplete"}),
+    ]).unwrap();
+    let saved = save_recovered_entry_in(
+      &path, "recovery-100-7", "same words", RecoveryKind::InsertFailed, 100,
+    ).unwrap();
+    assert_eq!(saved.entry_id, "recovery-100-7");
+    assert_eq!(read_history_entries_from(&path).unwrap().len(), 4);
+  }
+
+  #[test]
+  fn concurrent_recovery_retries_save_one_entry() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    let threads: Vec<_> = (0..8).map(|_| {
+      let path = path.clone();
+      std::thread::spawn(move || {
+        save_recovered_entry_in(
+          &path, "recovery-100-8", "same words", RecoveryKind::Incomplete, 100,
+        ).unwrap().entry_id
+      })
+    }).collect();
+    for thread in threads {
+      assert_eq!(thread.join().unwrap(), "recovery-100-8");
+    }
+    assert_eq!(read_history_entries_from(&path).unwrap().len(), 1);
+  }
+
+  #[test]
+  fn recovered_entry_cap_returns_dropped_audio_for_cleanup() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    append_entry_in(&path, json!({"id": "old", "text": "old", "audioId": "old-audio"}), 100)
+      .unwrap();
+    let saved = save_recovered_entry_in(
+      &path, "recovery-100-4", "new", RecoveryKind::Incomplete, 1,
+    ).unwrap();
+    assert_eq!(saved.dropped_audio_ids, vec!["old-audio"]);
+    assert_eq!(read_history_entries_from(&path).unwrap().len(), 1);
+  }
+
+  #[test]
+  fn recovered_entry_disk_failure_returns_error_without_false_ack() {
+    let temp = TempDir::new().unwrap();
+    let blocked_parent = temp.path().join("regular-file");
+    fs::write(&blocked_parent, "not a directory").unwrap();
+    assert!(save_recovered_entry_in(
+      &blocked_parent.join("history.json"), "recovery-100-5", "unsaved words",
+      RecoveryKind::InsertFailed, 100,
+    ).is_err());
+    assert_eq!(fs::read_to_string(&blocked_parent).unwrap(), "not a directory");
+  }
+
+  #[test]
+  fn recovered_entry_preserves_unreadable_history_instead_of_repairing_it() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    fs::write(&path, "unparseable history").unwrap();
+    assert!(save_recovered_entry_in(
+      &path, "recovery-100-6", "unsaved words", RecoveryKind::Incomplete, 100,
+    ).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "unparseable history");
+  }
+
+  #[test]
+  fn pending_audio_recovery_ack_retry_reuses_one_history_row_and_audio_file() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    let audio_dir = temp.path().join("audio");
+    for _ in 0..2 {
+      let saved = save_pending_audio_in(
+        &path, &audio_dir, "pending-100-1", &[1, 2, 3], "audio/mp4", 100,
+      ).unwrap();
+      assert_eq!(saved.entry_id, "pending-100-1");
+    }
+    let entries = read_history_entries_from(&path).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["pending"], true);
+    assert_eq!(entries[0]["audioId"], "pending-100-1");
+    assert_eq!(fs::read_dir(&audio_dir).unwrap().count(), 1);
+    assert_eq!(read_debug_audio_in(&audio_dir, "pending-100-1").unwrap().0, vec![1, 2, 3]);
+  }
+
+  #[test]
+  fn pending_audio_recovery_rejects_different_bytes_and_mime_for_the_same_id() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("history.json");
+    let audio_dir = temp.path().join("audio");
+    save_pending_audio_in(&path, &audio_dir, "pending-100-2", &[1], "audio/wav", 100)
+      .unwrap();
+    assert!(save_pending_audio_in(
+      &path, &audio_dir, "pending-100-2", &[2], "audio/wav", 100,
+    ).is_err());
+    assert!(save_pending_audio_in(
+      &path, &audio_dir, "pending-100-2", &[1], "audio/mp4", 100,
+    ).is_err());
+    assert_eq!(read_debug_audio_in(&audio_dir, "pending-100-2").unwrap().0, vec![1]);
+    assert_eq!(read_history_entries_from(&path).unwrap().len(), 1);
+    assert_eq!(fs::read_dir(&audio_dir).unwrap().count(), 1);
+  }
+
+  #[test]
+  fn pending_audio_recovery_cleans_audio_when_history_write_fails() {
+    let temp = TempDir::new().unwrap();
+    let blocked_parent = temp.path().join("regular-file");
+    fs::write(&blocked_parent, "not a directory").unwrap();
+    let audio_dir = temp.path().join("audio");
+    assert!(save_pending_audio_in(
+      &blocked_parent.join("history.json"), &audio_dir, "pending-100-3", &[1], "audio/wav", 100,
+    ).is_err());
+    assert_eq!(fs::read_dir(&audio_dir).unwrap().count(), 0);
+  }
 
   #[test]
   fn debug_audio_roundtrip_and_cleanup() {

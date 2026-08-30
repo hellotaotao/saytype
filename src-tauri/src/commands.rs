@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 const MAX_AUDIO_SIZE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_RECOVERED_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 1_000_000;
 const SLOW_RECORDING_STARTUP_MS: u64 = 500;
 
@@ -34,6 +35,113 @@ pub struct RecordingStartupTiming {
   pub render_ms: u64,
   pub frontend_ms: u64,
   pub end_to_end_ms: u64,
+}
+
+// Fixed labels and numeric metadata only: the renderer cannot accidentally
+// send transcript content or an arbitrary error string into persistent logs.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TranscriptionPhase {
+  Capture,
+  RecorderStop,
+  Finalize,
+  Resample,
+  ChunkIpc,
+  History,
+  Insert,
+  Recovery,
+  Session,
+}
+
+impl TranscriptionPhase {
+  fn as_str(&self) -> &'static str {
+    match self {
+      Self::Capture => "capture",
+      Self::RecorderStop => "recorder-stop",
+      Self::Finalize => "finalize",
+      Self::Resample => "resample",
+      Self::ChunkIpc => "chunk-ipc",
+      Self::History => "history",
+      Self::Insert => "insert",
+      Self::Recovery => "recovery",
+      Self::Session => "session",
+    }
+  }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TranscriptionEvent {
+  Start,
+  Complete,
+  Timeout,
+  Cancel,
+  Error,
+  Fallback,
+  Late,
+}
+
+impl TranscriptionEvent {
+  fn as_str(&self) -> &'static str {
+    match self {
+      Self::Start => "start",
+      Self::Complete => "complete",
+      Self::Timeout => "timeout",
+      Self::Cancel => "cancel",
+      Self::Error => "error",
+      Self::Fallback => "fallback",
+      Self::Late => "late",
+    }
+  }
+
+  fn is_warning(&self) -> bool {
+    matches!(self, Self::Timeout | Self::Error | Self::Fallback)
+  }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TranscriptionLifecycleReport {
+  pub session_id: u64,
+  pub phase: TranscriptionPhase,
+  pub event: TranscriptionEvent,
+  pub elapsed_ms: u64,
+  pub chunk_index: Option<u32>,
+  pub pending_count: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveredTranscription {
+  pub id: String,
+  pub text: String,
+  pub kind: history::RecoveryKind,
+}
+
+fn valid_stable_recovery_id(id: &str, prefix: &str) -> bool {
+  id.len() <= 128 && id.strip_prefix(prefix).is_some_and(|suffix| {
+    suffix.split('-').count() >= 2
+      && suffix.split('-').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+  })
+}
+
+fn validate_recovered_transcription(
+  window_label: &str,
+  recovery: &RecoveredTranscription,
+) -> Result<(), String> {
+  if window_label != "input-prompt" {
+    return Err("recovered transcriptions are only accepted from input-prompt".into());
+  }
+  if !valid_stable_recovery_id(&recovery.id, "recovery-") {
+    return Err("invalid recovery id".into());
+  }
+  if recovery.text.trim().is_empty() {
+    return Err("recovered text is empty".into());
+  }
+  if recovery.text.len() > MAX_RECOVERED_TEXT_BYTES {
+    return Err("recovered text exceeds the size limit".into());
+  }
+  Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -187,6 +295,29 @@ fn qwen_prewarm_eligible(config: &AppConfig) -> bool {
   config.provider == crate::local_asr::LOCAL_PROVIDER
     && crate::local_asr::normalize_local_model_id(&config.model)
       == crate::local_asr::QWEN_MODEL_ID
+}
+
+#[tauri::command]
+pub fn report_transcription_lifecycle(
+  window: tauri::WebviewWindow,
+  report: TranscriptionLifecycleReport,
+) -> Result<(), String> {
+  if window.label() != "input-prompt" {
+    return Err("transcription lifecycle reports are only accepted from input-prompt".into());
+  }
+  let level = if report.event.is_warning() { log::Level::Warn } else { log::Level::Info };
+  log::log!(
+    target: "saytype_lifecycle",
+    level,
+    "frontend session_id={} phase={} event={} elapsed_ms={} chunk_index={:?} pending_count={:?}",
+    report.session_id,
+    report.phase.as_str(),
+    report.event.as_str(),
+    report.elapsed_ms,
+    report.chunk_index,
+    report.pending_count
+  );
+  Ok(())
 }
 
 #[tauri::command]
@@ -608,6 +739,24 @@ fn record_successful_transcription(
 #[tauri::command]
 pub fn record_assembled_transcription(app: AppHandle, text: String) -> String {
   record_successful_transcription(&app, &text, None)
+}
+
+// Recovery has a strict persistence acknowledgement, unlike the best-effort
+// successful-transcription history path. No transcript text is logged here.
+#[tauri::command]
+pub fn save_recovered_transcription(
+  window: tauri::WebviewWindow,
+  app: AppHandle,
+  recovery: RecoveredTranscription,
+) -> Result<String, String> {
+  validate_recovered_transcription(window.label(), &recovery)?;
+  let saved = history::save_recovered_entry(&recovery.id, &recovery.text, recovery.kind, 100)
+    .map_err(stringify_error)?;
+  for audio_id in saved.dropped_audio_ids {
+    let _ = history::delete_debug_audio(&audio_id);
+  }
+  let _ = app.emit("activity-updated", ());
+  Ok(saved.entry_id)
 }
 
 #[tauri::command]
@@ -1259,6 +1408,7 @@ fn append_pending_audio(bytes: &[u8], mime: &str) -> Result<String> {
 // `mime-type` rides along as a header. Returns the new entry id.
 #[tauri::command]
 pub async fn save_pending_transcription(
+  window: tauri::WebviewWindow,
   app: AppHandle,
   request: tauri::ipc::Request<'_>,
 ) -> Result<String, String> {
@@ -1279,7 +1429,28 @@ pub async fn save_pending_transcription(
     .unwrap_or("audio/wav")
     .to_string();
 
-  let id = append_pending_audio(&audio, &mime).map_err(stringify_error)?;
+  let recovery_id = request.headers().get("recovery-id")
+    .map(|value| value.to_str().map(str::to_owned))
+    .transpose().map_err(|_| "invalid pending recovery id".to_string())?;
+  let id = if let Some(recovery_id) = recovery_id {
+    if window.label() != "input-prompt" {
+      return Err("pending recovery is only accepted from input-prompt".into());
+    }
+    if !valid_stable_recovery_id(&recovery_id, "pending-") {
+      return Err("invalid pending recovery id".into());
+    }
+    if audio.len() > MAX_AUDIO_SIZE_BYTES {
+      return Err("pending recovery audio exceeds the size limit".into());
+    }
+    let saved = history::save_pending_audio(&recovery_id, &audio, &mime, 100)
+      .map_err(stringify_error)?;
+    for audio_id in saved.dropped_audio_ids {
+      let _ = history::delete_debug_audio(&audio_id);
+    }
+    saved.entry_id
+  } else {
+    append_pending_audio(&audio, &mime).map_err(stringify_error)?
+  };
   let _ = app.emit("activity-updated", ());
   Ok(id)
 }
@@ -1619,6 +1790,79 @@ pub fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn recovered_transcription_requires_known_schema_and_valid_payload() {
+    let mut recovery: RecoveredTranscription = serde_json::from_value(json!({
+      "id": "recovery-1788040000000-23", "text": "kept words", "kind": "incomplete",
+    })).unwrap();
+    assert!(validate_recovered_transcription("input-prompt", &recovery).is_ok());
+    assert!(validate_recovered_transcription("main", &recovery).is_err());
+    for id in ["", "ordinary-id", "recovery-", "recovery-100--1", "recovery-100-../1"] {
+      recovery.id = id.into();
+      assert!(validate_recovered_transcription("input-prompt", &recovery).is_err());
+    }
+    recovery.id = "recovery-100-1".into();
+    recovery.text = " \n\t ".into();
+    assert!(validate_recovered_transcription("input-prompt", &recovery).is_err());
+    recovery.text = "x".repeat(MAX_RECOVERED_TEXT_BYTES + 1);
+    assert!(validate_recovered_transcription("input-prompt", &recovery).is_err());
+    recovery.text = "x".repeat(MAX_RECOVERED_TEXT_BYTES);
+    assert!(validate_recovered_transcription("input-prompt", &recovery).is_ok());
+    for invalid in [
+      json!({"id": "recovery-100-1", "text": "words", "kind": "unknown"}),
+      json!({"id": "recovery-100-1", "text": "words", "kind": "incomplete", "extra": true}),
+      json!({"id": "recovery-100-1", "text": "words"}),
+      json!({"id": 1, "text": "words", "kind": "insert-failed"}),
+    ] {
+      assert!(serde_json::from_value::<RecoveredTranscription>(invalid).is_err());
+    }
+  }
+
+  #[test]
+  fn pending_audio_recovery_id_validation_rejects_paths_and_other_id_kinds() {
+    assert!(valid_stable_recovery_id("pending-1788040000000-23", "pending-"));
+    for id in ["pending-", "pending-100", "pending-100--1", "pending-100-../1", "recovery-100-1"] {
+      assert!(!valid_stable_recovery_id(id, "pending-"));
+    }
+    assert!(!valid_stable_recovery_id(&format!("pending-{}-1", "1".repeat(130)), "pending-"));
+  }
+
+  #[test]
+  fn lifecycle_diagnostics_accept_only_shape_and_known_labels() {
+    let report: TranscriptionLifecycleReport = serde_json::from_value(json!({
+      "sessionId": 7,
+      "phase": "chunk-ipc",
+      "event": "timeout",
+      "elapsedMs": 450000,
+      "chunkIndex": 2,
+      "pendingCount": 1
+    })).unwrap();
+    assert_eq!(report.session_id, 7);
+    assert_eq!(report.phase.as_str(), "chunk-ipc");
+    assert_eq!(report.event.as_str(), "timeout");
+    assert!(report.event.is_warning());
+    assert_eq!(report.chunk_index, Some(2));
+
+    for invalid in [
+      json!({"sessionId": 7, "phase": "private transcript", "event": "start", "elapsedMs": 0}),
+      json!({"sessionId": 7, "phase": "history", "event": "private transcript", "elapsedMs": 0}),
+      json!({"sessionId": 7, "phase": "history", "event": "start", "elapsedMs": -1}),
+      json!({"sessionId": 7, "phase": "history", "event": "start", "elapsedMs": 0, "text": "private transcript"}),
+    ] {
+      assert!(serde_json::from_value::<TranscriptionLifecycleReport>(invalid).is_err());
+    }
+  }
+
+  #[test]
+  fn lifecycle_diagnostics_allow_omitted_chunk_metadata() {
+    let report: TranscriptionLifecycleReport = serde_json::from_value(json!({
+      "sessionId": 9, "phase": "recorder-stop", "event": "complete", "elapsedMs": 20
+    })).unwrap();
+    assert_eq!(report.chunk_index, None);
+    assert_eq!(report.pending_count, None);
+    assert!(!report.event.is_warning());
+  }
 
   #[test]
   fn recording_startup_timing_uses_camel_case_wire_fields() {

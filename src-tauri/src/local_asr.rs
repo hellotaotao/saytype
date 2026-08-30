@@ -291,6 +291,100 @@ fn is_executable(_path: &Path) -> bool {
 /// could exceed this — acceptable for now, those platforms are not yet
 /// real-machine verified. Revisit if long-form CPU dictation becomes real.
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(180);
+// The per-decode watchdog is not an end-to-end deadline: a request can wait
+// for a permit, start a worker, retry one-shot and then wait for child exit.
+// Leave room for both existing decode budgets, but bound the whole request.
+const PIPELINE_TIMEOUT: Duration = Duration::from_secs(420);
+const PREWARM_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct PipelineProgress {
+  operation: &'static str,
+  session_id: Option<u64>,
+  chunk_index: Option<u32>,
+  started: std::time::Instant,
+  phase: Mutex<(&'static str, std::time::Instant)>,
+  finished: AtomicBool,
+}
+
+impl PipelineProgress {
+  fn new(operation: &'static str, session_id: Option<u64>, chunk_index: Option<u32>) -> Self {
+    let now = std::time::Instant::now();
+    let progress = Self {
+      operation,
+      session_id,
+      chunk_index,
+      started: now,
+      phase: Mutex::new(("inference-queue", now)),
+      finished: AtomicBool::new(false),
+    };
+    progress.report("start", log::Level::Info);
+    progress
+  }
+
+  fn enter(&self, phase: &'static str) {
+    let now = std::time::Instant::now();
+    let (previous_phase, entered) = {
+      let mut current = self.phase.lock().unwrap_or_else(|error| error.into_inner());
+      let previous = *current;
+      *current = (phase, now);
+      previous
+    };
+    // One transition retains both the new wait and the previous stage's
+    // duration, without doubling the release log volume at each boundary.
+    log::info!(
+      target: "saytype_lifecycle",
+      "native operation={} session_id={:?} chunk_index={:?} phase={} event=start previous_phase={} previous_elapsed_ms={} total_ms={}",
+      self.operation, self.session_id, self.chunk_index, phase, previous_phase,
+      now.duration_since(entered).as_millis(), self.started.elapsed().as_millis()
+    );
+  }
+
+  fn report(&self, event: &'static str, level: log::Level) {
+    let (phase, entered) = *self.phase.lock().unwrap_or_else(|error| error.into_inner());
+    log::log!(
+      target: "saytype_lifecycle",
+      level,
+      "native operation={} session_id={:?} chunk_index={:?} phase={} event={} elapsed_ms={} total_ms={}",
+      self.operation, self.session_id, self.chunk_index, phase, event,
+      entered.elapsed().as_millis(), self.started.elapsed().as_millis()
+    );
+  }
+}
+
+impl Drop for PipelineProgress {
+  fn drop(&mut self) {
+    if !self.finished.load(Ordering::Relaxed) {
+      // The command's CancellationToken drops this future directly. Persist
+      // that path too, without logging audio or exception/transcript strings.
+      if std::thread::panicking() {
+        self.report("panic", log::Level::Warn);
+      } else {
+        self.report("cancel", log::Level::Info);
+      }
+    }
+  }
+}
+
+async fn with_pipeline_deadline<T>(
+  future: impl std::future::Future<Output = Result<T>>,
+  deadline: Duration,
+  progress: &PipelineProgress,
+) -> Result<T> {
+  let result = match tokio::time::timeout(deadline, future).await {
+    Ok(result) => {
+      progress.report(if result.is_ok() { "complete" } else { "error" },
+        if result.is_ok() { log::Level::Info } else { log::Level::Warn });
+      result
+    }
+    Err(_) => {
+      progress.report("timeout", log::Level::Warn);
+      let phase = progress.phase.lock().unwrap_or_else(|error| error.into_inner()).0;
+      Err(anyhow::anyhow!("local ASR {} timed out during {} after {}ms", progress.operation, phase, deadline.as_millis()))
+    }
+  };
+  progress.finished.store(true, Ordering::Relaxed);
+  result
+}
 /// Context size for one decode, sized to the clip. It MUST be passed
 /// explicitly: the model metadata declares ctx 65536 and the CLI default
 /// ("0" = from model) preallocates a ~7 GiB KV cache (measured). But a fixed
@@ -323,7 +417,8 @@ fn ctx_size_for_wav(wav_len: usize) -> u32 {
 /// first byte 2.4 s into an 82 s clip, 7.7 s into a 5.5 min one). Budget
 /// generously — a 15 s base + 0.1 s per audio-second gives ~5-10x margin over
 /// those measurements, so a slow machine is never mistaken for a wedged process.
-/// The flat `TRANSCRIBE_TIMEOUT` remains the outer hard cap.
+/// `TRANSCRIBE_TIMEOUT` remains the per-attempt cap; `PIPELINE_TIMEOUT` also
+/// covers queue acquisition, initialization, fallback and process teardown.
 const FIRST_BYTE_BASE: Duration = Duration::from_secs(15);
 fn first_byte_deadline(wav_len: usize) -> Duration {
   let seconds = wav_len.saturating_sub(44) as f64 / 32000.0;
@@ -655,6 +750,14 @@ impl ResidentPrewarmOutcome {
 pub async fn prewarm_resident_worker(
   eligible: impl FnOnce() -> Result<bool>,
 ) -> Result<ResidentPrewarmOutcome> {
+  let progress = PipelineProgress::new("prewarm", None, None);
+  with_pipeline_deadline(prewarm_resident_worker_inner(eligible, &progress), PREWARM_TIMEOUT, &progress).await
+}
+
+async fn prewarm_resident_worker_inner(
+  eligible: impl FnOnce() -> Result<bool>,
+  progress: &PipelineProgress,
+) -> Result<ResidentPrewarmOutcome> {
   if !RESIDENT_RUNTIME_SAFE {
     return Ok(ResidentPrewarmOutcome::Unsupported);
   }
@@ -666,6 +769,7 @@ pub async fn prewarm_resident_worker(
     .expect("local inference semaphore is never closed");
   let queue_ms = queued_at.elapsed().as_millis();
   let lease_epoch = RESIDENT_EPOCH.load(Ordering::Relaxed);
+  progress.enter("prepare");
 
   if !eligible()? {
     log::info!("local-asr: prewarm outcome=ineligible queue_ms={queue_ms}");
@@ -695,6 +799,7 @@ pub async fn prewarm_resident_worker(
   }
 
   let spawn_started = std::time::Instant::now();
+  progress.enter("worker-start");
   let mut worker = ResidentWorker::spawn(&base, CTX_FLOOR).await?;
   let resident_spawn_ms = spawn_started.elapsed().as_millis();
   worker.epoch = lease_epoch;
@@ -779,7 +884,8 @@ pub async fn transcribe_wav(
   chunk_index: Option<u32>,
   wav_bytes: &[u8],
 ) -> Result<String> {
-  transcribe_wav_inner(session_id, chunk_index, wav_bytes, |text| {
+  let progress = PipelineProgress::new("decode", session_id, chunk_index);
+  let inference = transcribe_wav_inner(session_id, chunk_index, wav_bytes, &progress, |text| {
     let Some(app) = app else { return };
     // Broadcast, NOT emit_to: the frontend registers its listener with
     // target { kind: "Any" } (ipc-bridge.js), which only receives app.emit()
@@ -791,8 +897,8 @@ pub async fn transcribe_wav(
       "local-transcription-partial",
       partial_event_payload(session_id, chunk_index, text),
     );
-  })
-  .await
+  });
+  with_pipeline_deadline(inference, PIPELINE_TIMEOUT, &progress).await
 }
 
 /// The runner behind transcribe_wav. `on_partial` receives the transcript so
@@ -803,6 +909,7 @@ async fn transcribe_wav_inner(
   session_id: Option<u64>,
   chunk_index: Option<u32>,
   wav_bytes: &[u8],
+  progress: &PipelineProgress,
   mut on_partial: impl FnMut(&str),
 ) -> Result<String> {
   let lease_epoch = RESIDENT_EPOCH.load(Ordering::Relaxed);
@@ -812,6 +919,7 @@ async fn transcribe_wav_inner(
     .await
     .expect("local inference semaphore is never closed");
   let queue_time = queued_at.elapsed();
+  progress.enter("prepare");
   if queue_time >= Duration::from_millis(10) {
     log::info!("local-asr: waited {} ms for inference slot", queue_time.as_millis());
   }
@@ -865,6 +973,7 @@ async fn transcribe_wav_inner(
   let started_worker = match reusable {
     Some(worker) => Some(worker),
     None => {
+      progress.enter("worker-start");
       let spawn_started = std::time::Instant::now();
       let result = ResidentWorker::spawn(&base, ctx_size).await;
       resident_spawn_ms = Some(spawn_started.elapsed().as_millis());
@@ -879,6 +988,7 @@ async fn transcribe_wav_inner(
   };
 
   if let Some(mut worker) = started_worker {
+    progress.enter("resident-decode");
     worker.epoch = lease_epoch;
     let resident_started = std::time::Instant::now();
     match tokio::time::timeout(
@@ -887,6 +997,7 @@ async fn transcribe_wav_inner(
     ).await {
       Ok(Ok(text)) => {
         let resident_decode_ms = resident_started.elapsed().as_millis();
+        progress.enter("park-worker");
         park_resident_worker(worker);
         let total_ms = queued_at.elapsed().as_millis();
         log::info!(
@@ -930,6 +1041,7 @@ async fn transcribe_wav_inner(
   // This path has no ready prompt, so its phase timing intentionally includes
   // process start, model initialization, and decode as one `one_shot_ms` value.
   let started = std::time::Instant::now();
+  progress.enter("one-shot-decode");
   let mut child = local_asr_command(cli_path(&base))
     .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
     .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
@@ -1038,6 +1150,7 @@ async fn transcribe_wav_inner(
       .context("failed to read llama-mtmd-cli output")?,
     hung = watchdog => return Err(hung),
   };
+  progress.enter("child-exit");
   let status = child.wait().await.context("failed to run llama-mtmd-cli")?;
 
   if !status.success() {
@@ -1474,6 +1587,127 @@ pub fn delete_model_for(model: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn pipeline_phase_transition_emits_one_line_with_previous_duration() {
+    struct CaptureLogger(Mutex<Vec<String>>);
+    impl log::Log for CaptureLogger {
+      fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.target() == "saytype_lifecycle"
+      }
+      fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+          let line = record.args().to_string();
+          if line.contains("operation=transition-test ") {
+            self.0.lock().unwrap().push(line);
+          }
+        }
+      }
+      fn flush(&self) {}
+    }
+    static LOGGER: CaptureLogger = CaptureLogger(Mutex::new(Vec::new()));
+    log::set_logger(&LOGGER).expect("this test owns the process logger");
+    log::set_max_level(log::LevelFilter::Info);
+    let progress = PipelineProgress::new("transition-test", Some(77), Some(4));
+    LOGGER.0.lock().unwrap().clear();
+    progress.enter("resident-decode");
+    progress.finished.store(true, Ordering::Relaxed);
+    let lines = LOGGER.0.lock().unwrap().clone();
+    assert_eq!(lines.len(), 1, "a phase change needs only one persisted event");
+    assert!(lines[0].contains("phase=resident-decode event=start"));
+    assert!(lines[0].contains("previous_phase=inference-queue"));
+    assert!(lines[0].contains("previous_elapsed_ms="));
+    assert!(lines[0].contains("total_ms="));
+  }
+
+  #[tokio::test]
+  async fn pipeline_deadline_releases_a_slot_held_during_an_unbounded_wait() {
+    let semaphore = Semaphore::new(1);
+    let progress = PipelineProgress::new("decode", Some(7), Some(0));
+    let result: Result<()> = with_pipeline_deadline(
+      async {
+        let _permit = semaphore.acquire().await.unwrap();
+        progress.enter("child-exit");
+        std::future::pending().await
+      },
+      Duration::from_millis(10),
+      &progress,
+    ).await;
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("timed out"));
+    assert!(message.contains("child-exit"));
+    assert_eq!(semaphore.available_permits(), 1);
+  }
+
+  #[tokio::test]
+  async fn pipeline_deadline_covers_waiting_for_the_inference_slot() {
+    let semaphore = Semaphore::new(1);
+    let held = semaphore.acquire().await.unwrap();
+    let progress = PipelineProgress::new("decode", Some(8), None);
+    let result: Result<()> = with_pipeline_deadline(
+      async {
+        let _permit = semaphore.acquire().await.unwrap();
+        Ok(())
+      },
+      Duration::from_millis(10),
+      &progress,
+    ).await;
+    assert!(result.unwrap_err().to_string().contains("inference-queue"));
+    drop(held);
+    assert!(semaphore.try_acquire().is_ok());
+  }
+
+  #[tokio::test]
+  async fn pipeline_deadline_preserves_success_and_ordinary_errors() {
+    let progress = PipelineProgress::new("decode", Some(9), None);
+    assert_eq!(with_pipeline_deadline(async { Ok(42) }, Duration::from_secs(1), &progress).await.unwrap(), 42);
+    let progress = PipelineProgress::new("prewarm", None, None);
+    let result: Result<()> = with_pipeline_deadline(
+      async { anyhow::bail!("test failure") }, Duration::from_secs(1), &progress
+    ).await;
+    assert_eq!(result.unwrap_err().to_string(), "test failure");
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn pipeline_deadline_cleans_up_when_child_outlives_both_pipes() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("request.wav");
+    fs::write(&path, b"test audio").unwrap();
+    let pid = std::sync::atomic::AtomicU32::new(0);
+    let progress = PipelineProgress::new("decode", Some(10), Some(0));
+    let result: Result<()> = with_pipeline_deadline(async {
+      let _temp_file = TempFile(path.clone());
+      let mut child = tokio::process::Command::new("/bin/sh")
+        .args(["-c", "exec 1>&- 2>&-; exec sleep 60"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+      pid.store(child.id().unwrap(), Ordering::Relaxed);
+      let mut stdout = child.stdout.take().unwrap();
+      let mut stderr = child.stderr.take().unwrap();
+      let mut out = Vec::new();
+      let mut err = Vec::new();
+      tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
+      progress.enter("child-exit");
+      child.wait().await?;
+      Ok(())
+    }, Duration::from_secs(1), &progress).await;
+    assert!(result.unwrap_err().to_string().contains("child-exit"));
+    assert!(!path.exists(), "timing out removes the owned temporary audio");
+    let child_pid = pid.load(Ordering::Relaxed).to_string();
+    tokio::time::timeout(Duration::from_secs(2), async {
+      loop {
+        let alive = tokio::process::Command::new("/bin/kill")
+          .args(["-0", &child_pid])
+          .stdout(Stdio::null()).stderr(Stdio::null())
+          .status().await.unwrap().success();
+        if !alive { break; }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+      }
+    }).await.expect("kill_on_drop must terminate the child");
+  }
 
   #[test]
   fn manifest_is_filled_and_totals_are_sane() {

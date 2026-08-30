@@ -88,7 +88,8 @@ pub fn run() {
       }
     })
     .setup(|app| {
-      // Logging: dev → Info to stdout; release → Warn+ to a size-capped rotating
+      // Logging: dev → Info to stdout; release → Warn+ and count-only lifecycle
+      // Info events to a size-capped rotating
       // file at ~/Library/Logs/com.tao.saytype/SayType.log, so a shipped build
       // still leaves diagnostics when a user reports "nothing happened" (these
       // log calls were previously no-ops in release). API keys and transcribed
@@ -109,13 +110,18 @@ pub fn run() {
           // (otherwise lines duplicate and a stray default-named log is created).
           .clear_targets()
           .level(log::LevelFilter::Warn)
+          // Lifecycle events contain only fixed labels, IDs and timings. Keep
+          // stage entry/exit in release so an unfinished await is diagnosable.
+          .level_for("saytype_lifecycle", log::LevelFilter::Info)
           .target(tauri_plugin_log::Target::new(
             tauri_plugin_log::TargetKind::LogDir {
               file_name: Some("SayType".into()),
             },
           ))
-          .max_file_size(1_000_000) // ~1 MB cap
-          .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+          // Keep two archived logs plus the active file, about 6 MB in total.
+          // A rollover must not erase the only trace of an unfinished session.
+          .max_file_size(2_000_000)
+          .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(2))
           .build()
       };
       app.handle().plugin(log_plugin)?;
@@ -153,6 +159,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       commands::get_settings,
       commands::report_recording_startup,
+      commands::report_transcription_lifecycle,
       commands::prewarm_qwen_worker,
       commands::get_diagnostic_log,
       commands::get_api_keys,
@@ -163,6 +170,7 @@ pub fn run() {
       commands::cleanup_microphone,
       commands::cancel_transcription,
       commands::record_assembled_transcription,
+      commands::save_recovered_transcription,
       commands::start_live_transcription,
       commands::push_live_audio,
       commands::finish_live_transcription,
