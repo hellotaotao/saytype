@@ -95,6 +95,14 @@ pub fn app_bundle_path() -> Option<std::path::PathBuf> {
   app_bundle_of(&exe).map(std::path::Path::to_path_buf)
 }
 
+/// Bring the "app was activated" signal (Cmd+Tab, app switcher) to the caller.
+/// Tauri's `RunEvent::Reopen` only covers Launch Services opens — Dock click,
+/// Spotlight, `open -a` — so activation needs AppKit's own notification; see
+/// `platform::activation`.
+pub fn watch_app_activation(on_activate: super::ActivationCallback) {
+  super::activation::watch(on_activate);
+}
+
 /// Attach the drag layer on the cloud window's NSView. Not attached (returns
 /// false) when there is no .app bundle (a dev bare binary).
 pub fn attach_app_drag_source(ns_view: *mut c_void) -> bool {

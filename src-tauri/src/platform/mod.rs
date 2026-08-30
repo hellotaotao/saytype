@@ -32,10 +32,13 @@
 //! fn focused_window_center() -> Option<(f64, f64)>;
 //! fn set_auto_launch(enabled: bool) -> anyhow::Result<()>;
 //! fn supports_local_first() -> bool;
+//! fn watch_app_activation(on_activate: ActivationCallback);
 //! ```
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod activation;
 #[cfg(target_os = "macos")]
 mod drag_cloud;
 #[cfg(target_os = "macos")]
@@ -45,6 +48,11 @@ pub use macos::*;
 mod fallback;
 #[cfg(not(target_os = "macos"))]
 pub use fallback::*;
+
+/// Run when the OS reports the app was brought to the front. Stored in a
+/// `static` on the platform side (the macOS callback comes from ObjC and has
+/// nowhere to carry Rust state), hence `Send + Sync + 'static`.
+pub type ActivationCallback = Box<dyn Fn() + Send + Sync + 'static>;
 
 /// Outcome of a synthetic text-insertion attempt.
 ///

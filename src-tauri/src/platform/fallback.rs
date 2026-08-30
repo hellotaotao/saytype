@@ -80,6 +80,11 @@ pub fn set_auto_launch(_enabled: bool) -> Result<()> {
   Ok(())
 }
 
+/// No activation hook off macOS. Windows and Linux both keep a taskbar entry
+/// that restores the window, so there is no "frontmost with nothing on screen"
+/// state to rescue the user from.
+pub fn watch_app_activation(_on_activate: super::ActivationCallback) {}
+
 pub fn supports_local_first() -> bool {
   // Local-first steering is limited to hardware where the local engine is
   // verified fast (Apple Silicon); Windows/Linux stay cloud-first for now,

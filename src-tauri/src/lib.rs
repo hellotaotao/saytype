@@ -17,6 +17,12 @@ const MAIN_ENTRY_SCRIPT: &str = include_str!("../../src/views/main.js");
 const INPUT_PROMPT_ENTRY_SCRIPT: &str = include_str!("../../src/views/input-prompt.js");
 const AX_CLOUD_ENTRY_SCRIPT: &str = include_str!("../../src/views/ax-cloud.js");
 
+// Launching the app activates it too, so an activation this soon after startup
+// is the launch itself and not the user reaching for the window — ignoring it
+// is what keeps "start minimized" actually minimized. See the
+// `watch_app_activation` call in `setup`.
+const LAUNCH_ACTIVATION_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -146,6 +152,33 @@ pub fn run() {
       *app.state::<state::AppState>().hotkey.lock().unwrap() = Some(hotkey_handle);
 
       updater::spawn_periodic_checks(app.handle().clone());
+
+      // Cmd+Tab only *activates* the app; macOS sends no reopen event for it, so
+      // without this the app comes to the front owning the menu bar with every
+      // window still hidden and nothing on screen. Mirror AppKit's own reopen
+      // rule — activated with no visible window → bring the main window back.
+      // No-op off macOS.
+      {
+        let handle = app.handle().clone();
+        let launched_at = std::time::Instant::now();
+        platform::watch_app_activation(Box::new(move || {
+          if launched_at.elapsed() < LAUNCH_ACTIVATION_GRACE {
+            return;
+          }
+          // Any visible window means the activation had somewhere to land —
+          // e.g. clicking the recording prompt's "Copy" button activates the
+          // app, and popping the main window on top of that would be rude.
+          let anything_visible = handle
+            .webview_windows()
+            .values()
+            .any(|window| window.is_visible().unwrap_or(false));
+          if anything_visible {
+            return;
+          }
+          log::info!("activation: no visible window, showing main");
+          tray::show_main_window(&handle);
+        }));
+      }
 
       if !config.start_minimized {
         if let Some(window) = app.get_webview_window("main") {
