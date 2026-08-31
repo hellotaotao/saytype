@@ -46,11 +46,44 @@ test("build script verifies the exact source before applying the maintained patc
   assert.match(buildScript, /manifest\.patches\[0\]/);
 });
 
+const BUNDLED_RUNTIMES = [
+  "llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz",
+  "llama-b9960-saytype-reset-v1-bin-windows-x64.zip",
+];
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\]/g, "\$&");
+
+/// Collect the platform tuples in the `#[cfg(...)]` that guards a declaration.
+const platformsGuarding = (declaration) => {
+  const index = localAsr.indexOf(declaration);
+  assert.ok(index > 0, `${declaration} not found in local_asr.rs`);
+  const attribute = localAsr.slice(Math.max(0, index - 400), index);
+  const start = attribute.lastIndexOf("#[cfg(");
+  assert.ok(start >= 0, `no #[cfg] guards ${declaration}`);
+  return [
+    ...attribute.slice(start).matchAll(/all\(target_os = "(\w+)", target_arch = "(\w+)"\)/g),
+  ]
+    .map((match) => `${match[1]}-${match[2]}`)
+    .sort();
+};
+
 test("SayType only keeps a resident worker when the patched runtime is selected", () => {
   assert.match(localAsr, /LLAMA_BUILD:\s*&str\s*=\s*"b9960-saytype-reset-v1"/);
   assert.match(localAsr, /const RESIDENT_RUNTIME_SAFE:\s*bool\s*=\s*true/);
   assert.match(localAsr, /if !RESIDENT_RUNTIME_SAFE/);
-  assert.match(localAsr, /include_bytes!\([^)]*llama-b9960-saytype-reset-v1-bin-macos-arm64\.tar\.gz/);
+  for (const archive of BUNDLED_RUNTIMES) {
+    assert.match(localAsr, new RegExp(`include_bytes!\([^)]*${escapeRegExp(archive)}`));
+  }
+});
+
+test("the resident-safe set never drifts from the patched-runtime set", () => {
+  // Marking a platform resident-safe while it still points at upstream b9960 is
+  // exactly the bug the patch exists to prevent — on Windows the unpatched
+  // worker died on the third alternating clip — so a platform must never appear
+  // in one list without the other.
+  const patched = platformsGuarding('pub const LLAMA_BUILD: &str = "b9960-saytype-reset-v1";');
+  const residentSafe = platformsGuarding("const RESIDENT_RUNTIME_SAFE: bool = true;");
+  assert.deepEqual(residentSafe, patched);
+  assert.deepEqual(patched, ["macos-aarch64", "windows-x86_64"]);
 });
 
 test("build script stages a runtime that resolves its own libraries", () => {
@@ -66,14 +99,16 @@ test("build script stages a runtime that resolves its own libraries", () => {
   assert.match(relocationGuards, /loaded libraries from outside itself/);
 });
 
-test("the bundled runtime manifest matches the committed archive", () => {
-  const archive = readFileSync(
-    path.join(repoRoot, "src-tauri/resources/local-asr/llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz"),
-  );
-  const declared = localAsr.match(
-    /rel_path: "llama-b9960-saytype-reset-v1-bin-macos-arm64\.tar\.gz"[\s\S]*?size: ([\d_]+),\s*sha256: "([0-9a-f]{64})"/,
-  );
-  assert.ok(declared, "MAC_ZIP manifest entry not found in local_asr.rs");
-  assert.equal(Number(declared[1].replaceAll("_", "")), archive.length);
-  assert.equal(declared[2], createHash("sha256").update(archive).digest("hex"));
+test("the bundled runtime manifests match the committed archives", () => {
+  for (const name of BUNDLED_RUNTIMES) {
+    const archive = readFileSync(path.join(repoRoot, "src-tauri/resources/local-asr", name));
+    const declared = localAsr.match(
+      new RegExp(
+        `rel_path: "${escapeRegExp(name)}"[\s\S]*?size: ([\d_]+),\s*sha256: "([0-9a-f]{64})"`,
+      ),
+    );
+    assert.ok(declared, `manifest entry for ${name} not found in local_asr.rs`);
+    assert.equal(Number(declared[1].replaceAll("_", "")), archive.length);
+    assert.equal(declared[2], createHash("sha256").update(archive).digest("hex"));
+  }
 });

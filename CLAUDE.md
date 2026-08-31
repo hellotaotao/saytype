@@ -212,11 +212,19 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   "not required"; clipboard write and autostart are still stubs. See
   `docs/superpowers/specs/2026-07-01-cross-platform-support-design.md`.
 - `local_asr.rs` — the local transcription backend (provider `"local"`): Qwen3-ASR-0.6B
-  Q8_0 GGUF run by a **per-transcription `llama-mtmd-cli` subprocess** (pinned llama.cpp
-  release, `LLAMA_BUILD`); the process exits after each decode, so idle memory is
-  unchanged and cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs +
-  per-platform llama.cpp zip, ~1GB under `<app-data>/local-asr/`), the resumable
-  sha256-gated downloader, and the stdout parser (`language <lang><asr_text>` prefix).
+  Q8_0 GGUF run by `llama-mtmd-cli` (pinned llama.cpp release, `LLAMA_BUILD`). Where the
+  **patched** runtime ships — macOS arm64 and Windows x64, a set `RESIDENT_RUNTIME_SAFE`
+  must track exactly — one chat-mode worker stays **resident** across decodes and is
+  prewarmed at recording start, so a dictation stops paying the model load (measured on a
+  Windows i5-7400: load is 2.4 s with a warm file cache, 6.0 s cold; a 9 s clip decodes in
+  6.3 s one-shot against 3.9 s resident, for ~1.1 GB held over the idle window). Every
+  other platform runs upstream b9960 and **retires its worker after each decode**: upstream
+  leaves an mtmd media batch on the chat context and can hand the next decode the previous
+  audio's embedding — unpatched Windows died outright on the third alternating clip, which
+  is what `real_two_audio_contamination` pins down. Cancel = kill (kill_on_drop). Owns the
+  asset manifest (2 GGUFs, ~1GB under `<app-data>/local-asr/`, plus the llama.cpp runtime —
+  bundled via `include_bytes!` on the patched platforms, downloaded elsewhere), the
+  resumable sha256-gated downloader, and the stdout parser (`language <lang><asr_text>`).
   The extracted runtime is stamped with the archive's sha256
   (`bin/<LLAMA_BUILD>/.saytype-runtime-sha256`) and re-extracted on mismatch — the CLI
   merely being present says nothing about *which* archive produced it, so without the

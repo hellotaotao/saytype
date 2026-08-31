@@ -31,17 +31,34 @@ pub fn normalize_local_model_id(model: &str) -> &'static str {
 /// Pinned llama.cpp release. Must stay ≥ b9173 (Qwen3-ASR repetition fix,
 /// ggml-org/llama.cpp#22357). Upgrading requires re-verifying CLI flags,
 /// stdout format, all sha256s, and a real-dictation regression.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+// The patched runtime is per-platform: a platform joins this list only after
+// its archive passes the two-audio resident regression (vendor/llama.cpp/README.md).
+#[cfg(any(
+  all(target_os = "macos", target_arch = "aarch64"),
+  all(target_os = "windows", target_arch = "x86_64")
+))]
 pub const LLAMA_BUILD: &str = "b9960-saytype-reset-v1";
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(any(
+  all(target_os = "macos", target_arch = "aarch64"),
+  all(target_os = "windows", target_arch = "x86_64")
+)))]
 pub const LLAMA_BUILD: &str = "b9960";
 
 /// Upstream b9960 keeps an mtmd media batch past the lifetime of its chunks,
-/// which can reuse the previous audio embedding in a resident process. Only
-/// the maintained Apple Silicon runtime has the per-audio ownership patch.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+/// which can reuse the previous audio embedding in a resident process — on
+/// Windows it crashed the worker outright on the third alternating clip. Only
+/// the maintained runtimes carry the per-audio ownership patch, so this must
+/// track LLAMA_BUILD's patched set exactly: a platform pointed at upstream
+/// b9960 has to keep retiring its worker after every decode.
+#[cfg(any(
+  all(target_os = "macos", target_arch = "aarch64"),
+  all(target_os = "windows", target_arch = "x86_64")
+))]
 const RESIDENT_RUNTIME_SAFE: bool = true;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(any(
+  all(target_os = "macos", target_arch = "aarch64"),
+  all(target_os = "windows", target_arch = "x86_64")
+)))]
 const RESIDENT_RUNTIME_SAFE: bool = false;
 
 pub struct Asset {
@@ -120,13 +137,13 @@ pub fn llama_zip_asset() -> &'static Asset {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 static WIN_ZIP: Asset = Asset {
-  rel_path: "llama-win-x64.zip",
-  urls: &[
-    "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-win-cpu-x64.zip",
-  ],
-  bundled: None,
-  size: 18_209_357,
-  sha256: "795333e29cedf9f9ef9ae91324bfa423e338d39d75cc63a8dd76d1686c32ced6",
+  rel_path: "llama-b9960-saytype-reset-v1-bin-windows-x64.zip",
+  urls: &[],
+  bundled: Some(include_bytes!(
+    "../resources/local-asr/llama-b9960-saytype-reset-v1-bin-windows-x64.zip"
+  )),
+  size: 3_771_574,
+  sha256: "5b4e7bb6d9f85705cb41a2a2dd41c04650ac113144154314a780d25085cbf47e",
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub fn llama_zip_asset() -> &'static Asset {
@@ -2198,5 +2215,65 @@ mod tests {
       .filter(|e| e.file_name().to_string_lossy().starts_with("saytype-asr-"))
       .count();
     assert_eq!(leftovers, 0, "temp wav files must be removed");
+  }
+
+  /// The regression that gates a platform joining the resident-safe set.
+  /// Upstream b9960 leaves the media batch on the chat context, so a decode can
+  /// be handed the *previous* audio's embedding. `real_subprocess_smoke` cannot
+  /// see that — it decodes the same silence twice, which makes a contaminated
+  /// result indistinguishable from a correct one.
+  ///
+  /// This drives one ResidentWorker directly instead of going through
+  /// transcribe_wav: a parked worker's idle timeout is 100 ms under cfg(test),
+  /// so routing through the pool would race retirement and test the lifecycle
+  /// rather than the embedding.
+  ///
+  /// Needs the real assets plus two distinct 16 kHz mono WAVs:
+  ///   SAYTYPE_TEST_WAV_A=a.wav SAYTYPE_TEST_WAV_B=b.wav \
+  ///     cargo test real_two_audio_contamination -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn real_two_audio_contamination() {
+    assert!(assets_ready(), "lay out the assets first");
+    let path_a = std::env::var("SAYTYPE_TEST_WAV_A").expect("set SAYTYPE_TEST_WAV_A");
+    let path_b = std::env::var("SAYTYPE_TEST_WAV_B").expect("set SAYTYPE_TEST_WAV_B");
+    let wav_a = fs::read(&path_a).expect("read SAYTYPE_TEST_WAV_A");
+    let wav_b = fs::read(&path_b).expect("read SAYTYPE_TEST_WAV_B");
+    assert_ne!(wav_a, wav_b, "the two clips must differ");
+    // A context change respawns the worker, which would quietly turn this into
+    // a series of one-shot decodes and prove nothing.
+    let ctx = ctx_size_for_wav(wav_a.len());
+    assert_eq!(ctx, ctx_size_for_wav(wav_b.len()), "both clips must map to one context");
+
+    let base = local_asr_dir().expect("assets dir");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut worker = rt.block_on(ResidentWorker::spawn(&base, ctx)).expect("resident worker");
+
+    let reference_a = rt
+      .block_on(worker.transcribe(Path::new(&path_a), wav_a.len(), &mut |_: &str| {}))
+      .expect("first decode of A");
+    let reference_b = rt
+      .block_on(worker.transcribe(Path::new(&path_b), wav_b.len(), &mut |_: &str| {}))
+      .expect("first decode of B");
+    assert!(!reference_a.trim().is_empty(), "clip A must transcribe to speech");
+    assert_ne!(
+      reference_a, reference_b,
+      "the clips must transcribe differently or contamination stays invisible"
+    );
+
+    // The stale-embedding reuse is intermittent, so one A/B pair is not evidence.
+    for round in 0..6 {
+      for (label, path, len, reference) in [
+        ("A", &path_a, wav_a.len(), &reference_a),
+        ("B", &path_b, wav_b.len(), &reference_b),
+      ] {
+        let got = rt
+          .block_on(worker.transcribe(Path::new(path), len, &mut |_: &str| {}))
+          .expect("resident decode");
+        assert_eq!(&got, reference, "round {round} clip {label}: decoded as another clip");
+      }
+    }
+
+    assert!(worker.is_running(), "all decodes must have come from one live process");
   }
 }

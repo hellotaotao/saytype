@@ -19,8 +19,13 @@ memory. Model weights and model contexts remain resident.
 ## Build
 
 ```sh
-npm run build:llama-runtime:mac-arm64
+npm run build:llama-runtime:mac-arm64   # macOS arm64
+npm run build:llama-runtime:win-x64     # Windows x64
 ```
+
+Neither builds cross-platform: each runs on its own OS. The
+`Build local ASR runtime` workflow (`workflow_dispatch`) has a job per platform
+and uploads the archive plus its metadata as an artifact.
 
 The build script:
 
@@ -62,11 +67,26 @@ extraction in place on every machine that already has it.
 
 ## Platform policy
 
-The checked-in patched runtime currently covers macOS arm64, the platform on
-which SayType enables local-first behavior. Other platforms keep upstream
-`b9960`, but SayType retires the chat worker after every decode there so stale
-media state cannot cross recordings. Add a platform to the resident-safe set
-only after its patched archive passes the same two-audio regression.
+The checked-in patched runtimes cover **macOS arm64** and **Windows x64**. Other
+platforms keep upstream `b9960`, and SayType retires the chat worker after every
+decode there so stale media state cannot cross recordings. `LLAMA_BUILD` and
+`RESIDENT_RUNTIME_SAFE` in `local_asr.rs` list exactly the same platforms, and
+`llama-runtime-contract.test.mjs` fails if the two ever drift — a platform
+resident on an unpatched runtime is precisely the bug.
+
+Add a platform only after its own archive passes the two-audio regression:
+
+```sh
+SAYTYPE_TEST_WAV_A=a.wav SAYTYPE_TEST_WAV_B=b.wav \
+  cargo test real_two_audio_contamination -- --ignored --nocapture
+```
+
+Two clips of *different* speech, alternated on one resident worker. Use distinct
+audio: `real_subprocess_smoke` decodes the same silence twice, which cannot tell
+a contaminated result from a correct one. The test has teeth — on unpatched
+Windows b9960 the worker died on the third alternating clip, while the patched
+archive ran 14 decodes clean and returned byte-identical transcripts to the
+upstream one-shot CLI.
 
 ## Upgrade policy
 
