@@ -40,7 +40,10 @@ function updateCargoTomlVersion(filePath, version) {
 
 // Replace the version of this crate's own entry in Cargo.lock (leave deps alone).
 function updateCargoLockVersion(filePath, version) {
-  const re = /(name = "saytype"\nversion = ")[^"]+(")/;
+  // Cargo.lock is CRLF in a Windows checkout, so these two lines are not joined
+  // by a bare \n. Matching one pins the whole release flow to LF platforms, and
+  // it fails *after* the other three files are already rewritten.
+  const re = /(name = "saytype"\r?\nversion = ")[^"]+(")/;
   const content = fs.readFileSync(filePath, "utf8");
   if (!re.test(content)) {
     throw new Error('Could not find the "saytype" package entry in src-tauri/Cargo.lock');
