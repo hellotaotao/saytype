@@ -43,6 +43,25 @@ jobs:
         with:
           node-version: lts/*
 
+      # GGML_VULKAN=ON needs the Vulkan headers, vulkan-1.lib and glslc, none of
+      # which ship on the runner. This deliberately tracks LunarG's "latest"
+      # rather than a pinned version: the exact SDK has to be observed once
+      # before it can be pinned, so the step prints what it installed and the
+      # version belongs in this file as a follow-up.
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk-installer.exe"
+          curl.exe -sSL -o $installer "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe"
+          & $installer --root C:\VulkanSDK --accept-licenses --default-answer --confirm-command install | Out-Null
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $sdk) { $sdk = Get-Item C:\VulkanSDK }
+          Write-Host "Installed Vulkan SDK: $($sdk.FullName)"
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=$($sdk.FullName)"
+          Add-Content $env:GITHUB_PATH "$($sdk.FullName)\Bin"
+          & "$($sdk.FullName)\Bin\glslc.exe" --version
+
       - name: Build patched llama runtime
         run: npm run build:llama-runtime:win-x64
 

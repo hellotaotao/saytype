@@ -169,6 +169,14 @@ if (targetPlatform === "darwin") {
   configureArgs.push(`-DCMAKE_TOOLCHAIN_FILE=${writeMacToolchain(sourceDir, targetArch, workDir)}`);
   configureArgs.push("-DGGML_METAL=ON");
 }
+// The GPU backend has to be compiled in; it is not a runtime switch. Without
+// this the build produces no ggml-vulkan, `--list-devices` reports nothing, and
+// `--device Vulkan0` has nothing to select. One patched runtime carrying both
+// backends keeps Windows in the same shape as macOS, where the same archive
+// serves CPU and Metal and the choice is made per run.
+if (targetPlatform === "win32") {
+  configureArgs.push("-DGGML_VULKAN=ON");
+}
 run("cmake", configureArgs);
 run("cmake", ["--build", buildDir, "--config", "Release", "--target", "llama-mtmd-cli", "-j", String(os.cpus().length)]);
 
