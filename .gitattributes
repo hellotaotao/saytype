@@ -1,1 +1,4 @@
-vendor/llama.cpp/patches/*.patch -whitespace
+# The patch is applied with `git apply` against an LF upstream checkout, so it
+# must stay LF in the working tree too — a CRLF copy (what core.autocrlf=true
+# produces on Windows, including GitHub's Windows runners) fails to apply.
+vendor/llama.cpp/patches/*.patch -whitespace eol=lf
