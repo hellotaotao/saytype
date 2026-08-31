@@ -1,4 +1,12 @@
-# The patch is applied with `git apply` against an LF upstream checkout, so it
-# must stay LF in the working tree too — a CRLF copy (what core.autocrlf=true
-# produces on Windows, including GitHub's Windows runners) fails to apply.
-vendor/llama.cpp/patches/*.patch -whitespace eol=lf
+# Declare line endings here instead of leaving them to each machine's
+# core.autocrlf. Tooling that reads these files byte-for-byte breaks on a CRLF
+# working tree — `git apply` on the llama patch, a shebang, a regex over
+# Cargo.lock — and every such bug was invisible on macOS, where the working tree
+# and the repo already agree. Every blob in this repo is LF today, so this
+# changes no committed content; it only fixes what a Windows checkout writes to
+# disk, and stops a CRLF blob from ever entering history.
+* text=auto eol=lf
+
+# Applied with `git apply` against an LF upstream checkout. The rule above
+# already keeps it LF; -whitespace stops git flagging upstream's context lines.
+vendor/llama.cpp/patches/*.patch -whitespace
