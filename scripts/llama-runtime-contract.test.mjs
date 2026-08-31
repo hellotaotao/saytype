@@ -50,7 +50,9 @@ const BUNDLED_RUNTIMES = [
   "llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz",
   "llama-b9960-saytype-reset-v1-bin-windows-x64.zip",
 ];
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\]/g, "\$&");
+// Only `.` is a regex metacharacter in these archive names, and `[.]` keeps the
+// escape free of backslashes so the template literals below stay readable.
+const escapeRegExp = (value) => value.replaceAll(".", "[.]");
 
 /// Collect the platform tuples in the `#[cfg(...)]` that guards a declaration.
 const platformsGuarding = (declaration) => {
@@ -71,7 +73,7 @@ test("SayType only keeps a resident worker when the patched runtime is selected"
   assert.match(localAsr, /const RESIDENT_RUNTIME_SAFE:\s*bool\s*=\s*true/);
   assert.match(localAsr, /if !RESIDENT_RUNTIME_SAFE/);
   for (const archive of BUNDLED_RUNTIMES) {
-    assert.match(localAsr, new RegExp(`include_bytes!\([^)]*${escapeRegExp(archive)}`));
+    assert.match(localAsr, new RegExp(`include_bytes![(][^)]*${escapeRegExp(archive)}`));
   }
 });
 
@@ -104,7 +106,7 @@ test("the bundled runtime manifests match the committed archives", () => {
     const archive = readFileSync(path.join(repoRoot, "src-tauri/resources/local-asr", name));
     const declared = localAsr.match(
       new RegExp(
-        `rel_path: "${escapeRegExp(name)}"[\s\S]*?size: ([\d_]+),\s*sha256: "([0-9a-f]{64})"`,
+        `rel_path: "${escapeRegExp(name)}"[^]*?size: ([0-9_]+),[^]*?sha256: "([0-9a-f]{64})"`,
       ),
     );
     assert.ok(declared, `manifest entry for ${name} not found in local_asr.rs`);
