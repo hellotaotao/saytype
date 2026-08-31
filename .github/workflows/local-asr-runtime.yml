@@ -26,3 +26,29 @@ jobs:
           name: llama-b9960-saytype-reset-v1-macos-arm64
           if-no-files-found: error
           path: artifacts/local-asr-runtime/*
+
+  # windows-latest ships MSVC and CMake, so the build needs no toolchain setup.
+  # CMake's default multi-config generator emits build/bin/Release, which
+  # build-patched-llama.mjs already probes for.
+  windows-x64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout SayType
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Build patched llama runtime
+        run: npm run build:llama-runtime:win-x64
+
+      - name: Upload runtime and checksum metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-b9960-saytype-reset-v1-windows-x64
+          if-no-files-found: error
+          path: artifacts/local-asr-runtime/*

@@ -142,6 +142,10 @@ mkdirSync(sourceDir, { recursive: true });
 mkdirSync(outputDir, { recursive: true });
 
 run("git", ["init", "--quiet"], { cwd: sourceDir });
+// GitHub's Windows runners set core.autocrlf=true globally, which would check
+// the upstream tree out with CRLF and make the LF patch fail to apply. Pin the
+// temp clone to LF instead of relying on the ambient git config.
+run("git", ["config", "core.autocrlf", "false"], { cwd: sourceDir });
 run("git", ["remote", "add", "origin", upstream], { cwd: sourceDir });
 run("git", ["fetch", "--quiet", "--depth", "1", "origin", manifest.upstreamCommit], { cwd: sourceDir });
 run("git", ["checkout", "--quiet", "--detach", "FETCH_HEAD"], { cwd: sourceDir });
