@@ -51,16 +51,24 @@ jobs:
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk-installer.exe"
           curl.exe -sSL -o $installer "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe"
-          & $installer --root C:\VulkanSDK --accept-licenses --default-answer --confirm-command install | Out-Null
-          $sdk = Get-ChildItem C:\VulkanSDK -Directory -ErrorAction SilentlyContinue |
+          # No --root: the default layout is C:\VulkanSDK\<version>\, so the
+          # directory name reports the version that needs pinning here later.
+          # Forcing the root flattens that away and leaves the SDK's own
+          # subfolders looking like version directories.
+          & $installer --accept-licenses --default-answer --confirm-command install | Out-Null
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } |
             Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $sdk) { $sdk = Get-Item C:\VulkanSDK }
-          Write-Host "Installed Vulkan SDK: $($sdk.FullName)"
+          if (-not $sdk) { throw "no versioned Vulkan SDK under C:\VulkanSDK" }
+          $glslc = Join-Path $sdk.FullName "Bin\glslc.exe"
+          if (-not (Test-Path $glslc)) { throw "glslc.exe missing at $glslc" }
+          Write-Host "Installed Vulkan SDK: $($sdk.Name)  <- pin this version"
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=$($sdk.FullName)"
           Add-Content $env:GITHUB_PATH "$($sdk.FullName)\Bin"
-          & "$($sdk.FullName)\Bin\glslc.exe" --version
+          & $glslc --version
 
       - name: Build patched llama runtime
         run: npm run build:llama-runtime:win-x64
