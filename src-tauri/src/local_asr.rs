@@ -31,35 +31,27 @@ pub fn normalize_local_model_id(model: &str) -> &'static str {
 /// Pinned llama.cpp release. Must stay ≥ b9173 (Qwen3-ASR repetition fix,
 /// ggml-org/llama.cpp#22357). Upgrading requires re-verifying CLI flags,
 /// stdout format, all sha256s, and a real-dictation regression.
-// The patched runtime is per-platform: a platform joins this list only after
-// its archive passes the two-audio resident regression (vendor/llama.cpp/README.md).
-#[cfg(any(
-  all(target_os = "macos", target_arch = "aarch64"),
-  all(target_os = "windows", target_arch = "x86_64")
-))]
-pub const LLAMA_BUILD: &str = "b9960-saytype-reset-v1";
-#[cfg(not(any(
-  all(target_os = "macos", target_arch = "aarch64"),
-  all(target_os = "windows", target_arch = "x86_64")
-)))]
+// Upstream's own release on every platform. SayType built a patched runtime for
+// a while to make worker reuse safe; retiring the worker after each decode makes
+// the patch unnecessary, and upstream's packs carry distribution work that a
+// private build kept getting wrong — per-arch CPU variants, a bundled OpenMP
+// runtime, no stray OpenSSL link. See vendor/llama.cpp/README.md.
 pub const LLAMA_BUILD: &str = "b9960";
 
-/// Upstream b9960 keeps an mtmd media batch past the lifetime of its chunks,
-/// which can reuse the previous audio embedding in a resident process — on
-/// Windows it crashed the worker outright on the third alternating clip. Only
-/// the maintained runtimes carry the per-audio ownership patch, so this must
-/// track LLAMA_BUILD's patched set exactly: a platform pointed at upstream
-/// b9960 has to keep retiring its worker after every decode.
-#[cfg(any(
-  all(target_os = "macos", target_arch = "aarch64"),
-  all(target_os = "windows", target_arch = "x86_64")
-))]
-const RESIDENT_RUNTIME_SAFE: bool = true;
-#[cfg(not(any(
-  all(target_os = "macos", target_arch = "aarch64"),
-  all(target_os = "windows", target_arch = "x86_64")
-)))]
-const RESIDENT_RUNTIME_SAFE: bool = false;
+/// Whether a worker may serve more than one decode. Off unless the config file
+/// says otherwise — see `AppConfig::reuse_local_worker`.
+///
+/// Prewarming is deliberately *not* gated on this. The two were conflated
+/// before, which left every platform outside the resident-safe set paying the
+/// model load after the user stopped speaking rather than during it. Starting a
+/// worker at shortcut-down and retiring it after its one decode keeps each
+/// process to a single audio, which is what makes upstream b9960 safe here: the
+/// media-batch bug needs two audios in one process to appear.
+fn worker_reuse_enabled() -> bool {
+  crate::settings::read_config()
+    .map(|config| config.reuse_local_worker)
+    .unwrap_or(false)
+}
 
 pub struct Asset {
   /// Final location under local_asr_dir(); doubles as the download's .part
@@ -104,13 +96,13 @@ pub const MODEL_ASSETS: &[Asset] = &[
 // zip -- rel_path/urls reflect each asset's actual file extension.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static MAC_ZIP: Asset = Asset {
-  rel_path: "llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz",
-  urls: &[],
-  bundled: Some(include_bytes!(
-    "../resources/local-asr/llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz"
-  )),
-  size: 3_709_958,
-  sha256: "adc9efc6ea408e9e708e193efc26ce0914f5fdc4ecd6c2d7de1bbd9cc65885ef",
+  rel_path: "llama-macos-arm64.tar.gz",
+  urls: &[
+    "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-macos-arm64.tar.gz",
+  ],
+  bundled: None,
+  size: 10_734_569,
+  sha256: "7a8c6b6ae3395e15b5cc330ed2938cc0aa4510905db1189658fd022035734b48",
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn llama_zip_asset() -> &'static Asset {
@@ -137,13 +129,13 @@ pub fn llama_zip_asset() -> &'static Asset {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 static WIN_ZIP: Asset = Asset {
-  rel_path: "llama-b9960-saytype-reset-v1-bin-windows-x64.zip",
-  urls: &[],
-  bundled: Some(include_bytes!(
-    "../resources/local-asr/llama-b9960-saytype-reset-v1-bin-windows-x64.zip"
-  )),
-  size: 3_751_460,
-  sha256: "78b767a628f6ba31acd58916f76700415f4406d27ecf2fcd6428be3d1dc5c54e",
+  rel_path: "llama-win-x64.zip",
+  urls: &[
+    "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-win-cpu-x64.zip",
+  ],
+  bundled: None,
+  size: 18_209_357,
+  sha256: "795333e29cedf9f9ef9ae91324bfa423e338d39d75cc63a8dd76d1686c32ced6",
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub fn llama_zip_asset() -> &'static Asset {
@@ -190,11 +182,12 @@ fn cleanup_legacy_assets_at(app_data: &Path) -> Result<()> {
   // this exact directory; leaving it behind costs roughly another model copy.
   remove_legacy_dir(&app_data.join("models/qwen3-asr-0.6b-int8"))?;
 
-  // Apple Silicon moved from the unpatched upstream runtime to a request-local
-  // build. On platforms where b9960 is still current, keep it untouched.
-  if LLAMA_BUILD != "b9960" {
-    remove_legacy_dir(&app_data.join("local-asr/bin/b9960"))?;
-  }
+  // Both directions of the patched-runtime experiment leave a stale extraction
+  // behind, so clear whichever one is not current. macOS arm64 and, for v1.10.x,
+  // Windows ran the patched build; everything now runs upstream b9960 again, and
+  // an upgrade that switches back would otherwise strand ~14 MB per machine.
+  let stale = if LLAMA_BUILD == "b9960" { "b9960-saytype-reset-v1" } else { "b9960" };
+  remove_legacy_dir(&app_data.join("local-asr/bin").join(stale))?;
   Ok(())
 }
 
@@ -519,6 +512,11 @@ struct ResidentWorker {
   ctx_size: u32,
   generation: u64,
   epoch: u64,
+  /// Previous transcript from this worker, for the contamination check in
+  /// `transcribe`. Always `None` unless reuse is on, since a retired worker
+  /// never sees a second audio.
+  last_transcript: Option<String>,
+  decodes_served: u32,
 }
 
 impl ResidentWorker {
@@ -551,6 +549,8 @@ impl ResidentWorker {
       stdout,
       ctx_size,
       generation: 0,
+      last_transcript: None,
+      decodes_served: 0,
       epoch: RESIDENT_EPOCH.load(Ordering::Relaxed),
     })
   }
@@ -592,7 +592,31 @@ impl ResidentWorker {
     if !output.contains("<asr_text>") {
       anyhow::bail!("resident worker returned no ASR marker");
     }
-    Ok(parse_mtmd_output(&output))
+    let text = parse_mtmd_output(&output);
+    self.decodes_served += 1;
+
+    // Contamination check. Upstream b9960 can hand a reused worker the media
+    // batch from the previous call, so the decode returns the previous audio's
+    // transcript. That is indistinguishable from a correct result unless the
+    // two clips differ, which is why it is caught here by comparison rather
+    // than by anything the output itself reveals.
+    //
+    // A user really can dictate the same words twice, so this over-reports.
+    // That costs one extra decode and still returns the right text; the
+    // alternative — inserting the previous utterance — is not recoverable.
+    if !text.trim().is_empty() && self.last_transcript.as_deref() == Some(text.as_str()) {
+      log::warn!(
+        "local-asr: POLLUTION DETECTED — decode {} on this worker returned the previous \
+         transcript verbatim; retiring it and re-decoding one-shot. This is upstream b9960's \
+         media-batch reuse, the reason reuse_local_worker defaults off. chars={} text={:?}",
+        self.decodes_served,
+        text.chars().count(),
+        text.chars().take(80).collect::<String>(),
+      );
+      anyhow::bail!("resident worker returned the previous transcript (contaminated)");
+    }
+    self.last_transcript = Some(text.clone());
+    Ok(text)
   }
 }
 
@@ -726,11 +750,10 @@ pub fn keep_resident_worker_warm() -> bool {
   true
 }
 
+/// Park unconditionally. Prewarm uses this: the worker it just started has to
+/// be waiting in the slot for the decode that follows, whether or not the
+/// worker is allowed to survive past that decode.
 fn park_resident_worker_for(mut worker: ResidentWorker, idle_timeout: Duration) {
-  if !RESIDENT_RUNTIME_SAFE {
-    let _ = worker.child.start_kill();
-    return;
-  }
   if worker.epoch != RESIDENT_EPOCH.load(Ordering::Relaxed) {
     let _ = worker.child.start_kill();
     return;
@@ -741,13 +764,21 @@ fn park_resident_worker_for(mut worker: ResidentWorker, idle_timeout: Duration) 
   schedule_resident_retirement(generation, idle_timeout);
 }
 
-fn park_resident_worker(worker: ResidentWorker) {
+/// Park after a decode — the one place reuse is decided. Retiring here is what
+/// keeps each worker to a single audio, so the next dictation gets a process
+/// that has never seen another clip.
+fn park_resident_worker(mut worker: ResidentWorker) {
+  if !worker_reuse_enabled() {
+    let _ = worker.child.start_kill();
+    return;
+  }
   park_resident_worker_for(worker, RESIDENT_IDLE_TIMEOUT);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResidentPrewarmOutcome {
-  Unsupported,
+  // No Unsupported: prewarm is available on every platform now that it no
+  // longer rides on the reuse flag.
   Ineligible,
   AssetsMissing,
   Reused,
@@ -775,10 +806,10 @@ async fn prewarm_resident_worker_inner(
   eligible: impl FnOnce() -> Result<bool>,
   progress: &PipelineProgress,
 ) -> Result<ResidentPrewarmOutcome> {
-  if !RESIDENT_RUNTIME_SAFE {
-    return Ok(ResidentPrewarmOutcome::Unsupported);
-  }
-
+  // Prewarm runs on every platform. It used to be gated on the same flag as
+  // reuse, so anywhere the resident worker was unsafe also lost the load
+  // overlap — which was the larger of the two wins, and the one that costs
+  // nothing in correctness.
   let queued_at = std::time::Instant::now();
   let _inference_permit = LOCAL_INFERENCE
     .acquire()
@@ -1770,66 +1801,6 @@ mod tests {
     assert!(assets_ready_for_at(dir, QWEN_MODEL_ID));
     assert!(!assets_ready_for_at(dir, NEMOTRON_MODEL_ID));
   }
-
-  #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-  #[test]
-  fn bundled_runtime_matches_the_pinned_manifest() {
-    let asset = llama_zip_asset();
-    let bytes = asset.bundled.expect("Apple Silicon runtime must be bundled");
-    assert_eq!(LLAMA_BUILD, "b9960-saytype-reset-v1");
-    assert!(RESIDENT_RUNTIME_SAFE);
-    assert_eq!(bytes.len() as u64, asset.size);
-    assert_eq!(format!("{:x}", sha2::Sha256::digest(bytes)), asset.sha256);
-  }
-
-  #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-  #[test]
-  fn bundled_runtime_migrates_an_existing_model_without_a_download() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let dir = temp.path();
-    for asset in MODEL_ASSETS {
-      let path = dir.join(asset.rel_path);
-      fs::create_dir_all(path.parent().unwrap()).unwrap();
-      fs::File::create(path).unwrap().set_len(asset.size).unwrap();
-    }
-    assert!(!assets_ready_at(dir));
-
-    ensure_bundled_runtime_at(dir).unwrap();
-
-    assert!(assets_ready_at(dir));
-    assert!(!dir.join(llama_zip_asset().rel_path).exists());
-  }
-
-  #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-  #[test]
-  fn a_stale_runtime_extraction_is_replaced_by_the_bundled_archive() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let dir = temp.path();
-    for asset in MODEL_ASSETS {
-      let path = dir.join(asset.rel_path);
-      fs::create_dir_all(path.parent().unwrap()).unwrap();
-      fs::File::create(path).unwrap().set_len(asset.size).unwrap();
-    }
-    ensure_bundled_runtime_at(dir).unwrap();
-    let cli = cli_path(dir);
-    let fresh_len = fs::metadata(&cli).unwrap().len();
-    assert_eq!(fs::read_to_string(runtime_stamp_path(dir)).unwrap(), llama_zip_asset().sha256);
-
-    // What a rebuilt archive under an unchanged runtime id meets on a machine
-    // that already extracted the old one: the CLI is present and executable, so
-    // nothing but the stamp can tell the app those files are stale.
-    fs::write(&cli, b"stale").unwrap();
-    fs::write(runtime_stamp_path(dir), "0".repeat(64)).unwrap();
-    ensure_bundled_runtime_at(dir).unwrap();
-    assert_eq!(fs::metadata(&cli).unwrap().len(), fresh_len, "stamp mismatch must re-extract");
-
-    // An extraction predating the stamp counts as stale for the same reason.
-    fs::write(&cli, b"stale").unwrap();
-    fs::remove_file(runtime_stamp_path(dir)).unwrap();
-    ensure_bundled_runtime_at(dir).unwrap();
-    assert_eq!(fs::metadata(&cli).unwrap().len(), fresh_len, "missing stamp must re-extract");
-  }
-
   #[test]
   fn assets_ready_requires_models_at_exact_size_and_an_executable_cli() {
     let temp = tempfile::TempDir::new().unwrap();
@@ -2217,31 +2188,29 @@ mod tests {
     assert_eq!(leftovers, 0, "temp wav files must be removed");
   }
 
-  /// The regression that gates a platform joining the resident-safe set.
-  /// Upstream b9960 leaves the media batch on the chat context, so a decode can
-  /// be handed the *previous* audio's embedding. `real_subprocess_smoke` cannot
-  /// see that — it decodes the same silence twice, which makes a contaminated
-  /// result indistinguishable from a correct one.
+  /// The invariant reuse has to hold: a contaminated decode is never returned
+  /// as if it were correct.
   ///
-  /// This drives one ResidentWorker directly instead of going through
-  /// transcribe_wav: a parked worker's idle timeout is 100 ms under cfg(test),
-  /// so routing through the pool would race retirement and test the lifecycle
-  /// rather than the embedding.
+  /// SayType retires a worker after each decode, so this path is only reachable
+  /// with `reuse_local_worker` on. Against upstream b9960 contamination is the
+  /// normal outcome — measured as every decode after the first returning the
+  /// previous transcript, then the process aborting on memory corruption — so
+  /// this does not assert that reuse works. It asserts that when reuse breaks,
+  /// `transcribe` fails loudly instead of handing back the wrong words, which
+  /// is what lets the caller retire the worker and re-run one-shot.
   ///
   /// Needs the real assets plus two distinct 16 kHz mono WAVs:
   ///   SAYTYPE_TEST_WAV_A=a.wav SAYTYPE_TEST_WAV_B=b.wav \
-  ///     cargo test real_two_audio_contamination -- --ignored --nocapture
+  ///     cargo test real_reuse_pollution_is_detected -- --ignored --nocapture
   #[test]
   #[ignore]
-  fn real_two_audio_contamination() {
+  fn real_reuse_pollution_is_detected() {
     assert!(assets_ready(), "lay out the assets first");
     let path_a = std::env::var("SAYTYPE_TEST_WAV_A").expect("set SAYTYPE_TEST_WAV_A");
     let path_b = std::env::var("SAYTYPE_TEST_WAV_B").expect("set SAYTYPE_TEST_WAV_B");
     let wav_a = fs::read(&path_a).expect("read SAYTYPE_TEST_WAV_A");
     let wav_b = fs::read(&path_b).expect("read SAYTYPE_TEST_WAV_B");
     assert_ne!(wav_a, wav_b, "the two clips must differ");
-    // A context change respawns the worker, which would quietly turn this into
-    // a series of one-shot decodes and prove nothing.
     let ctx = ctx_size_for_wav(wav_a.len());
     assert_eq!(ctx, ctx_size_for_wav(wav_b.len()), "both clips must map to one context");
 
@@ -2249,31 +2218,36 @@ mod tests {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut worker = rt.block_on(ResidentWorker::spawn(&base, ctx)).expect("resident worker");
 
-    let reference_a = rt
+    let first = rt
       .block_on(worker.transcribe(Path::new(&path_a), wav_a.len(), &mut |_: &str| {}))
-      .expect("first decode of A");
-    let reference_b = rt
-      .block_on(worker.transcribe(Path::new(&path_b), wav_b.len(), &mut |_: &str| {}))
-      .expect("first decode of B");
-    assert!(!reference_a.trim().is_empty(), "clip A must transcribe to speech");
-    assert_ne!(
-      reference_a, reference_b,
-      "the clips must transcribe differently or contamination stays invisible"
-    );
+      .expect("first decode");
+    assert!(!first.trim().is_empty(), "clip A must transcribe to speech");
 
-    // The stale-embedding reuse is intermittent, so one A/B pair is not evidence.
+    // Alternate on the one worker. Each decode either matches its own clip or
+    // is rejected; returning the other clip's text is the failure.
     for round in 0..6 {
-      for (label, path, len, reference) in [
-        ("A", &path_a, wav_a.len(), &reference_a),
-        ("B", &path_b, wav_b.len(), &reference_b),
+      for (label, path, len, other) in [
+        ("B", &path_b, wav_b.len(), &first),
+        ("A", &path_a, wav_a.len(), &first),
       ] {
-        let got = rt
-          .block_on(worker.transcribe(Path::new(path), len, &mut |_: &str| {}))
-          .expect("resident decode");
-        assert_eq!(&got, reference, "round {round} clip {label}: decoded as another clip");
+        match rt.block_on(worker.transcribe(Path::new(path), len, &mut |_: &str| {})) {
+          Ok(text) if label == "A" => {
+            assert_eq!(&text, other, "round {round}: clip A drifted from its own transcript");
+          }
+          Ok(text) => {
+            assert_ne!(
+              &text, other,
+              "round {round}: clip {label} returned clip A's transcript and was accepted",
+            );
+          }
+          Err(error) => {
+            // Contamination or a dead worker. Both are reported, neither is
+            // silently wrong, and the caller falls back to one-shot.
+            eprintln!("round {round} clip {label}: rejected as expected: {error:#}");
+            return;
+          }
+        }
       }
     }
-
-    assert!(worker.is_running(), "all decodes must have come from one live process");
   }
 }

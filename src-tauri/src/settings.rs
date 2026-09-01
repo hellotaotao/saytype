@@ -97,6 +97,18 @@ pub struct AppConfig {
   pub nemotron_latency_ms: u32,
   #[serde(default)]
   pub onboarding_completed: bool,
+  /// Experimental, config-file only, off by default: keep one llama-mtmd-cli
+  /// worker across decodes instead of retiring it after each one.
+  ///
+  /// Prewarming already hides the model load behind the user's speech, so reuse
+  /// only saves time on utterances shorter than that load. It is off because
+  /// upstream b9960 hands a reused worker the previous audio's embedding —
+  /// measured on Windows as every decode after the first returning the previous
+  /// transcript, then the process aborting on memory corruption. The decoder
+  /// detects a repeated transcript, logs it, and re-decodes one-shot, which is
+  /// what this switch exists to exercise. Deliberately not in the settings UI.
+  #[serde(default)]
+  pub reuse_local_worker: bool,
 }
 
 impl Default for AppConfig {
@@ -118,6 +130,7 @@ impl Default for AppConfig {
       dictionary: String::new(),
       nemotron_latency_ms: default_nemotron_latency_ms(),
       onboarding_completed: false,
+      reuse_local_worker: false,
     }
   }
 }

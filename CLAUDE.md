@@ -212,19 +212,25 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   "not required"; clipboard write and autostart are still stubs. See
   `docs/superpowers/specs/2026-07-01-cross-platform-support-design.md`.
 - `local_asr.rs` — the local transcription backend (provider `"local"`): Qwen3-ASR-0.6B
-  Q8_0 GGUF run by `llama-mtmd-cli` (pinned llama.cpp release, `LLAMA_BUILD`). Where the
-  **patched** runtime ships — macOS arm64 and Windows x64, a set `RESIDENT_RUNTIME_SAFE`
-  must track exactly — one chat-mode worker stays **resident** across decodes and is
-  prewarmed at recording start, so a dictation stops paying the model load (measured on a
-  Windows i5-7400: load is 2.4 s with a warm file cache, 6.0 s cold; a 9 s clip decodes in
-  6.3 s one-shot against 3.9 s resident, for ~1.1 GB held over the idle window). Every
-  other platform runs upstream b9960 and **retires its worker after each decode**: upstream
-  leaves an mtmd media batch on the chat context and can hand the next decode the previous
-  audio's embedding — unpatched Windows died outright on the third alternating clip, which
-  is what `real_two_audio_contamination` pins down. Cancel = kill (kill_on_drop). Owns the
-  asset manifest (2 GGUFs, ~1GB under `<app-data>/local-asr/`, plus the llama.cpp runtime —
-  bundled via `include_bytes!` on the patched platforms, downloaded elsewhere), the
-  resumable sha256-gated downloader, and the stdout parser (`language <lang><asr_text>`).
+  Q8_0 GGUF run by `llama-mtmd-cli` from **upstream's own llama.cpp release**
+  (`LLAMA_BUILD`, downloaded per platform). One chat-mode worker is **prewarmed at
+  shortcut-down and retired after its single decode**, so the model load overlaps the
+  user's speech instead of following it, and each process only ever sees one audio.
+  Measured on a Windows i5-7400: load is 2.7 s warm / 6.0 s cold, hidden entirely for any
+  utterance longer than that; a 9 s clip goes 6.3 s one-shot → 3.9 s prewarmed. Nothing is
+  held over the idle window.
+  **One audio per process is the correctness property, not an optimization detail.**
+  Upstream leaves an mtmd media batch on the chat context, so a worker that decodes twice
+  can be handed the previous audio's embedding: on Windows every decode after the first
+  returned the previous transcript, then the process aborted on memory corruption
+  (`0xC0000409`). `AppConfig::reuse_local_worker` (config file only, default off) keeps a
+  worker across decodes for testing that; a decode whose transcript matches the previous
+  one verbatim is logged as `POLLUTION DETECTED`, retires the worker, and re-runs one-shot.
+  SayType briefly shipped a patched runtime to make reuse safe — see
+  `vendor/llama.cpp/README.md` for why building one cost more than it returned.
+  Cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs + the llama.cpp archive,
+  ~1GB under `<app-data>/local-asr/`), the resumable sha256-gated downloader, and the
+  stdout parser (`language <lang><asr_text>`).
   The extracted runtime is stamped with the archive's sha256
   (`bin/<LLAMA_BUILD>/.saytype-runtime-sha256`) and re-extracted on mismatch — the CLI
   merely being present says nothing about *which* archive produced it, so without the

@@ -11,8 +11,6 @@
     "build:mac:install": "node scripts/bump-dev-build.js && CI=true sh -c '[ -f scripts/sign.env ] && . ./scripts/sign.env; tauri build --target aarch64-apple-darwin' && node scripts/collect-artifacts.js aarch64-apple-darwin --install",
     "build:win": "node scripts/bump-dev-build.js && tauri build --target x86_64-pc-windows-msvc",
     "build:linux": "node scripts/bump-dev-build.js && tauri build --target x86_64-unknown-linux-gnu",
-    "build:llama-runtime:mac-arm64": "node scripts/build-patched-llama.mjs --platform darwin --arch arm64",
-    "build:llama-runtime:win-x64": "node scripts/build-patched-llama.mjs --platform win32 --arch x64",
     "build:nemotron-runtime:mac-arm64": "bash scripts/build-nemotron-runtime.sh",
     "tauri": "tauri"
   },
