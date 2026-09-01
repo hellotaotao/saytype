@@ -17,7 +17,11 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { assertRelocatableRpaths, smokeTestRelocated } from "./lib/runtime-relocation.mjs";
+import {
+  assertRelocatableRpaths,
+  assertSelfContainedImports,
+  smokeTestRelocated,
+} from "./lib/runtime-relocation.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = path.join(repoRoot, "vendor/llama.cpp/runtime.json");
@@ -170,6 +174,14 @@ const configureArgs = [
   // libssl.3.dylib on macOS, and neither exists on a user's machine. SayType
   // downloads models through its own Rust client, so no HTTPS is wanted here.
   "-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON",
+  // MSVC's OpenMP lives in VCOMP140.DLL, which ggml-base and ggml-cpu then
+  // import from the machine rather than the archive — the same shape as the
+  // OpenSSL dependency above, and the stripped-environment probe cannot catch
+  // it because the loader always searches the system directory. Upstream avoids
+  // this by using LLVM's runtime and shipping libomp140.x86_64.dll inside the
+  // pack; dropping OpenMP keeps the archive self-contained without vendoring a
+  // second runtime. llama.cpp falls back to its own thread pool.
+  "-DGGML_OPENMP=OFF",
 ];
 configureArgs.push(...relocatableRpathArgs(targetPlatform));
 if (targetPlatform === "darwin") {
@@ -186,6 +198,7 @@ if (!buildBin) throw new Error(`Build output directory is missing under ${buildD
 copyRuntimeFiles(buildBin, stageDir, targetPlatform);
 cpSync(path.join(sourceDir, "LICENSE"), path.join(stageDir, "LICENSE"));
 assertRelocatableRpaths(stageDir, targetPlatform);
+assertSelfContainedImports(stageDir, targetPlatform);
 const canRunTarget = targetPlatform === process.platform
   && targetArch === architectureLabel(process.arch);
 const smokeTest = canRunTarget
