@@ -604,14 +604,19 @@ impl ResidentWorker {
     // A user really can dictate the same words twice, so this over-reports.
     // That costs one extra decode and still returns the right text; the
     // alternative — inserting the previous utterance — is not recoverable.
-    if !text.trim().is_empty() && self.last_transcript.as_deref() == Some(text.as_str()) {
+    if repeats_previous(self.last_transcript.as_deref(), &text) {
+      // A digest, never the words: this is dictation, it lands in a log file on
+      // disk, and the whole point of the local engine is that what the user
+      // says stays with them. The hash still lets repeats be correlated across
+      // lines, which is all the diagnosis needs.
+      let digest = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
       log::warn!(
         "local-asr: POLLUTION DETECTED — decode {} on this worker returned the previous \
          transcript verbatim; retiring it and re-decoding one-shot. This is upstream b9960's \
-         media-batch reuse, the reason reuse_local_worker defaults off. chars={} text={:?}",
+         media-batch reuse, the reason reuse_local_worker defaults off. chars={} sha256={}",
         self.decodes_served,
         text.chars().count(),
-        text.chars().take(80).collect::<String>(),
+        &digest[..12],
       );
       anyhow::bail!("resident worker returned the previous transcript (contaminated)");
     }
@@ -773,6 +778,40 @@ fn park_resident_worker(mut worker: ResidentWorker) {
     return;
   }
   park_resident_worker_for(worker, RESIDENT_IDLE_TIMEOUT);
+}
+
+/// Whether a decode handed back exactly what the previous one did, which on a
+/// reused worker means upstream's media batch was served again instead of the
+/// new audio.
+///
+/// Empty repeats count. An empty result is harmless to insert, but it is the
+/// same evidence that the worker is serving stale state, and a worker left
+/// alive on that evidence is one whose *next* decode returns the previous
+/// words. There is nothing to compare on the first decode.
+fn repeats_previous(previous: Option<&str>, text: &str) -> bool {
+  previous == Some(text)
+}
+
+/// Start a worker in the background for the decode that is about to follow.
+///
+/// A chunked dictation decodes clip after clip. Retiring each worker is what
+/// keeps one audio per process, but on its own it puts the model load back in
+/// front of every chunk after the first — the cost
+/// `docs/superpowers/specs/2026-07-22-local-asr-long-audio-chunking-design.md`
+/// explicitly relies on not paying ("per-chunk decoding no longer reloads the
+/// ~1.3 GiB model"), and on the final chunk there is no more speech left to
+/// hide it behind. Starting the replacement as soon as the previous chunk
+/// finishes puts that load back alongside the recording still in progress.
+fn spawn_replacement_worker() {
+  if worker_reuse_enabled() {
+    return; // the worker just parked is still in the slot
+  }
+  tauri::async_runtime::spawn(async {
+    match prewarm_resident_worker(|| Ok(true)).await {
+      Ok(outcome) => log::info!("local-asr: replacement worker for next chunk: {outcome:?}"),
+      Err(error) => log::warn!("local-asr: replacement worker failed to start: {error:#}"),
+    }
+  });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1047,6 +1086,12 @@ async fn transcribe_wav_inner(
         let resident_decode_ms = resident_started.elapsed().as_millis();
         progress.enter("park-worker");
         park_resident_worker(worker);
+        // Only for a chunked dictation: more clips are coming, and the next one
+        // should not wait for a spawn. A single-clip dictation is already done,
+        // so leaving nothing resident keeps the idle footprint at zero.
+        if chunk_index.is_some() {
+          spawn_replacement_worker();
+        }
         let total_ms = queued_at.elapsed().as_millis();
         log::info!(
           "local-asr: decode mode=resident session_id={} chunk_index={} ctx={} worker_reused={} reuse_miss={} resident_spawn_ms={} queue_ms={} total_ms={} resident_decode_ms={} first_visible_partial_ms={} wav_kb={} chars={}",
@@ -1802,6 +1847,20 @@ mod tests {
     assert!(!assets_ready_for_at(dir, NEMOTRON_MODEL_ID));
   }
   #[test]
+  fn a_repeated_transcript_is_flagged_including_an_empty_one() {
+    assert!(!repeats_previous(None, "hello"), "nothing to compare on the first decode");
+    assert!(!repeats_previous(None, ""), "an empty first decode is not a repeat");
+    assert!(repeats_previous(Some("hello"), "hello"));
+    assert!(!repeats_previous(Some("hello"), "goodbye"));
+    // What an is_empty() guard used to let through. A worker serving stale
+    // state twice is still stale, and retiring it on the empty repeat is what
+    // stops the decode after it from returning real words belonging to the
+    // previous clip.
+    assert!(repeats_previous(Some(""), ""), "an empty repeat is still a repeat");
+    assert!(!repeats_previous(Some(""), "hello"));
+  }
+
+  #[test]
   fn assets_ready_requires_models_at_exact_size_and_an_executable_cli() {
     let temp = tempfile::TempDir::new().unwrap();
     let dir = temp.path();
@@ -2152,32 +2211,30 @@ mod tests {
       "prewarm must start exactly one resident worker"
     );
     let first = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("first resident decode ok");
-    assert!(keep_resident_worker_warm(), "recording start should touch a warm worker");
-    rt.block_on(async {
-      tokio::time::sleep(Duration::from_millis(75)).await;
-    });
-    assert!(keep_resident_worker_warm(), "a later dictation should refresh the deadline again");
-    rt.block_on(async {
-      tokio::time::sleep(Duration::from_millis(75)).await;
-    });
-    assert!(
-      RESIDENT_WORKER.lock().unwrap().is_some(),
-      "the refreshed worker must survive beyond its original idle deadline"
-    );
-    let second = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("second resident decode ok");
     assert_eq!(first, "", "silence must yield empty text");
-    assert_eq!(second, "", "warm-worker silence must yield empty text");
-    assert_eq!(
-      RESIDENT_STARTS.load(Ordering::Relaxed) - starts_before,
-      1,
-      "prewarm and two same-context decodes must share one resident worker"
-    );
-    rt.block_on(async {
-      tokio::time::sleep(Duration::from_millis(500)).await;
-    });
+
+    // The default lifecycle: the prewarmed worker served its one audio and was
+    // retired, leaving nothing behind. This is the property that makes upstream
+    // b9960 safe here, so it is worth asserting rather than assuming.
     assert!(
       RESIDENT_WORKER.lock().unwrap().is_none(),
-      "idle worker must retire after the test idle timeout"
+      "a decode must retire its worker while reuse_local_worker is off"
+    );
+    assert!(!keep_resident_worker_warm(), "there is nothing left to keep warm");
+
+    // The next dictation therefore starts its own process, and gets the same
+    // answer from it.
+    let second = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("second resident decode ok");
+    assert_eq!(second, "", "a fresh worker must decode silence the same way");
+    assert_eq!(
+      RESIDENT_STARTS.load(Ordering::Relaxed) - starts_before,
+      2,
+      "the prewarmed worker serves decode one; decode two starts its own — \
+       never one worker serving two clips"
+    );
+    assert!(
+      RESIDENT_WORKER.lock().unwrap().is_none(),
+      "nothing stays resident once the dictation is done"
     );
     shutdown_resident_worker();
     // Temp file cleaned up:
