@@ -619,6 +619,20 @@ const ENGINE_CAPTION_KEY = {
   "local-nemotron": "home.engineCaptionLocalNemotron",
 };
 
+// Nemotron is wired for Apple Silicon and Windows x64. Elsewhere the engine is
+// not offered at all — a switcher button whose only outcome is an "unsupported"
+// download panel is worse than no button. The backend answers for the running
+// slice (`nemotronSupported`); renders only happen after settings load.
+function nemotronOffered() {
+  return !!cachedSettings?.nemotronSupported;
+}
+
+function availableEngineOptions() {
+  return ENGINE_OPTIONS.filter(
+    (option) => option.model !== NEMOTRON_LOCAL_MODEL || nemotronOffered()
+  );
+}
+
 function normalizeLocalModel(model) {
   return model === NEMOTRON_LOCAL_MODEL ? NEMOTRON_LOCAL_MODEL : QWEN_LOCAL_MODEL;
 }
@@ -662,7 +676,7 @@ function renderEngineCard() {
   const seg = document.createElement("div");
   seg.className = "engine-seg";
   seg.setAttribute("role", "radiogroup");
-  ENGINE_OPTIONS.forEach(({ value, label, labelKey, model, recommended }) => {
+  availableEngineOptions().forEach(({ value, label, labelKey, model, recommended }) => {
     const active = selectedEngine === value;
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1059,7 +1073,8 @@ function renderObLocal() {
   }
 
   cards.forEach((card) => {
-    card.hidden = !capable;
+    const model = normalizeLocalModel(card.getAttribute("data-local-model"));
+    card.hidden = !capable || (model === NEMOTRON_LOCAL_MODEL && !nemotronOffered());
   });
   toggle.hidden = !capable;
   cloud.hidden = capable && !obCloudExpanded;

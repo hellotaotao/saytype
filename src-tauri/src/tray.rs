@@ -21,6 +21,18 @@ const ENGINES: [(&str, &str, &str, Option<&str>); 4] = [
   ),
 ];
 
+/// The engines this build can actually run. Nemotron is currently wired for
+/// Apple Silicon and Windows x64; elsewhere it is dropped from the menu rather
+/// than offered as an entry whose only outcome is an unsupported download.
+fn available_engines() -> Vec<(&'static str, &'static str, &'static str, Option<&'static str>)> {
+  ENGINES
+    .into_iter()
+    .filter(|(_, _, _, model)| {
+      *model != Some(crate::local_asr::NEMOTRON_MODEL_ID) || crate::nemotron_asr::supported()
+    })
+    .collect()
+}
+
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
   let menu = build_menu(app, None)?;
 
@@ -111,7 +123,7 @@ fn build_menu(
   // fresh by refresh_menu(), which every settings write triggers.
   let config = crate::settings::read_config().unwrap_or_default();
   let engine = Submenu::with_id(app, "engine", "Engine", true)?;
-  for (id, label, provider, model) in ENGINES {
+  for (id, label, provider, model) in available_engines() {
     engine.append(&CheckMenuItem::with_id(
       app,
       id,
@@ -209,5 +221,16 @@ mod tests {
       Some(crate::local_asr::QWEN_MODEL_ID)
     ));
     assert!(!engine_selected(&config, "groq", None));
+  }
+
+  #[test]
+  fn nemotron_is_only_listed_where_its_runtime_exists() {
+    let ids: Vec<&str> = available_engines().iter().map(|(id, ..)| *id).collect();
+    assert!(ids.contains(&"engine-groq"));
+    assert!(ids.contains(&"engine-local-qwen"));
+    assert_eq!(
+      ids.contains(&"engine-local-nemotron"),
+      crate::nemotron_asr::supported()
+    );
   }
 }

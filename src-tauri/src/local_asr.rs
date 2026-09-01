@@ -188,6 +188,11 @@ fn cleanup_legacy_assets_at(app_data: &Path) -> Result<()> {
   // an upgrade that switches back would otherwise strand ~14 MB per machine.
   let stale = if LLAMA_BUILD == "b9960" { "b9960-saytype-reset-v1" } else { "b9960" };
   remove_legacy_dir(&app_data.join("local-asr/bin").join(stale))?;
+
+  // Nemotron ran on a privately built macOS runtime through v1.10.x. It now
+  // uses upstream's own release under a new id, so the old extraction is dead
+  // weight (~10 MB) on every Mac that enabled the engine.
+  remove_legacy_dir(&app_data.join("local-asr/bin/nemo-speech-4f967622"))?;
   Ok(())
 }
 

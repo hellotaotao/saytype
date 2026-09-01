@@ -15,6 +15,7 @@ const i18nJs = read("src/views/i18n.js");
 const commandsRs = read("src-tauri/src/commands.rs");
 const libRs = read("src-tauri/src/lib.rs");
 const trayRs = read("src-tauri/src/tray.rs");
+const settingsRs = read("src-tauri/src/settings.rs");
 const tauriConfig = JSON.parse(read("src-tauri/tauri.conf.json"));
 
 function sectionSource(id) {
@@ -104,6 +105,19 @@ test("onboarding, Home, and tray expose Qwen and Nemotron as separate local engi
   assert.match(mainJs, /invoke\("set-local-model", localModel\)/);
   assert.match(trayRs, /engine-local-nemotron/);
   assert.match(trayRs, /engine-local-qwen/);
+});
+
+test("Nemotron is hidden wherever no wired runtime exists", () => {
+  assert.ok(settingsRs.includes("pub nemotron_supported: bool"));
+  assert.ok(settingsRs.includes("nemotron_supported: crate::nemotron_asr::supported()"));
+  assert.ok(settingsJs.includes("function applyNemotronAvailability"));
+  assert.ok(settingsJs.includes("currentSettings.nemotronSupported"));
+  assert.ok(settingsJs.includes('#providerSelect option[value="${LOCAL_NEMOTRON_PROVIDER}"]'));
+  assert.ok(mainJs.includes("cachedSettings?.nemotronSupported"));
+  assert.ok(mainJs.includes("availableEngineOptions().forEach"));
+  assert.ok(trayRs.includes("fn available_engines()"));
+  assert.ok(trayRs.includes("for (id, label, provider, model) in available_engines()"));
+  assert.ok(trayRs.includes("crate::nemotron_asr::supported()"));
 });
 
 test("main page owns the Settings controller and dirty navigation guard", () => {

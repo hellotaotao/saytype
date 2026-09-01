@@ -176,6 +176,20 @@ function providerForSettings(settings) {
     : LOCAL_QWEN_PROVIDER;
 }
 
+// Nemotron is wired for Apple Silicon and Windows x64. On other build targets it
+// is not merely "not downloaded yet" — it cannot run. Drop the option instead
+// of letting it be picked. This is a compile-time constant per build
+// (`nemotronSupported`), so removing the node once is enough.
+function applyNemotronAvailability() {
+  if (currentSettings.nemotronSupported) {
+    return;
+  }
+  document
+    .querySelector(`#providerSelect option[value="${LOCAL_NEMOTRON_PROVIDER}"]`)
+    ?.remove();
+  document.getElementById("nemotronLatencyItem")?.classList.add("hidden");
+}
+
 function toggleProviderFields(providerChoice) {
   const provider = localModelForProvider(providerChoice) ? "local" : providerChoice;
   const apiKeyItem = document.getElementById("apiKeyItem");
@@ -378,7 +392,9 @@ function revealLocalModelPanel(model = QWEN_LOCAL_MODEL) {
     ? LOCAL_QWEN_PROVIDER
     : LOCAL_NEMOTRON_PROVIDER;
   setSelectValue(providerSelect, provider, "groq");
-  toggleProviderFields(provider);
+  // Same read-back as loadSettings: an engine this build doesn't offer lands on
+  // the fallback, and the dependent fields must follow the select, not the ask.
+  toggleProviderFields(providerSelect?.value || provider);
   void refreshLocalModelStatus();
   window.setTimeout(() => {
     document.getElementById("localModelItem")?.scrollIntoView({ block: "center" });
@@ -1060,11 +1076,15 @@ async function loadSettings() {
     const apiKeyGroq = document.getElementById("apiKeyGroq");
     const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
 
+    applyNemotronAvailability();
     setSelectValue(providerSelect, providerChoice, "groq");
     if (provider !== "local") {
       updateModelOptions(provider);
     }
-    toggleProviderFields(providerChoice);
+    // Read back from the select: a stored choice this build can't offer (e.g. a
+    // Nemotron config carried to an unsupported build) landed on the
+    // fallback, and the dependent fields must follow what is on screen.
+    toggleProviderFields(providerSelect?.value || providerChoice);
 
     if (apiKeyGroq) {
       apiKeyGroq.value = apiKeys.apiKeyGroq || apiKeys.apiKey || "";

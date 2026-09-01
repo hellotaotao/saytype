@@ -166,6 +166,11 @@ pub struct SettingsPayload {
   /// (wizard top pick, "recommended" tag on switchers). Compile-time constant:
   /// Apple Silicon only. Independent of whether the assets are downloaded.
   pub local_capable: bool,
+  /// Whether the Nemotron engine can run here at all (its streaming runtime is
+  /// available for Apple Silicon and Windows x64). False means the engine is
+  /// not offered — the Settings provider list, the Home engine switcher and the
+  /// tray all drop it rather than exposing a backend that can only fail.
+  pub nemotron_supported: bool,
 }
 
 impl SettingsPayload {
@@ -199,6 +204,7 @@ impl SettingsPayload {
       is_dev: cfg!(debug_assertions),
       onboarding_completed: config.onboarding_completed,
       local_capable: crate::platform::supports_local_first(),
+      nemotron_supported: crate::nemotron_asr::supported(),
     }
   }
 }
@@ -567,6 +573,21 @@ mod tests {
     assert_eq!(
       payload.local_capable,
       cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    );
+  }
+
+  #[test]
+  fn settings_payload_nemotron_supported_follows_platform() {
+    // Nemotron runs wherever upstream publishes a runtime SayType wires up:
+    // Apple Silicon (Metal) and Windows x86_64 (CPU). Elsewhere the frontend
+    // hides the engine instead of offering a backend that cannot start.
+    let payload = SettingsPayload::from_config_with(&AppConfig::default(), false);
+    assert_eq!(
+      payload.nemotron_supported,
+      cfg!(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64")
+      ))
     );
   }
 

@@ -20,10 +20,9 @@ use tokio_util::sync::CancellationToken;
 use crate::local_asr::{Asset, ModelStatus, NEMOTRON_MODEL_ID};
 
 const MODEL_FILE: &str = "models/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf";
-const RUNTIME_BUILD: &str = "nemo-speech-4f967622";
-const RUNTIME_ARCHIVE: &str = "nemo-speech-4f967622-macos-arm64.tar.gz";
-const RUNTIME_SHA256: &str = "8d70519d55f33a517b79abae0607bcaf82e6b9c85830060746c21cad2637c0ab";
-const RUNTIME_SIZE: u64 = 2_052_134;
+/// Extraction directory id. Bumping it (a new upstream version) makes every
+/// installed client re-extract instead of trusting whatever is already there.
+const RUNTIME_BUILD: &str = "nemo-speech-0.1.0";
 const MODEL_SIZE: u64 = 741_548_352;
 const MODEL_SHA256: &str = "a5c435f294eea8f88ce68dd27b8c3bfea7f777cb2fbba04fcd30eaa555f429ae";
 const PROGRESS_EMIT_STEP: u64 = 8 * 1024 * 1024;
@@ -43,13 +42,79 @@ static MODEL_ASSET: Asset = Asset {
   sha256: MODEL_SHA256,
 };
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-static RUNTIME_BYTES: &[u8] =
-  include_bytes!("../resources/local-asr/nemo-speech-4f967622-macos-arm64.tar.gz");
-
-fn supported() -> bool {
-  cfg!(all(target_os = "macos", target_arch = "aarch64"))
+/// Everything about the runtime that differs per platform.
+///
+/// SayType used to compile its own macOS runtime from NeMo-Speech.cpp. That is
+/// gone: the pinned source commit turned out to *be* upstream's v0.1.0 tag, and
+/// upstream's archives are self-contained — SentencePiece linked statically (no
+/// Homebrew dylib, which is what the private build's patches existed to avoid),
+/// an `@loader_path/../lib` rpath, ad-hoc signed, and on Windows the MSVC and
+/// OpenMP runtimes shipped alongside. Building it privately only re-derived
+/// packaging upstream had already done, which is the same conclusion
+/// `vendor/llama.cpp/README.md` records for the other local engine.
+struct RuntimeSpec {
+  /// Upstream's release archive: tarball on unix, real zip on Windows.
+  asset: Asset,
+  /// The executable's path inside the extracted tree. Kept as shipped — the
+  /// binary finds its dylibs through `@loader_path/../lib`, so flattening the
+  /// layout (as the llama.cpp extractor does) would break it.
+  exe: &'static str,
+  /// ggml backend. Metal on Apple Silicon; Windows has no measured GPU path,
+  /// so it runs on CPU.
+  device: &'static str,
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+static RUNTIME: Option<RuntimeSpec> = Some(RuntimeSpec {
+  asset: Asset {
+    rel_path: "runtime/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz",
+    urls: &[
+      "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz",
+    ],
+    bundled: None,
+    size: 3_465_028,
+    sha256: "f1dff4f9dd9c96214f8cb78b982812459132df8a4ad1a42409fd94de4a366244",
+  },
+  exe: "bin/nemo-speech",
+  device: "metal",
+});
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+static RUNTIME: Option<RuntimeSpec> = Some(RuntimeSpec {
+  asset: Asset {
+    rel_path: "runtime/nemo-speech-0.1.0-windows-x86_64-cpu.zip",
+    urls: &[
+      "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip",
+    ],
+    bundled: None,
+    size: 4_730_421,
+    sha256: "5e4ea81046012edcd77fd8848de8eefb5a4ba38cc26f52eb544ab184695a75d6",
+  },
+  // The zip has no top-level directory: bin\ holds nemo-speech.exe next to
+  // every DLL it loads, MSVC and OpenMP runtimes included, so there is no
+  // redistributable to install.
+  exe: "bin/nemo-speech.exe",
+  device: "cpu",
+});
+
+#[cfg(not(any(
+  all(target_os = "macos", target_arch = "aarch64"),
+  all(target_os = "windows", target_arch = "x86_64")
+)))]
+static RUNTIME: Option<RuntimeSpec> = None;
+
+/// Whether this build can run Nemotron at all — i.e. whether upstream publishes
+/// a runtime for it that SayType wires up. Where it doesn't, the engine is not
+/// merely undownloaded but unavailable, and no UI offers it.
+pub fn supported() -> bool {
+  RUNTIME.is_some()
+}
+
+fn runtime() -> Result<&'static RuntimeSpec, String> {
+  RUNTIME.as_ref().ok_or_else(|| UNSUPPORTED.to_string())
+}
+
+const UNSUPPORTED: &str = "Nemotron is not available on this platform";
 
 fn base_dir() -> Result<PathBuf> {
   crate::local_asr::local_asr_dir()
@@ -60,7 +125,12 @@ fn runtime_dir(base: &Path) -> PathBuf {
 }
 
 fn runtime_path(base: &Path) -> PathBuf {
-  runtime_dir(base).join("nemo-speech")
+  let exe = RUNTIME.as_ref().map(|spec| spec.exe).unwrap_or("bin/nemo-speech");
+  runtime_dir(base).join(exe)
+}
+
+fn runtime_archive_path(base: &Path) -> PathBuf {
+  base.join(RUNTIME.as_ref().map(|spec| spec.asset.rel_path).unwrap_or("runtime/none"))
 }
 
 fn runtime_stamp_path(base: &Path) -> PathBuf {
@@ -75,6 +145,46 @@ fn exact_file(path: &Path, size: u64) -> bool {
   fs::metadata(path)
     .map(|metadata| metadata.is_file() && metadata.len() == size)
     .unwrap_or(false)
+}
+
+fn asset_part_path(path: &Path) -> PathBuf {
+  path.with_file_name(format!(
+    "{}.part",
+    path.file_name().and_then(|name| name.to_str()).unwrap_or("")
+  ))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+  let mut hasher = sha2::Sha256::new();
+  let mut reader = fs::File::open(path).map_err(|error| error.to_string())?;
+  std::io::copy(&mut reader, &mut hasher).map_err(|error| error.to_string())?;
+  Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// A completed runtime archive is reusable only after both its size and digest
+/// match the manifest. Invalid regular files are removed so the next download
+/// can replace them on Windows, where rename does not overwrite an existing
+/// destination.
+fn runtime_archive_verified_at(base: &Path) -> Result<bool, String> {
+  let spec = runtime()?;
+  let path = runtime_archive_path(base);
+  let metadata = match fs::symlink_metadata(&path) {
+    Ok(metadata) => metadata,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+    Err(error) => return Err(error.to_string()),
+  };
+  if !metadata.file_type().is_file() {
+    return Err(format!(
+      "runtime archive path is not a regular file: {}",
+      path.display()
+    ));
+  }
+  if metadata.len() != spec.asset.size || sha256_file(&path)? != spec.asset.sha256 {
+    log::warn!("nemotron: discarding an invalid completed runtime archive");
+    fs::remove_file(&path).map_err(|error| error.to_string())?;
+    return Ok(false);
+  }
+  Ok(true)
 }
 
 #[cfg(unix)]
@@ -97,7 +207,7 @@ fn runtime_ready_at(base: &Path) -> bool {
     .unwrap_or(false)
     && is_executable(&executable)
     && fs::read_to_string(runtime_stamp_path(base))
-      .map(|stamp| stamp.trim() == RUNTIME_SHA256)
+      .map(|stamp| Some(stamp.trim()) == RUNTIME.as_ref().map(|spec| spec.asset.sha256))
       .unwrap_or(false)
 }
 
@@ -111,39 +221,49 @@ pub fn assets_ready() -> bool {
   }
   base_dir()
     .map(|base| {
-      if exact_file(&model_path(&base), MODEL_SIZE) {
-        if let Err(error) = ensure_runtime_at(&base) {
-          log::warn!("nemotron: failed to install bundled runtime: {error}");
-        }
+      // Cheap no-op unless the archive is downloaded and not yet unpacked.
+      if let Err(error) = ensure_runtime_at(&base) {
+        log::warn!("nemotron: failed to install the downloaded runtime: {error}");
       }
       assets_ready_at(&base)
     })
     .unwrap_or(false)
 }
 
+fn runtime_size() -> u64 {
+  RUNTIME.as_ref().map(|spec| spec.asset.size).unwrap_or(0)
+}
+
 fn total_bytes() -> u64 {
-  MODEL_SIZE + RUNTIME_SIZE
+  MODEL_SIZE + runtime_size()
+}
+
+fn asset_downloaded_bytes(path: &Path, size: u64) -> u64 {
+  if exact_file(path, size) {
+    size
+  } else {
+    let completed = fs::metadata(path)
+      .map(|metadata| metadata.len())
+      .unwrap_or(0)
+      .min(size);
+    let partial = fs::metadata(asset_part_path(path))
+      .map(|metadata| metadata.len())
+      .unwrap_or(0)
+      .min(size);
+    completed.saturating_add(partial).min(size)
+  }
+}
+
+fn model_downloaded_bytes_at(base: &Path) -> u64 {
+  asset_downloaded_bytes(&model_path(base), MODEL_SIZE)
+}
+
+fn runtime_downloaded_bytes_at(base: &Path) -> u64 {
+  asset_downloaded_bytes(&runtime_archive_path(base), runtime_size())
 }
 
 fn downloaded_bytes_at(base: &Path) -> u64 {
-  let mut downloaded = 0;
-  let model = model_path(base);
-  if exact_file(&model, MODEL_SIZE) {
-    downloaded += MODEL_SIZE;
-  } else {
-    downloaded += fs::metadata(&model)
-      .map(|metadata| metadata.len())
-      .unwrap_or(0)
-      .min(MODEL_SIZE);
-    downloaded += fs::metadata(base.join(format!("{MODEL_FILE}.part")))
-      .map(|metadata| metadata.len())
-      .unwrap_or(0)
-      .min(MODEL_SIZE);
-  }
-  if runtime_ready_at(base) {
-    downloaded += RUNTIME_SIZE;
-  }
-  downloaded
+  model_downloaded_bytes_at(base) + runtime_downloaded_bytes_at(base)
 }
 
 pub fn model_status(downloading: bool) -> ModelStatus {
@@ -161,9 +281,7 @@ pub fn model_status(downloading: bool) -> ModelStatus {
       total_bytes: total_bytes(),
     };
   };
-  if exact_file(&model_path(&base), MODEL_SIZE) {
-    let _ = ensure_runtime_at(&base);
-  }
+  let _ = ensure_runtime_at(&base);
   let downloaded = downloaded_bytes_at(&base);
   let state = if downloading {
     "downloading"
@@ -198,31 +316,45 @@ pub async fn download_model(
   app: tauri::AppHandle,
   cancel: CancellationToken,
 ) -> Result<(), String> {
-  if !supported() {
-    return Err("Nemotron is currently available on Apple Silicon Macs only".into());
-  }
+  let spec = runtime()?;
   let base = base_dir().map_err(|error| error.to_string())?;
+  let client = reqwest::Client::builder()
+    .connect_timeout(Duration::from_secs(15))
+    .build()
+    .map_err(|error| error.to_string())?;
+  // Runtime first: it is a thousandth of the model's size, so a broken release
+  // URL or a hostile network fails in seconds instead of after a 741 MB wait.
+  if !runtime_archive_verified_at(&base)? {
+    // Progress is aggregate, not download-order based. In particular, an old
+    // Mac install can already have the full model while only the new runtime is
+    // missing, so its first runtime event must stay near 100% rather than fall
+    // back to zero.
+    let already = model_downloaded_bytes_at(&base);
+    download_asset(&app, &client, &base, &spec.asset, already, &cancel).await?;
+  }
   if !exact_file(&model_path(&base), MODEL_SIZE) {
-    let client = reqwest::Client::builder()
-      .connect_timeout(Duration::from_secs(15))
-      .build()
-      .map_err(|error| error.to_string())?;
-    download_asset(&app, &client, &base, &MODEL_ASSET, &cancel).await?;
+    let already = runtime_downloaded_bytes_at(&base);
+    download_asset(&app, &client, &base, &MODEL_ASSET, already, &cancel).await?;
   }
   ensure_runtime_at(&base)?;
   Ok(())
 }
 
+/// `already` is the number of bytes the other asset contributes, so progress
+/// stays aggregate even when an upgrade downloads the runtime after the model
+/// is already present.
 async fn download_asset(
   app: &tauri::AppHandle,
   client: &reqwest::Client,
   base: &Path,
   asset: &Asset,
+  already: u64,
   cancel: &CancellationToken,
 ) -> Result<(), String> {
   use std::io::Write;
 
-  let part_path = base.join(format!("{}.part", asset.rel_path));
+  let final_path = base.join(asset.rel_path);
+  let part_path = asset_part_path(&final_path);
   if let Some(parent) = part_path.parent() {
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
   }
@@ -269,7 +401,7 @@ async fn download_asset(
         written += chunk.len() as u64;
         if written.saturating_sub(last_emit) >= PROGRESS_EMIT_STEP {
           last_emit = written;
-          emit_progress(app, "downloading", written.min(asset.size), None);
+          emit_progress(app, "downloading", already + written.min(asset.size), None);
         }
       }
       output.flush().map_err(|error| error.to_string())?;
@@ -288,21 +420,16 @@ async fn download_asset(
           continue;
         }
         let hash_path = part_path.clone();
-        let hash = tokio::task::spawn_blocking(move || -> Result<String, String> {
-          let mut hasher = sha2::Sha256::new();
-          let mut reader = fs::File::open(hash_path).map_err(|error| error.to_string())?;
-          std::io::copy(&mut reader, &mut hasher).map_err(|error| error.to_string())?;
-          Ok(format!("{:x}", hasher.finalize()))
-        })
-        .await
-        .map_err(|error| error.to_string())??;
+        let hash = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
+          .await
+          .map_err(|error| error.to_string())??;
         if hash != asset.sha256 {
           last_error = "sha256 mismatch".into();
           let _ = fs::remove_file(&part_path);
           continue;
         }
-        fs::rename(&part_path, base.join(asset.rel_path)).map_err(|error| error.to_string())?;
-        emit_progress(app, "downloading", MODEL_SIZE, None);
+        fs::rename(&part_path, &final_path).map_err(|error| error.to_string())?;
+        emit_progress(app, "downloading", already + asset.size, None);
         return Ok(());
       }
       Err(error) if error == "DOWNLOAD_CANCELLED" => return Err(error),
@@ -318,35 +445,85 @@ async fn download_asset(
   ))
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+/// Unpack the downloaded archive when it is present and not already
+/// installed. A no-op (not an error) before the download runs, so readiness
+/// checks can call it freely.
 fn ensure_runtime_at(base: &Path) -> Result<(), String> {
+  let spec = runtime()?;
   if runtime_ready_at(base) {
     return Ok(());
   }
-  if !exact_file(&model_path(base), MODEL_SIZE) {
+  let archive = runtime_archive_path(base);
+  if !runtime_archive_verified_at(base)? {
     return Ok(());
   }
-  if RUNTIME_BYTES.len() as u64 != RUNTIME_SIZE {
-    return Err("bundled Nemotron runtime size mismatch".into());
+  extract_runtime(base, &archive)?;
+  if !runtime_path(base).is_file() {
+    return Err(format!("runtime archive did not contain {}", spec.exe));
   }
-  if format!("{:x}", sha2::Sha256::digest(RUNTIME_BYTES)) != RUNTIME_SHA256 {
-    return Err("bundled Nemotron runtime sha256 mismatch".into());
-  }
-  let archive_path = base.join(RUNTIME_ARCHIVE);
-  fs::create_dir_all(base).map_err(|error| error.to_string())?;
-  fs::write(&archive_path, RUNTIME_BYTES).map_err(|error| error.to_string())?;
-  extract_runtime(base, &archive_path)?;
-  let _ = fs::remove_file(archive_path);
-  fs::write(runtime_stamp_path(base), RUNTIME_SHA256).map_err(|error| error.to_string())?;
+  fs::write(runtime_stamp_path(base), spec.asset.sha256).map_err(|error| error.to_string())?;
   Ok(())
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn ensure_runtime_at(_base: &Path) -> Result<(), String> {
-  Err("Nemotron is currently available on Apple Silicon Macs only".into())
+/// Where an archive entry lands, or None if it should be skipped. The macOS
+/// tarball nests everything under a nemo-speech/ directory and the Windows zip
+/// does not, so that leading component is dropped when present. Absolute paths
+/// and .. are refused: a hostile archive must not escape the runtime directory.
+fn entry_destination(out_dir: &Path, name: &str) -> Option<PathBuf> {
+  let normalized = name.replace('\\', "/");
+  // Reject Unix roots, UNC/device roots after normalization, Windows drive
+  // prefixes and alternate-data-stream syntax on every host. Checking this as
+  // text keeps a Windows archive equally safe when tests run on macOS.
+  if normalized.starts_with('/')
+    || normalized.split('/').any(|part| part.contains(':'))
+  {
+    return None;
+  }
+  let mut parts = normalized
+    .split('/')
+    .filter(|part| !part.is_empty() && *part != ".")
+    .peekable();
+  let mut path = out_dir.to_path_buf();
+  let mut pushed = 0;
+  if parts.peek() == Some(&"nemo-speech") {
+    parts.next();
+  }
+  for part in parts {
+    if part == ".." {
+      return None;
+    }
+    path.push(part);
+    pushed += 1;
+  }
+  (pushed > 0).then_some(path)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(unix)]
+fn symlink_target_stays_within(out_dir: &Path, link_path: &Path, target: &Path) -> bool {
+  use std::path::Component;
+
+  if target.is_absolute() {
+    return false;
+  }
+  let Some(parent) = link_path.parent() else {
+    return false;
+  };
+  let Ok(relative_parent) = parent.strip_prefix(out_dir) else {
+    return false;
+  };
+  let mut depth = relative_parent.components().count();
+  for component in target.components() {
+    match component {
+      Component::CurDir => {}
+      Component::Normal(_) => depth += 1,
+      Component::ParentDir if depth > 0 => depth -= 1,
+      Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+    }
+  }
+  true
+}
+
+#[cfg(unix)]
 fn extract_runtime(base: &Path, archive_path: &Path) -> Result<(), String> {
   use std::os::unix::fs::PermissionsExt;
 
@@ -356,18 +533,66 @@ fn extract_runtime(base: &Path, archive_path: &Path) -> Result<(), String> {
   let file = fs::File::open(archive_path).map_err(|error| error.to_string())?;
   let decoder = flate2::read::GzDecoder::new(file);
   let mut archive = tar::Archive::new(decoder);
-  archive
-    .unpack(&output_dir)
-    .map_err(|error| error.to_string())?;
-  for entry in fs::read_dir(&output_dir).map_err(|error| error.to_string())? {
-    let path = entry.map_err(|error| error.to_string())?.path();
-    if path.is_file() {
-      fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
-        .map_err(|error| error.to_string())?;
+  for entry in archive.entries().map_err(|error| error.to_string())? {
+    let mut entry = entry.map_err(|error| error.to_string())?;
+    let entry_type = entry.header().entry_type();
+    let raw = entry
+      .path()
+      .map_err(|error| error.to_string())?
+      .to_string_lossy()
+      .into_owned();
+    let Some(out_path) = entry_destination(&output_dir, &raw) else {
+      continue;
+    };
+    if let Some(parent) = out_path.parent() {
+      fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
+    // The compat symlinks (libggml.0.dylib -> libggml.0.12.0.dylib) are what
+    // the binary actually loads, so they have to survive extraction.
+    if entry_type.is_symlink() {
+      if let Some(target) = entry.link_name().map_err(|error| error.to_string())? {
+        if !symlink_target_stays_within(&output_dir, &out_path, target.as_ref()) {
+          return Err(format!("runtime archive contained an unsafe symlink: {raw}"));
+        }
+        let _ = fs::remove_file(&out_path);
+        std::os::unix::fs::symlink(target.as_ref(), &out_path)
+          .map_err(|error| error.to_string())?;
+      }
+      continue;
+    }
+    if !entry_type.is_file() {
+      continue;
+    }
+    let mut out = fs::File::create(&out_path).map_err(|error| error.to_string())?;
+    std::io::copy(&mut entry, &mut out).map_err(|error| error.to_string())?;
+    fs::set_permissions(&out_path, fs::Permissions::from_mode(0o755))
+      .map_err(|error| error.to_string())?;
   }
-  if !runtime_path(base).is_file() {
-    return Err("Nemotron runtime archive did not contain nemo-speech".into());
+  Ok(())
+}
+
+#[cfg(windows)]
+fn extract_runtime(base: &Path, archive_path: &Path) -> Result<(), String> {
+  let output_dir = runtime_dir(base);
+  let _ = fs::remove_dir_all(&output_dir);
+  fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
+  let file = fs::File::open(archive_path).map_err(|error| error.to_string())?;
+  let mut archive = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
+  for index in 0..archive.len() {
+    let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+    if entry.is_dir() || entry.is_symlink() {
+      continue;
+    }
+    // This archive stores its paths with backslashes, which the zip crate
+    // returns verbatim; entry_destination normalizes them.
+    let Some(out_path) = entry_destination(&output_dir, entry.name()) else {
+      continue;
+    };
+    if let Some(parent) = out_path.parent() {
+      fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut out = fs::File::create(&out_path).map_err(|error| error.to_string())?;
+    std::io::copy(&mut entry, &mut out).map_err(|error| error.to_string())?;
   }
   Ok(())
 }
@@ -482,6 +707,28 @@ fn session_update(sample_rate: u32, language: &str) -> Value {
   })
 }
 
+// `serve --threads` sizes the HTTP worker pool, not ggml inference threads.
+// Keep the existing two-worker behavior on both platforms; backend compute
+// parallelism is managed independently by NeMo-Speech.cpp.
+const HTTP_WORKER_THREADS: &str = "2";
+
+fn sidecar_command(program: PathBuf) -> tokio::process::Command {
+  let command = tokio::process::Command::new(program);
+  #[cfg(target_os = "windows")]
+  {
+    let mut command = command;
+    // nemo-speech is a console executable; without CREATE_NO_WINDOW Windows
+    // flashes a terminal on every prewarm and can steal focus from the app
+    // that is about to receive the text.
+    command.creation_flags(0x0800_0000);
+    command
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    command
+  }
+}
+
 async fn ensure_sidecar(latency_ms: u32) -> Result<SidecarEndpoint> {
   if !assets_ready() {
     anyhow::bail!("LOCAL_MODEL_MISSING: Nemotron assets are missing or incomplete");
@@ -496,17 +743,18 @@ async fn ensure_sidecar(latency_ms: u32) -> Result<SidecarEndpoint> {
     slot.take();
   }
 
+  let spec = runtime().map_err(|error| anyhow::anyhow!(error))?;
   let base = base_dir()?;
   let port = reserve_loopback_port()?;
   let token = next_token();
-  let mut child = tokio::process::Command::new(runtime_path(&base))
+  let mut child = sidecar_command(runtime_path(&base))
     .arg("serve")
     .arg("--host")
     .arg("127.0.0.1")
     .arg("--port")
     .arg(port.to_string())
     .arg("--threads")
-    .arg("2")
+    .arg(HTTP_WORKER_THREADS)
     .arg("--max-upload-mb")
     .arg("64")
     .arg("--read-timeout")
@@ -517,7 +765,7 @@ async fn ensure_sidecar(latency_ms: u32) -> Result<SidecarEndpoint> {
     .arg("--asr-model")
     .arg(model_path(&base))
     .arg("--device")
-    .arg("metal")
+    .arg(spec.device)
     .arg("--asr.streaming.rnnt_right_context")
     .arg(right_context)
     .env("NEMO_SPEECH_HTTP_API_KEY", &token)
@@ -847,7 +1095,9 @@ pub fn delete_model() -> Result<(), String> {
   let base = base_dir().map_err(|error| error.to_string())?;
   let _ = fs::remove_file(model_path(&base));
   let _ = fs::remove_file(base.join(format!("{MODEL_FILE}.part")));
-  let _ = fs::remove_file(base.join(RUNTIME_ARCHIVE));
+  let archive = runtime_archive_path(&base);
+  let _ = fs::remove_file(&archive);
+  let _ = fs::remove_file(asset_part_path(&archive));
   match fs::remove_dir_all(runtime_dir(&base)) {
     Ok(()) => Ok(()),
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -860,19 +1110,106 @@ mod tests {
   use super::*;
 
   #[test]
-  fn manifest_matches_the_bundled_runtime_and_model() {
+  fn manifest_is_self_consistent() {
     assert_eq!(MODEL_ASSET.size, MODEL_SIZE);
     assert_eq!(MODEL_ASSET.sha256, MODEL_SHA256);
     assert_eq!(MODEL_SHA256.len(), 64);
-    assert_eq!(RUNTIME_SHA256.len(), 64);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-      assert_eq!(RUNTIME_BYTES.len() as u64, RUNTIME_SIZE);
-      assert_eq!(
-        format!("{:x}", sha2::Sha256::digest(RUNTIME_BYTES)),
-        RUNTIME_SHA256
-      );
-    }
+    let Some(spec) = RUNTIME.as_ref() else {
+      assert!(!supported());
+      return;
+    };
+    assert_eq!(spec.asset.sha256.len(), 64);
+    assert!(spec.asset.size > 0);
+    assert!(!spec.asset.urls.is_empty());
+    assert!(spec.asset.bundled.is_none(), "the runtime is downloaded, not shipped");
+    assert!(spec.exe.starts_with("bin/"));
+    assert!(matches!(spec.device, "metal" | "cpu"));
+  }
+
+  #[test]
+  fn archive_entries_land_under_the_runtime_directory() {
+    let out = Path::new("/runtime");
+    // macOS tarball: the wrapping directory is dropped, the layout is kept.
+    assert_eq!(
+      entry_destination(out, "nemo-speech/bin/nemo-speech"),
+      Some(out.join("bin").join("nemo-speech"))
+    );
+    assert_eq!(
+      entry_destination(out, "nemo-speech/lib/libggml.0.dylib"),
+      Some(out.join("lib").join("libggml.0.dylib"))
+    );
+    // Windows zip: no wrapping directory, backslash separators.
+    assert_eq!(
+      entry_destination(out, "bin\\nemo-speech.exe"),
+      Some(out.join("bin").join("nemo-speech.exe"))
+    );
+    // Traversal and empty names are refused.
+    assert_eq!(entry_destination(out, "../escape"), None);
+    assert_eq!(entry_destination(out, "nemo-speech/../../escape"), None);
+    assert_eq!(entry_destination(out, "nemo-speech/"), None);
+    assert_eq!(entry_destination(out, "/absolute/escape"), None);
+    assert_eq!(entry_destination(out, "C:\\absolute\\escape"), None);
+    assert_eq!(entry_destination(out, "\\\\server\\share\\escape"), None);
+    assert_eq!(entry_destination(out, "bin\\nemo-speech.exe:stream"), None);
+  }
+
+  #[test]
+  fn completed_assets_require_the_expected_digest() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("asset");
+    fs::write(&path, b"good").unwrap();
+    let expected = format!("{:x}", sha2::Sha256::digest(b"good"));
+    assert!(exact_file(&path, 4));
+    assert_eq!(sha256_file(&path).unwrap(), expected);
+
+    // Same length is not sufficient evidence that a completed file is valid.
+    fs::write(&path, b"evil").unwrap();
+    assert!(exact_file(&path, 4));
+    assert_ne!(sha256_file(&path).unwrap(), expected);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn symlink_targets_cannot_leave_the_runtime_directory() {
+    let out = Path::new("/runtime");
+    let link = out.join("lib").join("libggml.0.dylib");
+    assert!(symlink_target_stays_within(out, &link, Path::new("libggml.0.12.0.dylib")));
+    assert!(symlink_target_stays_within(out, &link, Path::new("../bin/nemo-speech")));
+    assert!(!symlink_target_stays_within(out, &link, Path::new("../../escape")));
+    assert!(!symlink_target_stays_within(out, &link, Path::new("/absolute/escape")));
+  }
+
+  #[test]
+  fn invalid_completed_runtime_archive_is_removed_for_retry() {
+    let Some(spec) = RUNTIME.as_ref() else {
+      return;
+    };
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = runtime_archive_path(temp.path());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::File::create(&path).unwrap().set_len(spec.asset.size).unwrap();
+
+    assert!(!runtime_archive_verified_at(temp.path()).unwrap());
+    assert!(
+      !path.exists(),
+      "an invalid final file would block rename on Windows"
+    );
+  }
+
+  #[test]
+  fn aggregate_progress_counts_an_existing_other_asset() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let model = temp.path().join("model");
+    fs::File::create(&model).unwrap().set_len(10).unwrap();
+    assert_eq!(asset_downloaded_bytes(&model, 10), 10);
+
+    let runtime = temp.path().join("runtime.zip");
+    fs::File::create(asset_part_path(&runtime)).unwrap().set_len(3).unwrap();
+    assert_eq!(asset_downloaded_bytes(&runtime, 5), 3);
+    assert_eq!(
+      asset_downloaded_bytes(&model, 10) + asset_downloaded_bytes(&runtime, 5),
+      13
+    );
   }
 
   #[test]
