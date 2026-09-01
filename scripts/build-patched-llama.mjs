@@ -163,6 +163,13 @@ const configureArgs = [
   "-DLLAMA_BUILD_TESTS=OFF",
   "-DLLAMA_BUILD_SERVER=OFF",
   "-DLLAMA_CURL=OFF",
+  // b9960 vendors cpp-httplib and links OpenSSL wherever CMake finds it, which
+  // LLAMA_CURL=OFF does not cover — it is a separate HTTP path. Whatever the
+  // build machine has then becomes a hard dependency of the archive: the runner
+  // supplied libssl-3-x64.dll and libcrypto-3-x64.dll on Windows and homebrew's
+  // libssl.3.dylib on macOS, and neither exists on a user's machine. SayType
+  // downloads models through its own Rust client, so no HTTPS is wanted here.
+  "-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON",
 ];
 configureArgs.push(...relocatableRpathArgs(targetPlatform));
 if (targetPlatform === "darwin") {
