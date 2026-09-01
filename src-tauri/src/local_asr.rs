@@ -109,8 +109,8 @@ static MAC_ZIP: Asset = Asset {
   bundled: Some(include_bytes!(
     "../resources/local-asr/llama-b9960-saytype-reset-v1-bin-macos-arm64.tar.gz"
   )),
-  size: 3_750_185,
-  sha256: "1b525488d330701fa17ef34670db3619fa67be8ecb1db9b1b68551877a4930f1",
+  size: 3_709_958,
+  sha256: "adc9efc6ea408e9e708e193efc26ce0914f5fdc4ecd6c2d7de1bbd9cc65885ef",
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn llama_zip_asset() -> &'static Asset {
@@ -142,8 +142,8 @@ static WIN_ZIP: Asset = Asset {
   bundled: Some(include_bytes!(
     "../resources/local-asr/llama-b9960-saytype-reset-v1-bin-windows-x64.zip"
   )),
-  size: 3_771_574,
-  sha256: "5b4e7bb6d9f85705cb41a2a2dd41c04650ac113144154314a780d25085cbf47e",
+  size: 3_751_460,
+  sha256: "78b767a628f6ba31acd58916f76700415f4406d27ecf2fcd6428be3d1dc5c54e",
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub fn llama_zip_asset() -> &'static Asset {
