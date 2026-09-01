@@ -1517,6 +1517,15 @@ class VoiceInputPrompt {
         ), TRANSCRIPTION_STAGE_TIMEOUT_MS, chunkIndex);
         if (chunked.aborted || this.isSessionCancelled(recordingSession)) return;
         chunked.results[chunkIndex] = typeof text === "string" ? text : "";
+        // The worker that decoded this chunk was retired with it, so start the
+        // next one now, while capture is still running to hide the model load.
+        // This belongs here rather than in the decoder because only the
+        // recorder knows whether more audio is coming: prewarmQwenWorker is a
+        // no-op once isRecording goes false, which is what stops the final
+        // chunk from leaving an unused process behind, and it re-checks the
+        // provider and model so a mid-dictation switch does not start a Qwen
+        // worker nobody asked for.
+        this.prewarmQwenWorker(recordingSession);
       } catch (error) {
         if (this.isSessionCancelled(recordingSession) || chunked.aborted) return;
         // Never label or insert a join with a missing chunk as a complete final.

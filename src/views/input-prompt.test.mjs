@@ -1153,6 +1153,50 @@ test("chunks decode in order, one at a time, each tagged with its chunk index", 
   assert.ok(calls[0][0].length > 44, "a real WAV, header included, is uploaded");
 });
 
+test("a decoded chunk starts the next worker, and the final chunk does not", async () => {
+  const calls = [];
+  const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
+    calls.push(channel);
+    return channel === "transcribe-audio" ? `chunk${args[4]}` : true;
+  });
+
+  const recordingSession = { id: 7, translateMode: false };
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    currentModel: "qwen3-asr-0.6b-q8_0",
+    activeRecordingSession: recordingSession,
+  });
+  prompt.isRecording = true;
+  const chunked = makeChunked({ recordingSession });
+
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  await chunked.queue;
+  await Promise.resolve();
+  assert.deepEqual(
+    calls,
+    ["transcribe-audio", "prewarm-qwen-worker"],
+    "the worker that decoded this chunk was retired with it, so the next one starts while capture continues",
+  );
+
+  // Releasing the key. The last chunk has no successor, and a replacement here
+  // would be a ~1.1 GiB process nobody ever uses.
+  calls.length = 0;
+  prompt.isRecording = false;
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  await chunked.queue;
+  await Promise.resolve();
+  assert.deepEqual(calls, ["transcribe-audio"], "no replacement worker after the final chunk");
+
+  // A provider switch mid-dictation must not start a Qwen worker either.
+  calls.length = 0;
+  prompt.isRecording = true;
+  prompt.currentProvider = "groq";
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  await chunked.queue;
+  await Promise.resolve();
+  assert.deepEqual(calls, ["transcribe-audio"], "no Qwen worker once the provider has changed");
+});
+
 test("one failed chunk stops queued work and refuses to return a gapped final", async () => {
   const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
     if (channel !== "transcribe-audio") return null;
