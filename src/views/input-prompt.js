@@ -225,9 +225,14 @@ class VoiceInputPrompt {
     window.SayTypeVadGate?.warmup?.();
   }
 
-  prewarmQwenWorker(recordingSession) {
+  // `successorQueued` says a chunk is already sitting behind the current one,
+  // which is knowledge `isRecording` cannot carry: releasing the hotkey clears
+  // isRecording *before* stopChunkedCapture closes the remainder and enqueues
+  // it, so a decode finishing in that window would otherwise refuse to warm the
+  // worker the final chunk is about to need.
+  prewarmQwenWorker(recordingSession, { successorQueued = false } = {}) {
     if (
-      !this.isRecording ||
+      (!this.isRecording && !successorQueued) ||
       this.activeRecordingSession !== recordingSession ||
       recordingSession.translateMode ||
       this.currentProvider !== "local" ||
@@ -1518,14 +1523,19 @@ class VoiceInputPrompt {
         if (chunked.aborted || this.isSessionCancelled(recordingSession)) return;
         chunked.results[chunkIndex] = typeof text === "string" ? text : "";
         // The worker that decoded this chunk was retired with it, so start the
-        // next one now, while capture is still running to hide the model load.
-        // This belongs here rather than in the decoder because only the
-        // recorder knows whether more audio is coming: prewarmQwenWorker is a
-        // no-op once isRecording goes false, which is what stops the final
-        // chunk from leaving an unused process behind, and it re-checks the
-        // provider and model so a mid-dictation switch does not start a Qwen
-        // worker nobody asked for.
-        this.prewarmQwenWorker(recordingSession);
+        // next one now, while there is still something to hide the model load
+        // behind. This belongs here rather than in the decoder because only the
+        // recorder knows whether more audio is coming — and it knows it two
+        // ways: capture is still running, or a chunk is already queued behind
+        // this one. The second case is the hotkey release landing while this
+        // decode was in flight, which clears isRecording before the remainder
+        // is enqueued. prewarmQwenWorker still refuses once neither holds, so
+        // the true final chunk leaves no unused process behind, and it
+        // re-checks provider and model so a mid-dictation switch does not start
+        // a Qwen worker nobody asked for.
+        this.prewarmQwenWorker(recordingSession, {
+          successorQueued: chunked.nextChunkIndex > chunkIndex + 1,
+        });
       } catch (error) {
         if (this.isSessionCancelled(recordingSession) || chunked.aborted) return;
         // Never label or insert a join with a missing chunk as a complete final.

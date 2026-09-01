@@ -1197,6 +1197,49 @@ test("a decoded chunk starts the next worker, and the final chunk does not", asy
   assert.deepEqual(calls, ["transcribe-audio"], "no Qwen worker once the provider has changed");
 });
 
+test("releasing the key mid-decode still warms the worker the final chunk needs", async () => {
+  const calls = [];
+  let releaseFirstDecode;
+  const firstDecode = new Promise((resolve) => {
+    releaseFirstDecode = resolve;
+  });
+  let decodes = 0;
+  const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
+    calls.push(channel);
+    if (channel !== "transcribe-audio") return true;
+    decodes += 1;
+    if (decodes === 1) await firstDecode;
+    return `chunk${args[4]}`;
+  });
+
+  const recordingSession = { id: 7, translateMode: false };
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    currentProvider: "local",
+    currentModel: "qwen3-asr-0.6b-q8_0",
+    activeRecordingSession: recordingSession,
+  });
+  prompt.isRecording = true;
+  const chunked = makeChunked({ recordingSession });
+
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+  await Promise.resolve();
+
+  // stopRecording clears isRecording before stopChunkedCapture closes the
+  // remainder, so the final chunk joins the queue with recording already off.
+  prompt.isRecording = false;
+  prompt.enqueueChunkDecode(chunked, new Float32Array(160));
+
+  releaseFirstDecode();
+  await chunked.queue;
+  await Promise.resolve();
+
+  assert.deepEqual(
+    calls,
+    ["transcribe-audio", "prewarm-qwen-worker", "transcribe-audio"],
+    "chunk 0 warms a worker for the already-queued final chunk, which then decodes without starting another",
+  );
+});
+
 test("one failed chunk stops queued work and refuses to return a gapped final", async () => {
   const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
     if (channel !== "transcribe-audio") return null;
