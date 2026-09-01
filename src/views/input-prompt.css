@@ -432,8 +432,19 @@ body.has-transcription .input-prompt.recording {
   box-shadow: var(--prompt-shadow-recording-hover);
 }
 
-/* Subtle animation for non-recording state */
-.input-prompt:not(.recording) {
+/* Subtle animation for non-recording state.
+
+   Scoped to .visible, which is what keeps this off the CPU while idle. The
+   window is hidden rather than closed, and WebView2 does not reliably mark a
+   transparent always-on-top window as occluded — so without .visible this
+   animates forever behind a window nobody can see. It is the expensive kind
+   too: `breathe` animates box-shadow, a paint property rather than a
+   compositor-only one like transform/opacity, so every frame re-rasterizes the
+   shadow blur and pins the renderer and the GPU process together.
+
+   hidePrompt() drops .visible 300ms before it invokes hide-input-prompt, so
+   the animation stops with the fade-out rather than after it. */
+.input-prompt.visible:not(.recording) {
   animation: breathe 4s ease-in-out infinite;
 }
 
@@ -449,8 +460,11 @@ body.has-transcription .input-prompt.recording {
 /* Insertion-failure cue: a brief gentle nudge to catch the eye, then a calm
    slow amber glow so the window is findable across multiple monitors — NOT an
    alarming red/error treatment. Declared after .breathe so it wins on the
-   equal-specificity `animation` property while in the (non-recording) state. */
-.input-prompt.insert-failed {
+   equal-specificity `animation` property while in the (non-recording) state —
+   it carries .visible for that reason as much as its own: the breathe rule
+   above gained .visible to stop animating while hidden, and this rule has to
+   match that specificity or it would lose the pairing and never show. */
+.input-prompt.visible.insert-failed {
   animation:
     insertFailedNudge 0.5s ease-in-out 2,
     insertFailedGlow 2.6s ease-in-out 1s infinite;
@@ -470,6 +484,23 @@ body.has-transcription .input-prompt.recording {
   50% {
     box-shadow: 0 0 0 1px var(--status-warning),
       0 0 22px var(--insert-failed-glow),
+      0 6px 16px rgba(0, 0, 0, 0.28);
+  }
+}
+
+/* main.css and settings.css already honour this; this window did not, which
+   left the only infinite animations in the app running for exactly the users
+   who asked the OS to stop motion. The insert-failure cue keeps its colour and
+   ring — only the movement and the pulsing go. */
+@media (prefers-reduced-motion: reduce) {
+  .input-prompt.visible:not(.recording),
+  .input-prompt.visible.insert-failed,
+  .input-prompt.recording .microphone-icon {
+    animation: none;
+  }
+
+  .input-prompt.visible.insert-failed {
+    box-shadow: 0 0 0 1px var(--status-warning),
       0 6px 16px rgba(0, 0, 0, 0.28);
   }
 }
