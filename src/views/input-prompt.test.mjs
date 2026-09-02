@@ -444,12 +444,12 @@ test("recording startup reports native, delivery, microphone, and first-paint ti
 test("Qwen prewarm eligibility requires an active non-translation recording", async () => {
   const calls = [];
   const VoiceInputPrompt = loadVoiceInputPrompt({
-    invoke(command) {
-      calls.push(command);
+    invoke(command, ...args) {
+      calls.push([command, args]);
       return Promise.resolve(true);
     },
   });
-  const recordingSession = { translateMode: false };
+  const recordingSession = { id: 42, qwenSession: true };
   const prompt = createBarePrompt(VoiceInputPrompt, {
     currentProvider: "local",
     currentModel: "qwen3-asr-0.6b-q8_0",
@@ -462,14 +462,51 @@ test("Qwen prewarm eligibility requires an active non-translation recording", as
   prompt.isRecording = true;
   prompt.prewarmQwenWorker(recordingSession);
   await Promise.resolve();
-  assert.deepEqual(calls, ["prewarm-qwen-worker"]);
+  assert.deepEqual(calls, [["prewarm-qwen-worker", [42]]]);
 
-  recordingSession.translateMode = true;
+  recordingSession.qwenSession = false;
   prompt.prewarmQwenWorker(recordingSession);
-  recordingSession.translateMode = false;
-  prompt.currentModel = "nemotron-3.5-asr-streaming-0.6b-q8_0";
+  recordingSession.qwenSession = true;
+  prompt.currentProvider = "groq";
   prompt.prewarmQwenWorker(recordingSession);
-  assert.deepEqual(calls, ["prewarm-qwen-worker"]);
+  assert.deepEqual(calls, [["prewarm-qwen-worker", [42]]]);
+});
+
+test("Qwen worker completion is session-scoped and idempotent", async () => {
+  const calls = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      calls.push([command, args]);
+      return Promise.resolve(true);
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  const qwen = { id: 73, qwenSession: true };
+
+  await Promise.all([
+    prompt.finishQwenWorkerSession(qwen),
+    prompt.finishQwenWorkerSession(qwen),
+  ]);
+  await prompt.finishQwenWorkerSession({ id: 74, qwenSession: false });
+
+  assert.deepEqual(calls, [["finish-qwen-worker-session", [73]]]);
+});
+
+test("a failed Qwen worker completion can retry during final cleanup", async () => {
+  let attempts = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command) {
+      assert.equal(command, "finish-qwen-worker-session");
+      attempts += 1;
+      return attempts === 1 ? Promise.reject(new Error("bridge unavailable")) : Promise.resolve(true);
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  const recordingSession = { id: 75, qwenSession: true };
+
+  assert.equal(await prompt.finishQwenWorkerSession(recordingSession), false);
+  assert.equal(await prompt.finishQwenWorkerSession(recordingSession), true);
+  assert.equal(attempts, 2);
 });
 
 test("Qwen prewarm waits for probation after first paint and skips a cancelled recording", async () => {
@@ -1153,14 +1190,14 @@ test("chunks decode in order, one at a time, each tagged with its chunk index", 
   assert.ok(calls[0][0].length > 44, "a real WAV, header included, is uploaded");
 });
 
-test("a decoded chunk starts the next worker, and the final chunk does not", async () => {
+test("a decoded chunk keeps the session worker ready, and the final chunk does not", async () => {
   const calls = [];
   const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
     calls.push(channel);
     return channel === "transcribe-audio" ? `chunk${args[4]}` : true;
   });
 
-  const recordingSession = { id: 7, translateMode: false };
+  const recordingSession = { id: 7, translateMode: false, qwenSession: true };
   const prompt = createBarePrompt(VoiceInputPrompt, {
     currentProvider: "local",
     currentModel: "qwen3-asr-0.6b-q8_0",
@@ -1175,7 +1212,7 @@ test("a decoded chunk starts the next worker, and the final chunk does not", asy
   assert.deepEqual(
     calls,
     ["transcribe-audio", "prewarm-qwen-worker"],
-    "the worker that decoded this chunk was retired with it, so the next one starts while capture continues",
+    "the session worker stays due for the next chunk while capture continues",
   );
 
   // Releasing the key. The last chunk has no successor, and a replacement here
@@ -1212,7 +1249,7 @@ test("releasing the key mid-decode still warms the worker the final chunk needs"
     return `chunk${args[4]}`;
   });
 
-  const recordingSession = { id: 7, translateMode: false };
+  const recordingSession = { id: 7, translateMode: false, qwenSession: true };
   const prompt = createBarePrompt(VoiceInputPrompt, {
     currentProvider: "local",
     currentModel: "qwen3-asr-0.6b-q8_0",
@@ -1236,7 +1273,7 @@ test("releasing the key mid-decode still warms the worker the final chunk needs"
   assert.deepEqual(
     calls,
     ["transcribe-audio", "prewarm-qwen-worker", "transcribe-audio"],
-    "chunk 0 warms a worker for the already-queued final chunk, which then decodes without starting another",
+    "chunk 0 keeps the worker ready for the already-queued final chunk",
   );
 });
 

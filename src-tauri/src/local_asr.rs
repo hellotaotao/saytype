@@ -6,11 +6,12 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use sha2::Digest;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::Emitter;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,27 +32,9 @@ pub fn normalize_local_model_id(model: &str) -> &'static str {
 /// Pinned llama.cpp release. Must stay ≥ b9173 (Qwen3-ASR repetition fix,
 /// ggml-org/llama.cpp#22357). Upgrading requires re-verifying CLI flags,
 /// stdout format, all sha256s, and a real-dictation regression.
-// Upstream's own release on every platform. SayType built a patched runtime for
-// a while to make worker reuse safe; retiring the worker after each decode makes
-// the patch unnecessary, and upstream's packs carry distribution work that a
-// private build kept getting wrong — per-arch CPU variants, a bundled OpenMP
-// runtime, no stray OpenSSL link. See vendor/llama.cpp/README.md.
+// Use upstream's official runtime on every platform. Worker reuse is bounded
+// by one recording session and guarded by contamination detection below.
 pub const LLAMA_BUILD: &str = "b9960";
-
-/// Whether a worker may serve more than one decode. Off unless the config file
-/// says otherwise — see `AppConfig::reuse_local_worker`.
-///
-/// Prewarming is deliberately *not* gated on this. The two were conflated
-/// before, which left every platform outside the resident-safe set paying the
-/// model load after the user stopped speaking rather than during it. Starting a
-/// worker at shortcut-down and retiring it after its one decode keeps each
-/// process to a single audio, which is what makes upstream b9960 safe here: the
-/// media-batch bug needs two audios in one process to appear.
-fn worker_reuse_enabled() -> bool {
-  crate::settings::read_config()
-    .map(|config| config.reuse_local_worker)
-    .unwrap_or(false)
-}
 
 pub struct Asset {
   /// Final location under local_asr_dir(); doubles as the download's .part
@@ -495,18 +478,14 @@ static LOCAL_INFERENCE: Semaphore = Semaphore::const_new(1);
 static RESIDENT_WORKER: Mutex<Option<ResidentWorker>> = Mutex::new(None);
 static RESIDENT_GENERATION: AtomicU64 = AtomicU64::new(0);
 static RESIDENT_EPOCH: AtomicU64 = AtomicU64::new(0);
+static FINISHED_RESIDENT_SESSIONS: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+const FINISHED_SESSION_TOMBSTONES: usize = 1024;
 static BUNDLED_RUNTIME_INSTALL: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static RESIDENT_STARTS: AtomicU64 = AtomicU64::new(0);
 
-/// Keep the ~1.3 GiB worker only long enough to cover normal back-to-back
-/// dictation. This preserves the old near-zero idle footprint after a pause.
-#[cfg(not(test))]
-const RESIDENT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-#[cfg(test)]
-const RESIDENT_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 /// A preloaded worker must survive until the frontend's 75 s hard chunk cut.
-/// Once it serves a decode, the normal shorter idle timeout applies again.
+/// Session completion normally retires it sooner; this is the leak guard.
 const PREWARM_IDLE_TIMEOUT: Duration = Duration::from_secs(80);
 const CHAT_PROMPT: &[u8] = b"\n> ";
 
@@ -517,15 +496,19 @@ struct ResidentWorker {
   ctx_size: u32,
   generation: u64,
   epoch: u64,
+  /// A worker belongs to one uninterrupted hotkey hold. It may serve each
+  /// chunk from that recording, but it is never handed to another dictation.
+  session_id: Option<u64>,
   /// Previous transcript from this worker, for the contamination check in
-  /// `transcribe`. Always `None` unless reuse is on, since a retired worker
-  /// never sees a second audio.
+  /// `transcribe`. Populated on the normal path now that a worker serves every
+  /// chunk of its session: it is the only evidence that upstream handed this
+  /// decode the previous audio, so it is load-bearing, not a debug aid.
   last_transcript: Option<String>,
   decodes_served: u32,
 }
 
 impl ResidentWorker {
-  async fn spawn(base: &Path, ctx_size: u32) -> Result<Self> {
+  async fn spawn(base: &Path, ctx_size: u32, session_id: Option<u64>) -> Result<Self> {
     let mut child = local_asr_command(cli_path(base))
       .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
       .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
@@ -554,6 +537,7 @@ impl ResidentWorker {
       stdout,
       ctx_size,
       generation: 0,
+      session_id,
       last_transcript: None,
       decodes_served: 0,
       epoch: RESIDENT_EPOCH.load(Ordering::Relaxed),
@@ -617,8 +601,8 @@ impl ResidentWorker {
       let digest = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
       log::warn!(
         "local-asr: POLLUTION DETECTED — decode {} on this worker returned the previous \
-         transcript verbatim; retiring it and re-decoding one-shot. This is upstream b9960's \
-         media-batch reuse, the reason reuse_local_worker defaults off. chars={} sha256={}",
+         transcript verbatim; retiring it and re-decoding one-shot. The packaged reset \
+         contract did not isolate this session's audio. chars={} sha256={}",
         self.decodes_served,
         text.chars().count(),
         &digest[..12],
@@ -722,6 +706,66 @@ fn retire_resident_worker(generation: Option<u64>) {
   }
 }
 
+fn finished_resident_sessions() -> &'static Mutex<HashSet<u64>> {
+  FINISHED_RESIDENT_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn resident_session_finished(session_id: Option<u64>) -> bool {
+  session_id.is_some_and(|id| finished_resident_sessions().lock().unwrap().contains(&id))
+}
+
+fn session_reuse_miss(
+  worker_session_id: Option<u64>,
+  requested_session_id: Option<u64>,
+) -> Option<&'static str> {
+  // A decode with no session owns nothing, so it never inherits a worker — and
+  // an unowned worker is never handed on. Comparing the two `Option`s directly
+  // would call `None == None` a match and permit exactly the multi-audio reuse
+  // this predicate exists to forbid. `park_resident_worker` also refuses to
+  // cache an unowned worker, but the rule belongs here, where reuse is decided.
+  let Some(requested) = requested_session_id else {
+    return Some("unowned");
+  };
+  if worker_session_id != Some(requested) {
+    Some("session_mismatch")
+  } else if resident_session_finished(Some(requested)) {
+    Some("session_finished")
+  } else {
+    None
+  }
+}
+
+/// End exactly one continuous recording's worker lease. If its worker is
+/// currently decoding, the finished marker makes `park_resident_worker` kill it
+/// instead of caching it when the decode returns. A newer recording's worker is
+/// left alone.
+///
+/// The worker slot is locked *around* the marking, not after it: that is what
+/// makes the hand-off with `park_resident_worker_for` atomic. See the note
+/// there.
+pub fn finish_resident_session(session_id: u64) -> bool {
+  let mut slot = RESIDENT_WORKER.lock().unwrap();
+  {
+    let mut finished = finished_resident_sessions().lock().unwrap();
+    finished.insert(session_id);
+    if finished.len() > FINISHED_SESSION_TOMBSTONES * 2 {
+      let floor = session_id.saturating_sub(FINISHED_SESSION_TOMBSTONES as u64);
+      finished.retain(|id| *id >= floor);
+    }
+  }
+  if slot
+    .as_ref()
+    .is_some_and(|worker| worker.session_id == Some(session_id))
+  {
+    if let Some(mut worker) = slot.take() {
+      let _ = worker.child.start_kill();
+    }
+    true
+  } else {
+    false
+  }
+}
+
 /// Stop the warm local worker when SayType exits, switches away from local, or
 /// removes the model files.
 pub fn shutdown_resident_worker() {
@@ -739,50 +783,43 @@ fn schedule_resident_retirement(generation: u64, idle_timeout: Duration) {
   });
 }
 
-/// Extend the idle deadline when a new local dictation starts recording. This
-/// is deliberately a no-op when no worker is already warm: pressing the hotkey
-/// should not allocate ~1.3 GiB before the user has completed any audio.
-pub fn keep_resident_worker_warm() -> bool {
-  let generation = {
-    let mut slot = RESIDENT_WORKER.lock().unwrap();
-    let Some(worker) = slot.as_mut() else {
-      return false;
-    };
-    if !worker.is_running() {
-      slot.take();
-      return false;
-    }
-    let generation = RESIDENT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-    worker.generation = generation;
-    generation
-  };
-  schedule_resident_retirement(generation, RESIDENT_IDLE_TIMEOUT);
-  true
-}
-
 /// Park unconditionally. Prewarm uses this: the worker it just started has to
 /// be waiting in the slot for the decode that follows, whether or not the
 /// worker is allowed to survive past that decode.
 fn park_resident_worker_for(mut worker: ResidentWorker, idle_timeout: Duration) {
-  if worker.epoch != RESIDENT_EPOCH.load(Ordering::Relaxed) {
-    let _ = worker.child.start_kill();
-    return;
-  }
-  let generation = RESIDENT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-  worker.generation = generation;
-  *RESIDENT_WORKER.lock().unwrap() = Some(worker);
+  // The finished-session test and the store are one critical section, and
+  // `finish_resident_session` takes this same lock before it marks a session.
+  // Split apart, a cancel arriving between them would mark the session, find
+  // the slot still empty, report "nothing retired" — and then this store would
+  // park the worker it was supposed to kill, leaving ~1.3 GiB resident for the
+  // full idle timeout. Both paths lock the slot before the finished set, so the
+  // order is consistent and cannot deadlock.
+  let generation = {
+    let mut slot = RESIDENT_WORKER.lock().unwrap();
+    if worker.epoch != RESIDENT_EPOCH.load(Ordering::Relaxed)
+      || resident_session_finished(worker.session_id)
+    {
+      let _ = worker.child.start_kill();
+      return;
+    }
+    let generation = RESIDENT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    worker.generation = generation;
+    *slot = Some(worker);
+    generation
+  };
   schedule_resident_retirement(generation, idle_timeout);
 }
 
-/// Park after a decode — the one place reuse is decided. Retiring here is what
-/// keeps each worker to a single audio, so the next dictation gets a process
-/// that has never seen another clip.
+/// Keep a worker only for the recording session that owns it. The 80-second
+/// guard spans the next hard chunk cut; normal completion retires it sooner.
+/// The finished-session case is left to `park_resident_worker_for`, which
+/// settles it under the slot lock.
 fn park_resident_worker(mut worker: ResidentWorker) {
-  if !worker_reuse_enabled() {
+  if worker.session_id.is_none() {
     let _ = worker.child.start_kill();
     return;
   }
-  park_resident_worker_for(worker, RESIDENT_IDLE_TIMEOUT);
+  park_resident_worker_for(worker, PREWARM_IDLE_TIMEOUT);
 }
 
 /// Whether a decode handed back exactly what the previous one did, which on a
@@ -818,13 +855,19 @@ impl ResidentPrewarmOutcome {
 /// other prewarm requests. Eligibility is rechecked after waiting for the
 /// permit, so a provider/model switch cannot start a stale worker.
 pub async fn prewarm_resident_worker(
+  session_id: u64,
   eligible: impl FnOnce() -> Result<bool>,
 ) -> Result<ResidentPrewarmOutcome> {
-  let progress = PipelineProgress::new("prewarm", None, None);
-  with_pipeline_deadline(prewarm_resident_worker_inner(eligible, &progress), PREWARM_TIMEOUT, &progress).await
+  let progress = PipelineProgress::new("prewarm", Some(session_id), None);
+  with_pipeline_deadline(
+    prewarm_resident_worker_inner(session_id, eligible, &progress),
+    PREWARM_TIMEOUT,
+    &progress,
+  ).await
 }
 
 async fn prewarm_resident_worker_inner(
+  session_id: u64,
   eligible: impl FnOnce() -> Result<bool>,
   progress: &PipelineProgress,
 ) -> Result<ResidentPrewarmOutcome> {
@@ -841,7 +884,7 @@ async fn prewarm_resident_worker_inner(
   let lease_epoch = RESIDENT_EPOCH.load(Ordering::Relaxed);
   progress.enter("prepare");
 
-  if !eligible()? {
+  if resident_session_finished(Some(session_id)) || !eligible()? {
     log::info!("local-asr: prewarm outcome=ineligible queue_ms={queue_ms}");
     return Ok(ResidentPrewarmOutcome::Ineligible);
   }
@@ -855,7 +898,10 @@ async fn prewarm_resident_worker_inner(
 
   let cached = RESIDENT_WORKER.lock().unwrap().take();
   if let Some(mut worker) = cached {
-    if worker.ctx_size == CTX_FLOOR && worker.is_running() {
+    if worker.session_id == Some(session_id)
+      && worker.ctx_size == CTX_FLOOR
+      && worker.is_running()
+    {
       worker.epoch = lease_epoch;
       park_resident_worker_for(worker, PREWARM_IDLE_TIMEOUT);
       log::info!(
@@ -870,7 +916,7 @@ async fn prewarm_resident_worker_inner(
 
   let spawn_started = std::time::Instant::now();
   progress.enter("worker-start");
-  let mut worker = ResidentWorker::spawn(&base, CTX_FLOOR).await?;
+  let mut worker = ResidentWorker::spawn(&base, CTX_FLOOR, Some(session_id)).await?;
   let resident_spawn_ms = spawn_started.elapsed().as_millis();
   worker.epoch = lease_epoch;
   park_resident_worker_for(worker, PREWARM_IDLE_TIMEOUT);
@@ -1029,6 +1075,10 @@ async fn transcribe_wav_inner(
         (None, "ctx_mismatch")
       } else if !cached.is_running() {
         (None, "worker_exited")
+      } else if let Some(reason) =
+        session_reuse_miss(cached.session_id, session_id)
+      {
+        (None, reason)
       } else {
         (Some(cached), "none")
       }
@@ -1045,7 +1095,7 @@ async fn transcribe_wav_inner(
     None => {
       progress.enter("worker-start");
       let spawn_started = std::time::Instant::now();
-      let result = ResidentWorker::spawn(&base, ctx_size).await;
+      let result = ResidentWorker::spawn(&base, ctx_size, session_id).await;
       resident_spawn_ms = Some(spawn_started.elapsed().as_millis());
       match result {
         Ok(worker) => Some(worker),
@@ -1838,6 +1888,30 @@ mod tests {
   }
 
   #[test]
+  fn worker_reuse_never_crosses_a_recording_session() {
+    let active = 81_001;
+    let other = 81_002;
+    assert_eq!(
+      session_reuse_miss(Some(active), Some(other)),
+      Some("session_mismatch")
+    );
+    assert_eq!(session_reuse_miss(Some(active), Some(active)), None);
+
+    // A decode with no session must never inherit a worker, and an unowned
+    // worker is never handed on — including to another unowned decode, which a
+    // plain `Option == Option` would have called a match.
+    assert_eq!(session_reuse_miss(None, None), Some("unowned"));
+    assert_eq!(session_reuse_miss(Some(active), None), Some("unowned"));
+    assert_eq!(session_reuse_miss(None, Some(active)), Some("session_mismatch"));
+
+    assert!(!finish_resident_session(active));
+    assert_eq!(
+      session_reuse_miss(Some(active), Some(active)),
+      Some("session_finished")
+    );
+  }
+
+  #[test]
   fn assets_ready_requires_models_at_exact_size_and_an_executable_cli() {
     let temp = tempfile::TempDir::new().unwrap();
     let dir = temp.path();
@@ -1986,13 +2060,6 @@ mod tests {
       .unwrap();
     drop(second);
     assert_eq!(LOCAL_INFERENCE.available_permits(), 1);
-  }
-
-  #[test]
-  fn dictation_keep_alive_does_not_preload_a_worker() {
-    shutdown_resident_worker();
-    assert!(!keep_resident_worker_warm());
-    assert!(RESIDENT_WORKER.lock().unwrap().is_none());
   }
 
   #[test]
@@ -2149,13 +2216,16 @@ mod tests {
     );
   }
 
-  /// Needs the real assets laid out. Prewarms before the first decode, then runs
-  /// two decodes to prove all three operations share one model process. Run:
+  /// Needs the real assets laid out. Prewarms, decodes once, and proves session
+  /// finalization retires the parked worker. Multi-audio isolation is measured
+  /// separately by `real_reuse_contamination_rate` below. Run:
   ///   cargo test real_subprocess_smoke -- --ignored --nocapture
   #[test]
   #[ignore]
   fn real_subprocess_smoke() {
-    assert!(assets_ready(), "lay out the assets first (plan Task 3 Step 1)");
+    let base = local_asr_dir().expect("assets dir");
+    ensure_bundled_runtime_at(&base).expect("install bundled runtime");
+    assert!(assets_ready_at(&base), "lay out the model assets first");
     let rt = tokio::runtime::Runtime::new().unwrap();
     // 5s of silence WAV (44-byte header + zeros), built inline. Duration
     // matters here: measured 2026-07-13, pure-digital-zero clips <=2s make
@@ -2178,8 +2248,9 @@ mod tests {
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 0);
     let starts_before = RESIDENT_STARTS.load(Ordering::Relaxed);
+    let session_id = 9_001;
     let prewarm = rt
-      .block_on(prewarm_resident_worker(|| Ok(true)))
+      .block_on(prewarm_resident_worker(session_id, || Ok(true)))
       .expect("resident prewarm ok");
     assert_eq!(prewarm, ResidentPrewarmOutcome::Spawned);
     assert_eq!(
@@ -2187,31 +2258,21 @@ mod tests {
       1,
       "prewarm must start exactly one resident worker"
     );
-    let first = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("first resident decode ok");
+    let first = rt
+      .block_on(transcribe_wav(None, Some(session_id), Some(0), &wav))
+      .expect("first resident decode ok");
     assert_eq!(first, "", "silence must yield empty text");
 
-    // The default lifecycle: the prewarmed worker served its one audio and was
-    // retired, leaving nothing behind. This is the property that makes upstream
-    // b9960 safe here, so it is worth asserting rather than assuming.
-    assert!(
-      RESIDENT_WORKER.lock().unwrap().is_none(),
-      "a decode must retire its worker while reuse_local_worker is off"
-    );
-    assert!(!keep_resident_worker_warm(), "there is nothing left to keep warm");
-
-    // The next dictation therefore starts its own process, and gets the same
-    // answer from it.
-    let second = rt.block_on(transcribe_wav(None, None, None, &wav)).expect("second resident decode ok");
-    assert_eq!(second, "", "a fresh worker must decode silence the same way");
     assert_eq!(
       RESIDENT_STARTS.load(Ordering::Relaxed) - starts_before,
-      2,
-      "the prewarmed worker serves decode one; decode two starts its own — \
-       never one worker serving two clips"
+      1
     );
+    assert!(RESIDENT_WORKER.lock().unwrap().is_some());
+    let retired = finish_resident_session(session_id);
+    assert!(retired);
     assert!(
       RESIDENT_WORKER.lock().unwrap().is_none(),
-      "nothing stays resident once the dictation is done"
+      "the session's worker is destroyed as soon as the dictation is done"
     );
     shutdown_resident_worker();
     // Temp file cleaned up:
@@ -2222,24 +2283,37 @@ mod tests {
     assert_eq!(leftovers, 0, "temp wav files must be removed");
   }
 
-  /// The invariant reuse has to hold: a contaminated decode is never returned
-  /// as if it were correct.
+  /// How often upstream b9960 hands a reused worker the *previous* audio. That
+  /// rate is the whole case for session-scoped reuse, so this measures it
+  /// rather than gating on it: the only assertion is the invariant that a
+  /// contaminated decode is never **accepted**, which holds at any rate, and
+  /// the rate itself is printed for a human to read.
   ///
-  /// SayType retires a worker after each decode, so this path is only reachable
-  /// with `reuse_local_worker` on. Against upstream b9960 contamination is the
-  /// normal outcome — measured as every decode after the first returning the
-  /// previous transcript, then the process aborting on memory corruption — so
-  /// this does not assert that reuse works. It asserts that when reuse breaks,
-  /// `transcribe` fails loudly instead of handing back the wrong words, which
-  /// is what lets the caller retire the worker and re-run one-shot.
+  /// Why it has to be measured rather than reasoned about: vendor's
+  /// README records "every decode after the first returned the previous clip's
+  /// transcript" on Windows against stock b9960, with `/clear` in between
+  /// exactly as `ResidentWorker::transcribe` sends it. If that still holds,
+  /// reuse is a net loss — every second chunk pays a rejected decode plus a
+  /// cold one-shot, where retiring after each decode paid one hidden model
+  /// load. If it is rare, reuse saves a model load per chunk. Nothing between
+  /// those two conclusions is decidable from the source.
   ///
-  /// Needs the real assets plus two distinct 16 kHz mono WAVs:
+  /// The loop mirrors production: one worker serves a session's chunks, and a
+  /// rejected decode retires it so the next chunk starts a fresh process.
+  ///
+  /// Needs the real assets plus two 16 kHz mono WAVs of *different* speech —
+  /// identical clips cannot tell contamination from a correct repeat:
   ///   SAYTYPE_TEST_WAV_A=a.wav SAYTYPE_TEST_WAV_B=b.wav \
-  ///     cargo test real_reuse_pollution_is_detected -- --ignored --nocapture
+  ///     cargo test real_reuse_contamination_rate -- --ignored --nocapture
+  ///
+  /// Optional: `SAYTYPE_TEST_REUSE_SESSIONS` (default 3) and
+  /// `SAYTYPE_TEST_REUSE_CHUNKS` (default 8) size the sample.
   #[test]
   #[ignore]
-  fn real_reuse_pollution_is_detected() {
-    assert!(assets_ready(), "lay out the assets first");
+  fn real_reuse_contamination_rate() {
+    let base = local_asr_dir().expect("assets dir");
+    ensure_bundled_runtime_at(&base).expect("install bundled runtime");
+    assert!(assets_ready_at(&base), "lay out the model assets first");
     let path_a = std::env::var("SAYTYPE_TEST_WAV_A").expect("set SAYTYPE_TEST_WAV_A");
     let path_b = std::env::var("SAYTYPE_TEST_WAV_B").expect("set SAYTYPE_TEST_WAV_B");
     let wav_a = fs::read(&path_a).expect("read SAYTYPE_TEST_WAV_A");
@@ -2248,40 +2322,134 @@ mod tests {
     let ctx = ctx_size_for_wav(wav_a.len());
     assert_eq!(ctx, ctx_size_for_wav(wav_b.len()), "both clips must map to one context");
 
-    let base = local_asr_dir().expect("assets dir");
+    let sample = |key: &str, default: usize| {
+      std::env::var(key).ok().and_then(|value| value.parse().ok()).unwrap_or(default)
+    };
+    let sessions = sample("SAYTYPE_TEST_REUSE_SESSIONS", 3);
+    let chunks = sample("SAYTYPE_TEST_REUSE_CHUNKS", 8);
+    assert!(sessions >= 1, "measure at least one session");
+    assert!(chunks >= 2, "a session needs two chunks before anything is reused");
+
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let mut worker = rt.block_on(ResidentWorker::spawn(&base, ctx)).expect("resident worker");
+    let clips = [("A", &path_a, wav_a.len()), ("B", &path_b, wav_b.len())];
 
-    let first = rt
-      .block_on(worker.transcribe(Path::new(&path_a), wav_a.len(), &mut |_: &str| {}))
-      .expect("first decode");
-    assert!(!first.trim().is_empty(), "clip A must transcribe to speech");
+    // Ground truth. The first audio in a process cannot be contaminated —
+    // there is no previous one — so one fresh worker per clip gives the
+    // transcripts that make a *silently wrong* decode recognisable below. The
+    // repeat check inside `transcribe` only sees adjacent decodes; these
+    // references see all of them.
+    let reference: Vec<String> = clips
+      .iter()
+      .map(|(label, path, len)| {
+        let mut worker = rt
+          .block_on(ResidentWorker::spawn(&base, ctx, Some(9_002)))
+          .expect("reference worker");
+        let text = rt
+          .block_on(worker.transcribe(Path::new(*path), *len, &mut |_: &str| {}))
+          .unwrap_or_else(|error| panic!("reference decode for clip {label} failed: {error:#}"));
+        assert!(!text.trim().is_empty(), "clip {label} must transcribe to speech");
+        text
+      })
+      .collect();
+    assert_ne!(
+      reference[0], reference[1],
+      "both clips transcribe to the same text, so contamination would be invisible — \
+       use clips with different speech",
+    );
 
-    // Alternate on the one worker. Each decode either matches its own clip or
-    // is rejected; returning the other clip's text is the failure.
-    for round in 0..6 {
-      for (label, path, len, other) in [
-        ("B", &path_b, wav_b.len(), &first),
-        ("A", &path_a, wav_a.len(), &first),
-      ] {
+    // Two populations. A decode on a worker that has already served one can be
+    // contaminated; the first decode in a process cannot be, so its failures
+    // are the machine's own baseline — a loaded box trips the `/audio`
+    // deadline whether or not anything is reused. Counting them separately is
+    // what makes the reused rate attributable to reuse instead of to load.
+    let mut reused_decodes = 0usize;
+    let mut reused_contaminated = 0usize;
+    let mut reused_other_failures = 0usize;
+    let mut fresh_decodes = 0usize;
+    let mut fresh_failures = 0usize;
+    // Sessions cut short because the machine could not start a worker at all.
+    let mut spawn_failures = 0usize;
+
+    for session in 0..sessions {
+      let session_id = 9_100 + session as u64;
+      let mut worker = rt
+        .block_on(ResidentWorker::spawn(&base, ctx, Some(session_id)))
+        .expect("session worker");
+      let mut served = 0usize;
+
+      for chunk in 0..chunks {
+        let (label, path, len) = clips[chunk % clips.len()];
+        let reused = served > 0;
+        if reused { reused_decodes += 1 } else { fresh_decodes += 1 }
+
         match rt.block_on(worker.transcribe(Path::new(path), len, &mut |_: &str| {})) {
-          Ok(text) if label == "A" => {
-            assert_eq!(&text, other, "round {round}: clip A drifted from its own transcript");
-          }
           Ok(text) => {
+            served += 1;
+            let mine = &reference[chunk % clips.len()];
+            let theirs = &reference[(chunk + 1) % clips.len()];
             assert_ne!(
-              &text, other,
-              "round {round}: clip {label} returned clip A's transcript and was accepted",
+              &text, theirs,
+              "session {session} chunk {chunk} (clip {label}): the OTHER clip's transcript was \
+               returned and accepted — the contamination guard let a wrong result through",
             );
+            if &text != mine {
+              eprintln!(
+                "session {session} chunk {chunk} clip {label}: accepted, but drifted from this \
+                 clip's reference transcript",
+              );
+            }
           }
           Err(error) => {
-            // Contamination or a dead worker. Both are reported, neither is
-            // silently wrong, and the caller falls back to one-shot.
-            eprintln!("round {round} clip {label}: rejected as expected: {error:#}");
-            return;
+            let message = format!("{error:#}");
+            match (reused, message.contains("contaminated")) {
+              (true, true) => reused_contaminated += 1,
+              (true, false) => reused_other_failures += 1,
+              (false, _) => fresh_failures += 1,
+            }
+            let population = if reused { "reused" } else { "fresh" };
+            eprintln!("session {session} chunk {chunk} clip {label} [{population}]: rejected: {message}");
+            // Production retires a rejected worker and re-decodes one-shot, so
+            // the next chunk here starts a fresh process too.
+            worker = match rt.block_on(ResidentWorker::spawn(&base, ctx, Some(session_id))) {
+              Ok(replacement) => replacement,
+              Err(spawn_error) => {
+                // A box already saturated by this loop can fail to start a
+                // worker at all. That is the machine, not reuse — record it and
+                // end this session instead of aborting the whole measurement,
+                // which would throw away every sample collected so far.
+                eprintln!(
+                  "session {session} chunk {chunk}: no replacement worker, ending session \
+                   early: {spawn_error:#}",
+                );
+                spawn_failures += 1;
+                break;
+              }
+            };
+            served = 0;
           }
         }
       }
     }
+
+    let pct = |part: usize, whole: usize| {
+      if whole == 0 { 0.0 } else { part as f64 * 100.0 / whole as f64 }
+    };
+    let reused_failures = reused_contaminated + reused_other_failures;
+    eprintln!(
+      "\n=== reuse contamination rate ===\n\
+       fresh decodes (control): {fresh_decodes:>4}, rejected {fresh_failures:>4}  ({:.1}%)\n\
+       reused decodes:          {reused_decodes:>4}, rejected {reused_failures:>4}  ({:.1}%)\n\
+         of which contaminated: {reused_contaminated:>4}              ({:.1}% of reused)\n\
+         of which died/timed out:{reused_other_failures:>4}\n\
+       sessions cut short (no worker could start): {spawn_failures}\n\
+       \n\
+       A first decode cannot be contaminated, so the control rate is what this machine \
+       costs under load. Reuse is worth keeping only while the reused rate stays close to \
+       it: every rejected reused decode pays a wasted decode plus a cold one-shot, where \
+       retiring after each decode paid one model load hidden under the user's speech.",
+      pct(fresh_failures, fresh_decodes),
+      pct(reused_failures, reused_decodes),
+      pct(reused_contaminated, reused_decodes),
+    );
   }
 }

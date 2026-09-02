@@ -194,6 +194,7 @@ pub fn run() {
       commands::report_recording_startup,
       commands::report_transcription_lifecycle,
       commands::prewarm_qwen_worker,
+      commands::finish_qwen_worker_session,
       commands::get_diagnostic_log,
       commands::get_api_keys,
       commands::save_settings,

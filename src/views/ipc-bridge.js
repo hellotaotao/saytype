@@ -17,6 +17,7 @@
     "report-recording-startup": "report_recording_startup",
     "report-transcription-lifecycle": "report_transcription_lifecycle",
     "prewarm-qwen-worker": "prewarm_qwen_worker",
+    "finish-qwen-worker-session": "finish_qwen_worker_session",
     "get-diagnostic-log": "get_diagnostic_log",
     "get-api-keys": "get_api_keys",
     "save-settings": "save_settings",
@@ -69,6 +70,8 @@
   const tauriArgs = {
     "report-recording-startup": [["timing"]],
     "report-transcription-lifecycle": [["report"]],
+    "prewarm-qwen-worker": [["sessionId", "session_id"]],
+    "finish-qwen-worker-session": [["sessionId", "session_id"]],
     "cancel-transcription": [["sessionId", "session_id"]],
     "start-live-transcription": [
       ["sessionId", "session_id"],

@@ -2,8 +2,9 @@
 
 SayType ships **upstream's own llama.cpp `b9960` releases** on every platform.
 Nothing here is built or bundled. The patch and this note stay because the bug
-they describe is real, still present upstream, and is the reason
-`reuse_local_worker` defaults off.
+they describe is real, still present upstream, and SayType now reuses a worker
+across the chunks of one recording session — so the measurement below is the
+thing that decides whether that reuse is a win.
 
 ## The bug
 
@@ -36,15 +37,40 @@ one build required AVX-512 and would not start on the development machine.
 Upstream's packs carry per-arch CPU dispatch, a bundled OpenMP runtime, and no
 stray links.
 
-The bug also stopped mattering. It needs two audios in one process, and SayType
-now starts a worker at shortcut-down and retires it after its single decode. The
-model load overlaps the user's speech instead of following it, which was the
-larger win, and each process only ever sees one clip. Verified against stock
-`b9960`: six alternating decodes, one worker each, all correct.
+The larger win never needed the patch. Starting a worker at shortcut-down puts
+the model load *under* the user's speech instead of after it — about 2.7 s on a
+Windows i5-7400, 0.2–0.33 s on an M4 — and prewarming is safe on stock `b9960`
+because a prewarmed worker's first decode is still the only audio that process
+has seen. That alone was not worth a private native build.
 
-What reuse would still buy is utterances shorter than the model load — about
-2.7 s on a Windows i5-7400, 0.2–0.33 s on an M4. Not enough to maintain a
-private native build for.
+## Where reuse stands now
+
+SayType no longer retires the worker after every decode: it is leased to one
+recording session and serves that session's chunks, which saves a model load per
+chunk on a long dictation. That deliberately runs into the bug above, so the
+guard is `repeats_previous` in `local_asr.rs` — a decode returning the previous
+transcript verbatim is rejected, the worker is destroyed, and the chunk is
+re-decoded one-shot. **A wrong transcript is never inserted**; what the bug costs
+is time.
+
+Whether the trade pays depends entirely on the contamination *rate*, and the
+measurement above (every decode after the first) was taken with alternating
+clips back-to-back, not at SayType's real chunk cadence. If it still holds at
+that cadence, reuse is a net loss: each reused chunk pays a rejected decode plus
+a cold one-shot, where retiring after each decode paid one hidden load.
+
+`real_reuse_contamination_rate` in `local_asr.rs` measures it — `#[ignore]`d,
+needs the real assets plus two clips of different speech:
+
+```
+SAYTYPE_TEST_WAV_A=a.wav SAYTYPE_TEST_WAV_B=b.wav \
+  cargo test real_reuse_contamination_rate -- --ignored --nocapture
+```
+
+It prints the rate and stays green either way; the invariant it asserts is that
+a contaminated decode is never accepted. Note that the `0xC0000409` abort on the
+third decode is out of reach in production: contamination is caught on the second
+and the worker dies before a third.
 
 ## If it is ever revisited
 

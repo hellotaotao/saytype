@@ -606,14 +606,9 @@ fn dispatch_action(app: &AppHandle, action: Action) {
     Action::Start { translate_mode } => {
       let startup_started = Instant::now();
       log::info!("hotkey:dispatch start translate_mode={translate_mode}");
-      let worker_started = Instant::now();
-      if !translate_mode {
-        // The audio does not reach Rust until recording stops. Refresh an
-        // already-warm local worker now so a long dictation cannot cross the
-        // idle deadline and lose the model before it is needed.
-        crate::local_asr::keep_resident_worker_warm();
-      }
-      let worker_elapsed = worker_started.elapsed();
+      // No worker step here, and so no worker_ms below: Qwen worker ownership
+      // begins in the frontend once this recording has a session id, and native
+      // hotkey dispatch must not extend a previous session.
       let position_started = Instant::now();
       let mut show_elapsed = Duration::ZERO;
       if let Some(window) = app.get_webview_window("input-prompt") {
@@ -642,8 +637,7 @@ fn dispatch_action(app: &AppHandle, action: Action) {
       let total_elapsed = startup_started.elapsed();
       if total_elapsed >= SLOW_NATIVE_STARTUP {
         log::warn!(
-          "hotkey:startup-slow worker_ms={} position_ms={} show_ms={} emit_ms={} total_ms={}",
-          worker_elapsed.as_millis(),
+          "hotkey:startup-slow position_ms={} show_ms={} emit_ms={} total_ms={}",
           position_elapsed.as_millis(),
           show_elapsed.as_millis(),
           emit_elapsed.as_millis(),
@@ -651,8 +645,7 @@ fn dispatch_action(app: &AppHandle, action: Action) {
         );
       } else {
         log::info!(
-          "hotkey:startup-ready worker_ms={} position_ms={} show_ms={} emit_ms={} total_ms={}",
-          worker_elapsed.as_millis(),
+          "hotkey:startup-ready position_ms={} show_ms={} emit_ms={} total_ms={}",
           position_elapsed.as_millis(),
           show_elapsed.as_millis(),
           emit_elapsed.as_millis(),

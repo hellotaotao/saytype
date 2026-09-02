@@ -214,20 +214,30 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
 - `local_asr.rs` — the local transcription backend (provider `"local"`): Qwen3-ASR-0.6B
   Q8_0 GGUF run by `llama-mtmd-cli` from **upstream's own llama.cpp release**
   (`LLAMA_BUILD`, downloaded per platform). One chat-mode worker is **prewarmed at
-  shortcut-down and retired after its single decode**, so the model load overlaps the
-  user's speech instead of following it, and each process only ever sees one audio.
-  Measured on a Windows i5-7400: load is 2.7 s warm / 6.0 s cold, hidden entirely for any
-  utterance longer than that; a 9 s clip goes 6.3 s one-shot → 3.9 s prewarmed. Nothing is
-  held over the idle window.
-  **One audio per process is the correctness property, not an optimization detail.**
+  shortcut-down and owned by that one recording session**, so the model load overlaps the
+  user's speech instead of following it. Measured on a Windows i5-7400: load is 2.7 s warm
+  / 6.0 s cold, hidden entirely for any utterance longer than that; a 9 s clip goes 6.3 s
+  one-shot → 3.9 s prewarmed.
+  **A worker's lease is one uninterrupted hotkey hold** (`session_id`, minted by the
+  frontend as `++recordingSessionId`). It may serve every chunk of that recording, but is
+  never handed to another dictation: `session_reuse_miss` refuses on mismatch, on a
+  finished session, and on an unowned decode. `finish_qwen_worker_session` ends the lease
+  and kills the process; `PREWARM_IDLE_TIMEOUT` (80 s, spanning the frontend's 75 s hard
+  chunk cut) is only the leak guard for a lease that never gets closed.
+  **Reuse within a session is a deliberate bet, and the rate is not yet measured.**
   Upstream leaves an mtmd media batch on the chat context, so a worker that decodes twice
-  can be handed the previous audio's embedding: on Windows every decode after the first
-  returned the previous transcript, then the process aborted on memory corruption
-  (`0xC0000409`). `AppConfig::reuse_local_worker` (config file only, default off) keeps a
-  worker across decodes for testing that; a decode whose transcript matches the previous
-  one verbatim is logged as `POLLUTION DETECTED`, retires the worker, and re-runs one-shot.
-  SayType briefly shipped a patched runtime to make reuse safe — see
-  `vendor/llama.cpp/README.md` for why building one cost more than it returned.
+  can be handed the previous audio's embedding; `vendor/llama.cpp/README.md` records that
+  on Windows against stock b9960 — with `/clear` in between, exactly as
+  `ResidentWorker::transcribe` sends it — every decode after the first returned the
+  previous transcript. The guard is `repeats_previous`: a decode whose transcript matches
+  the previous one verbatim is logged as `POLLUTION DETECTED`, retires the worker, and
+  re-runs one-shot, so a wrong transcript is never inserted. What is at stake is speed, not
+  correctness — at a high contamination rate every reused chunk pays a rejected decode plus
+  a cold one-shot, which is *slower* than retiring after each decode. Run
+  `real_reuse_contamination_rate` (`#[ignore]`, needs the real assets and two clips of
+  different speech) before trusting the win. SayType briefly shipped a patched runtime that
+  made reuse safe — see `vendor/llama.cpp/README.md` for why building one cost more than it
+  returned.
   Cancel = kill (kill_on_drop). Owns the asset manifest (2 GGUFs + the llama.cpp archive,
   ~1GB under `<app-data>/local-asr/`), the resumable sha256-gated downloader, and the
   stdout parser (`language <lang><asr_text>`).

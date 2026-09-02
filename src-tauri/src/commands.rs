@@ -321,12 +321,15 @@ pub fn report_transcription_lifecycle(
 }
 
 #[tauri::command]
-pub async fn prewarm_qwen_worker(window: tauri::WebviewWindow) -> Result<bool, String> {
+pub async fn prewarm_qwen_worker(
+  window: tauri::WebviewWindow,
+  session_id: u64,
+) -> Result<bool, String> {
   if window.label() != "input-prompt" {
     return Err("Qwen prewarm is only accepted from input-prompt".into());
   }
 
-  let outcome = crate::local_asr::prewarm_resident_worker(|| {
+  let outcome = crate::local_asr::prewarm_resident_worker(session_id, || {
     settings::read_config().map(|config| qwen_prewarm_eligible(&config))
   })
   .await
@@ -336,6 +339,17 @@ pub async fn prewarm_qwen_worker(window: tauri::WebviewWindow) -> Result<bool, S
   })?;
   log::info!("command:prewarm_qwen_worker outcome={outcome:?}");
   Ok(outcome.is_ready())
+}
+
+#[tauri::command]
+pub fn finish_qwen_worker_session(
+  window: tauri::WebviewWindow,
+  session_id: u64,
+) -> Result<bool, String> {
+  if window.label() != "input-prompt" {
+    return Err("Qwen worker sessions may only be finished from input-prompt".into());
+  }
+  Ok(crate::local_asr::finish_resident_session(session_id))
 }
 
 #[derive(Debug, Serialize)]

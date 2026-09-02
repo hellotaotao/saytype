@@ -226,22 +226,33 @@ class VoiceInputPrompt {
   }
 
   // `successorQueued` says a chunk is already sitting behind the current one,
-  // which is knowledge `isRecording` cannot carry: releasing the hotkey clears
-  // isRecording *before* stopChunkedCapture closes the remainder and enqueues
-  // it, so a decode finishing in that window would otherwise refuse to warm the
-  // worker the final chunk is about to need.
+  // which is knowledge `isRecording` cannot carry. On reset-safe runtimes this
+  // merely renews the same session-owned worker; elsewhere it creates the next
+  // one-audio worker while there is still speech to hide the load behind.
   prewarmQwenWorker(recordingSession, { successorQueued = false } = {}) {
     if (
       (!this.isRecording && !successorQueued) ||
       this.activeRecordingSession !== recordingSession ||
-      recordingSession.translateMode ||
+      !recordingSession.qwenSession ||
       this.currentProvider !== "local" ||
       this.currentModel === NEMOTRON_LOCAL_MODEL_ID
     ) {
       return;
     }
-    void ipc.invoke("prewarm-qwen-worker").catch((error) => {
+    void ipc.invoke("prewarm-qwen-worker", recordingSession.id).catch((error) => {
       if (isDev) console.warn("Failed to prewarm Qwen worker:", error);
+    });
+  }
+
+  finishQwenWorkerSession(recordingSession) {
+    if (!recordingSession?.qwenSession || recordingSession.qwenWorkerFinishRequested) {
+      return Promise.resolve(false);
+    }
+    recordingSession.qwenWorkerFinishRequested = true;
+    return ipc.invoke("finish-qwen-worker-session", recordingSession.id).catch((error) => {
+      recordingSession.qwenWorkerFinishRequested = false;
+      if (isDev) console.warn("Failed to finish Qwen worker session:", error);
+      return false;
     });
   }
 
@@ -801,6 +812,7 @@ class VoiceInputPrompt {
     }
     this.removePendingInsertion(recordingSession.id);
     this.discardSessionRecovery(recordingSession.id);
+    void this.finishQwenWorkerSession(recordingSession);
     if (!lifecycle.processPromise || lifecycle.processingFinished) {
       this.cancelledTranscriptionSessionIds.delete(recordingSession.id);
     }
@@ -1522,17 +1534,9 @@ class VoiceInputPrompt {
         ), TRANSCRIPTION_STAGE_TIMEOUT_MS, chunkIndex);
         if (chunked.aborted || this.isSessionCancelled(recordingSession)) return;
         chunked.results[chunkIndex] = typeof text === "string" ? text : "";
-        // The worker that decoded this chunk was retired with it, so start the
-        // next one now, while there is still something to hide the model load
-        // behind. This belongs here rather than in the decoder because only the
-        // recorder knows whether more audio is coming — and it knows it two
-        // ways: capture is still running, or a chunk is already queued behind
-        // this one. The second case is the hotkey release landing while this
-        // decode was in flight, which clears isRecording before the remainder
-        // is enqueued. prewarmQwenWorker still refuses once neither holds, so
-        // the true final chunk leaves no unused process behind, and it
-        // re-checks provider and model so a mid-dictation switch does not start
-        // a Qwen worker nobody asked for.
+        // Keep this recording's worker due for its successor. Reset-safe
+        // runtimes retain the same process; one-audio runtimes replace it. The
+        // true final chunk has neither condition and leaves no unused process.
         this.prewarmQwenWorker(recordingSession, {
           successorQueued: chunked.nextChunkIndex > chunkIndex + 1,
         });
@@ -1754,6 +1758,8 @@ class VoiceInputPrompt {
         chunks: [],
         mimeType: mimeType,
         translateMode: this.translateMode,
+        qwenSession: this.currentProvider === "local" &&
+          this.currentModel !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
         cancelledShortPress: false,
         provider: this.currentProvider,
         mediaStream: this.mediaStream,
@@ -2396,6 +2402,7 @@ class VoiceInputPrompt {
         }
       }
     } finally {
+      await this.finishQwenWorkerSession(recordingSession);
       if (releaseLocalTranscriptionSlot) {
         releaseLocalTranscriptionSlot();
       }
