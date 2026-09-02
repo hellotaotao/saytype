@@ -8,7 +8,7 @@ A voice input method built with **Tauri** that lets you dictate text in any appl
 
 - **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe
 - **Real-time Audio Visualization**: Waveform animation while recording
-- **AI Transcription**: Cloud (Groq / OpenAI) or two **local** choices: Qwen3-ASR for batch quality and Nemotron 3.5 for live on-device transcription on Apple Silicon
+- **Local-first AI Transcription**: Qwen3-ASR runs on-device for batch quality; Nemotron 3.5 adds live local transcription on Apple Silicon and Windows x64. Groq and OpenAI remain optional cloud choices
 - **Auto-typing**: Inserts transcribed text into the active application (macOS; Windows/Linux experimental, untested)
 - **Background Operation**: Runs silently in the system tray
 - **Automatic Updates**: New releases download in the background; restart from the tray when you're ready
@@ -18,7 +18,7 @@ A voice input method built with **Tauri** that lets you dictate text in any appl
 
 - Node.js 16 or higher
 - A Rust toolchain (`rustup`) — required to build the Tauri app
-- A Groq or OpenAI API key — **only for the cloud providers**; the local engine needs no key (recommended on Apple Silicon)
+- No account or API key is needed for local transcription. A Groq or OpenAI API key is required only if you choose a cloud provider
 - Microphone access permission (and Accessibility permission on macOS)
 
 ## Download
@@ -65,7 +65,7 @@ To publish a signed macOS `.dmg` to GitHub Releases (built automatically on a
 ## Configuration
 
 Access settings through the tray menu or main window to configure:
-- Transcription engine: Qwen3-ASR or Nemotron 3.5 local model (no key; Nemotron requires Apple Silicon), or Groq / OpenAI with API key
+- Transcription engine: Qwen3-ASR or Nemotron 3.5 local model (no key; Nemotron supports Apple Silicon and Windows x64), or optional Groq / OpenAI with an API key
 - Default microphone
 - Transcription language and custom dictionary (cloud providers only; the local engine auto-detects)
 
@@ -95,7 +95,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 - **按住录音快捷键**:按住 Ctrl+Shift 开始录音,松开即停止并转写
 - **实时音频可视化**:录音时显示波形动画
-- **AI 转写**:云端(Groq / OpenAI)或两种**本地**选择:偏批量质量的 Qwen3-ASR,以及在 Apple Silicon 上边说边显示的 Nemotron 3.5
+- **本地优先 AI 转写**:Qwen3-ASR 在本机提供高质量批量转写;Nemotron 3.5 在 Apple Silicon 和 Windows x64 上提供本地实时转写。Groq 和 OpenAI 作为可选云端方案
 - **自动输入**:将转写结果插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 - **后台运行**:静默驻留在系统托盘
 - **自动更新**:新版本后台自动下载,你随时从托盘重启完成升级
@@ -105,7 +105,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 - Node.js 16 或更高版本
 - Rust 工具链(`rustup`)—— 构建 Tauri 应用所需
-- Groq 或 OpenAI API key——**仅云端服务商需要**;本地引擎无需 key(Apple Silicon 上推荐)
+- 本地转写无需账号或 API key;只有选择 Groq 或 OpenAI 云端服务时才需要 API key
 - 麦克风访问权限(macOS 上还需辅助功能权限)
 
 ## 下载
@@ -152,7 +152,7 @@ npm run build:linux
 
 通过托盘菜单或主窗口进入「设置」,可配置:
 
-- 转写引擎:Qwen3-ASR 或 Nemotron 3.5 本地模型(无需 key;Nemotron 需要 Apple Silicon),或云端服务商(Groq / OpenAI)+ API key
+- 转写引擎:Qwen3-ASR 或 Nemotron 3.5 本地模型(无需 key;Nemotron 支持 Apple Silicon 和 Windows x64),或可选的云端服务(Groq / OpenAI)+ API key
 - 默认麦克风
 - 转写语言和自定义词典(仅云端服务商;本地引擎为自动检测)
 

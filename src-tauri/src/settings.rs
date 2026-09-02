@@ -162,9 +162,9 @@ pub struct SettingsPayload {
   /// Whether the first-launch onboarding wizard has been completed (or skipped).
   /// The main window shows the wizard while this is false.
   pub onboarding_completed: bool,
-  /// Whether this hardware should steer the user toward the local engine
-  /// (wizard top pick, "recommended" tag on switchers). Compile-time constant:
-  /// Apple Silicon only. Independent of whether the assets are downloaded.
+  /// Whether the product should steer the user toward the local engine
+  /// (wizard top pick, "recommended" tag on switchers). True on every
+  /// supported desktop build and independent of asset download state.
   pub local_capable: bool,
   /// Whether the Nemotron engine can run here at all (its streaming runtime is
   /// available for Apple Silicon and Windows x64). False means the engine is
@@ -566,14 +566,9 @@ mod tests {
   }
 
   #[test]
-  fn settings_payload_local_capable_follows_platform() {
-    // Apple Silicon steers local-first; everything else stays cloud-first
-    // (spec 2026-07-14 engine-switch: compile-time gate, no runtime probing).
+  fn settings_payload_is_local_first_on_every_supported_build() {
     let payload = SettingsPayload::from_config_with(&AppConfig::default(), false);
-    assert_eq!(
-      payload.local_capable,
-      cfg!(all(target_os = "macos", target_arch = "aarch64"))
-    );
+    assert!(payload.local_capable);
   }
 
   #[test]

@@ -86,8 +86,7 @@ pub fn set_auto_launch(_enabled: bool) -> Result<()> {
 pub fn watch_app_activation(_on_activate: super::ActivationCallback) {}
 
 pub fn supports_local_first() -> bool {
-  // Local-first steering is limited to hardware where the local engine is
-  // verified fast (Apple Silicon); Windows/Linux stay cloud-first for now,
-  // with the local provider still selectable in Settings.
-  false
+  // Local-first is the product policy on every supported desktop platform.
+  // Engine-specific availability remains gated separately by each backend.
+  true
 }

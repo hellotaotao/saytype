@@ -230,11 +230,9 @@ pub fn set_auto_launch(enabled: bool) -> Result<()> {
 }
 
 pub fn supports_local_first() -> bool {
-  // Apple Silicon (unified memory + Metal, verified RTF ≈ 0.1) is where the
-  // local engine should be the recommended default; Intel Macs stay
-  // cloud-first. Per-arch compile-time: in a universal binary each slice
-  // answers for the hardware it actually runs on.
-  cfg!(target_arch = "aarch64")
+  // Local-first is the product policy on both slices of the universal app.
+  // Engine-specific availability remains gated separately by each backend.
+  true
 }
 
 fn insert_text_via_cgevent(text: &str) -> Result<()> {

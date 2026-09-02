@@ -585,14 +585,13 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
 
 // Engine quick-switch: its own card right under the readiness card. Cloud
 // providers stay provider-level choices; each local model is a concrete
-// choice because there is no second model selector here. Deliberately NOT inside the
-// readiness card: that card is pure status display, and burying an
-// interactive control among status rows made it unfindable. The
-// The Qwen recommendation tag only shows on local-capable
-// hardware (Apple Silicon) while another engine is selected. Selecting a local
-// model before its assets are downloaded is rejected by the backend — we then open
-// Settings on the download panel instead of silently switching to an
-// unusable engine.
+// choice because there is no second model selector here. Deliberately NOT
+// inside the readiness card: that card is pure status display, and burying an
+// interactive control among status rows made it unfindable. The Qwen
+// recommendation tag shows while another engine is selected. Selecting a
+// local model before its assets are downloaded is rejected by the backend —
+// we then open Settings on the download panel instead of silently switching
+// to an unusable engine.
 const QWEN_LOCAL_MODEL = "qwen3-asr-0.6b-q8_0";
 const NEMOTRON_LOCAL_MODEL = "nemotron-3.5-asr-streaming-0.6b-q8_0";
 
@@ -945,7 +944,7 @@ function renderOnboarding() {
   renderObFinal();
 }
 
-/* ---- Page 5: local engine path (Apple Silicon local-first) ---- */
+/* ---- Page 5: local-first engine path ---- */
 
 function obFormatGB(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
@@ -1061,8 +1060,7 @@ function renderObLocal() {
   }
   const capable = !!cachedSettings?.localCapable;
 
-  // The page's framing changes with the hardware: engine choice (local-first)
-  // vs the classic "connect a cloud service" page.
+  // The page leads with local engines; the cloud path remains an explicit option.
   const title = document.getElementById("obKeyTitle");
   if (title) {
     title.textContent = t(capable ? "onboarding.key.titleLocalFirst" : "onboarding.key.title");
