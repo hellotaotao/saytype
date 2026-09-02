@@ -270,6 +270,35 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
   provider is local. The language setting and dictionary do not apply to the local
   provider (auto-detect only; documented v1 limits). Engine benchmarks and the
   sherpa-onnx retreat path live in docs/superpowers/specs/2026-07-12-local-asr-qwen3-design.md.
+  **GPU is a packaging choice, not a flag** (`AppConfig.local_compute`:
+  `auto` | `cpu` | `gpu`, Settings → Transcription, Qwen only). b9960 defaults
+  `-ngl` to `auto` and offloads every layer on its own, so which backend runs is
+  decided by *which archive the process was started from*: the required pack is
+  upstream's `win-cpu-x64`, and choosing GPU downloads `win-vulkan-x64` (32.9 MB)
+  into `bin/<LLAMA_BUILD>-vulkan/` beside it. Vulkan rather than CUDA/HIP because
+  it covers NVIDIA/AMD/Intel in 32.9 MB against 553 MB (CUDA 13.3 + cudart) for
+  NVIDIA alone. macOS has no GPU row at all — upstream's macOS packs already carry
+  Metal, so Apple hardware has never been on the CPU path; the option exists for
+  Windows (Linux would need its own verified pack).
+  **`auto` resolves to CPU today**, deliberately: the only signal available
+  without a new platform dependency is `--list-devices`, which reports an
+  integrated GPU's *shared system memory* as if it were VRAM (an Intel HD 630
+  lists 12 GiB), so a memory-threshold rule would fire exactly on the hardware
+  that loses. Measured on the i5-7400 + HD 630, 19.5 s clip, alternating and
+  both primed, n=10 each: **CPU median 7.92 s vs Vulkan median 15.12 s**, and
+  all 20 decodes returned a byte-identical transcript. Both are tight (spread
+  0.87 s and 0.67 s) — the savage CPU tail recorded against SayType's own
+  single-variant build does **not** reproduce on upstream's per-arch pack, so
+  the "GPU wins on the tail even when it loses on the median" argument is gone
+  with the build that produced it. Flipping the default needs numbers from
+  discrete GPUs.
+  Failures never cost a dictation: a GPU worker that cannot start, or dies
+  mid-decode, sets `GPU_DISABLED` for the process (`disable_gpu_for_process`) and
+  the same recording retries on CPU; a parked worker whose backend no longer
+  matches is rejected as `runtime_mismatch`. An installed pack listing no device
+  is surfaced in Settings rather than silently running CPU. Each runtime
+  directory keeps its own `.saytype-runtime-sha256` stamp, so the pre-1.12 manual
+  `bin/b9960-vulkan` extraction (unstamped) is re-installed rather than trusted.
 - `updater.rs` — auto-update: daily background check of the GitHub Releases
   `latest.json` (startup + every 24 h; skipped entirely in debug builds), silent
   download, single `update-status` event channel

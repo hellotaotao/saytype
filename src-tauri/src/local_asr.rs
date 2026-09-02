@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::Emitter;
@@ -140,6 +140,62 @@ pub fn llama_zip_asset() -> &'static Asset {
   &LINUX_ZIP
 }
 
+/// Optional GPU acceleration pack, downloaded only when the user asks for it.
+/// It is the *same* llama.cpp build as the required CPU pack — upstream ships
+/// one executable per platform and varies only the backend library beside it —
+/// so this is that runtime plus `ggml-vulkan.dll`, extracted into its own
+/// `bin/<build>-vulkan/`. Nothing about the invocation changes: b9960 defaults
+/// `-ngl` to `auto`, so the presence of that one DLL is the whole switch, and
+/// llama.cpp assigns every layer to the GPU on its own.
+///
+/// Vulkan rather than CUDA/HIP on purpose: 32.9 MB covering NVIDIA, AMD and
+/// Intel, against 553 MB (CUDA 13.3 + its cudart pack) for NVIDIA alone. For a
+/// 0.6B model the vendor SDK's edge does not buy back that download.
+///
+/// macOS is absent by design, not by omission: upstream's macOS packs already
+/// carry Metal, so Apple hardware has always run this model on the GPU.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+static GPU_ZIP: Option<Asset> = Some(Asset {
+  rel_path: "llama-win-vulkan-x64.zip",
+  urls: &[
+    "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-win-vulkan-x64.zip",
+  ],
+  bundled: None,
+  size: 32_896_693,
+  sha256: "712ccd52eb6d2a77cf79e44d1645f6860990ea9295ca06e2d9609ee741b62616",
+});
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+static GPU_ZIP: Option<Asset> = None;
+
+pub fn gpu_zip_asset() -> Option<&'static Asset> {
+  GPU_ZIP.as_ref()
+}
+
+/// Which extracted llama.cpp runtime a process should be started from. Both
+/// hold the same `llama-mtmd-cli`; they differ only in the backend libraries
+/// sitting next to it, which is what decides CPU vs GPU execution.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Runtime {
+  Cpu,
+  Gpu,
+}
+
+impl Runtime {
+  pub fn label(self) -> &'static str {
+    match self {
+      Self::Cpu => "cpu",
+      Self::Gpu => "gpu",
+    }
+  }
+}
+
+fn runtime_asset(runtime: Runtime) -> Option<&'static Asset> {
+  match runtime {
+    Runtime::Cpu => Some(llama_zip_asset()),
+    Runtime::Gpu => gpu_zip_asset(),
+  }
+}
+
 pub fn total_download_bytes() -> u64 {
   MODEL_ASSETS.iter().map(|a| a.size).sum::<u64>() + llama_zip_asset().size
 }
@@ -184,12 +240,26 @@ pub fn cleanup_legacy_assets() -> Result<()> {
 }
 
 pub fn bin_dir(base: &Path) -> PathBuf {
-  base.join("bin").join(LLAMA_BUILD)
+  runtime_bin_dir(base, Runtime::Cpu)
+}
+
+/// The GPU pack lives beside the CPU one under its own id, so both can be
+/// installed at once and switching back to CPU never re-downloads anything.
+fn runtime_bin_dir(base: &Path, runtime: Runtime) -> PathBuf {
+  let id = match runtime {
+    Runtime::Cpu => LLAMA_BUILD.to_string(),
+    Runtime::Gpu => format!("{LLAMA_BUILD}-vulkan"),
+  };
+  base.join("bin").join(id)
 }
 
 pub fn cli_path(base: &Path) -> PathBuf {
+  runtime_cli_path(base, Runtime::Cpu)
+}
+
+fn runtime_cli_path(base: &Path, runtime: Runtime) -> PathBuf {
   let name = if cfg!(target_os = "windows") { "llama-mtmd-cli.exe" } else { "llama-mtmd-cli" };
-  bin_dir(base).join(name)
+  runtime_bin_dir(base, runtime).join(name)
 }
 
 /// Records which bundled/downloaded archive produced the extracted runtime.
@@ -197,21 +267,28 @@ pub fn cli_path(base: &Path) -> PathBuf {
 /// id can be rebuilt in place (b9960-saytype-reset-v1 shipped once with a
 /// machine-specific rpath that died with the build directory), and without this
 /// stamp a stale extraction would survive the very update that fixes it.
-fn runtime_stamp_path(base: &Path) -> PathBuf {
-  bin_dir(base).join(".saytype-runtime-sha256")
+fn runtime_stamp_path(base: &Path, runtime: Runtime) -> PathBuf {
+  runtime_bin_dir(base, runtime).join(".saytype-runtime-sha256")
 }
 
-fn write_runtime_stamp(base: &Path) {
-  let _ = fs::write(runtime_stamp_path(base), llama_zip_asset().sha256);
+fn write_runtime_stamp(base: &Path, runtime: Runtime) {
+  if let Some(asset) = runtime_asset(runtime) {
+    let _ = fs::write(runtime_stamp_path(base, runtime), asset.sha256);
+  }
+}
+
+fn runtime_is_installed(base: &Path, runtime: Runtime) -> bool {
+  let Some(asset) = runtime_asset(runtime) else { return false };
+  let cli = runtime_cli_path(base, runtime);
+  fs::metadata(&cli).map(|m| m.is_file()).unwrap_or(false)
+    && is_executable(&cli)
+    && fs::read_to_string(runtime_stamp_path(base, runtime))
+      .map(|stamp| stamp.trim() == asset.sha256)
+      .unwrap_or(false)
 }
 
 fn installed_runtime_is_current(base: &Path) -> bool {
-  let cli = cli_path(base);
-  fs::metadata(&cli).map(|m| m.is_file()).unwrap_or(false)
-    && is_executable(&cli)
-    && fs::read_to_string(runtime_stamp_path(base))
-      .map(|stamp| stamp.trim() == llama_zip_asset().sha256)
-      .unwrap_or(false)
+  runtime_is_installed(base, Runtime::Cpu)
 }
 
 fn models_ready_at(dir: &Path) -> bool {
@@ -270,6 +347,294 @@ pub fn assets_ready_for(model: &str) -> bool {
   match normalize_local_model_id(model) {
     NEMOTRON_MODEL_ID => crate::nemotron_asr::assets_ready(),
     _ => assets_ready(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GPU acceleration (opt-in)
+// ---------------------------------------------------------------------------
+
+/// What the user picked in Settings. Held as a process-global so the decode
+/// path never reads the config file: `commands::sync_local_runtime` pushes it
+/// here at startup and on every settings save.
+static COMPUTE_PREFERENCE: AtomicU8 = AtomicU8::new(0);
+
+/// Set once a GPU start has failed on this machine. Selection then falls back
+/// to CPU for the rest of the session, so one bad driver cannot turn every
+/// dictation into a failure.
+static GPU_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Devices the installed GPU runtime reports, cached per process. Cleared when
+/// the pack is installed or removed.
+static GPU_DEVICES: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ComputePreference {
+  Auto,
+  Cpu,
+  Gpu,
+}
+
+impl ComputePreference {
+  pub fn parse(value: &str) -> Self {
+    match value.trim() {
+      "gpu" => Self::Gpu,
+      "cpu" => Self::Cpu,
+      _ => Self::Auto,
+    }
+  }
+
+  pub fn as_str(self) -> &'static str {
+    match self {
+      Self::Auto => "auto",
+      Self::Cpu => "cpu",
+      Self::Gpu => "gpu",
+    }
+  }
+
+  fn code(self) -> u8 {
+    match self {
+      Self::Auto => 0,
+      Self::Cpu => 1,
+      Self::Gpu => 2,
+    }
+  }
+
+  fn from_code(code: u8) -> Self {
+    match code {
+      1 => Self::Cpu,
+      2 => Self::Gpu,
+      _ => Self::Auto,
+    }
+  }
+}
+
+pub fn compute_preference() -> ComputePreference {
+  ComputePreference::from_code(COMPUTE_PREFERENCE.load(Ordering::Relaxed))
+}
+
+/// Apply a settings change. A parked worker was started from whichever runtime
+/// was selected at the time, so a real change retires it rather than letting
+/// the next dictation run on the backend the user just switched away from.
+pub fn set_compute_preference(value: &str) {
+  let next = ComputePreference::parse(value);
+  let previous =
+    ComputePreference::from_code(COMPUTE_PREFERENCE.swap(next.code(), Ordering::Relaxed));
+  if previous != next {
+    log::info!("local-asr: compute preference {} -> {}", previous.as_str(), next.as_str());
+    shutdown_resident_worker();
+  }
+}
+
+/// Whether a GPU pack exists for this platform at all. False on macOS by
+/// design, not omission: upstream's macOS runtime already carries Metal, so
+/// Apple hardware has never been on the CPU path and has nothing to opt into.
+pub fn gpu_runtime_supported() -> bool {
+  gpu_zip_asset().is_some()
+}
+
+pub fn gpu_runtime_ready_at(base: &Path) -> bool {
+  runtime_is_installed(base, Runtime::Gpu)
+}
+
+fn disable_gpu_for_process(reason: &str) {
+  if !GPU_DISABLED.swap(true, Ordering::Relaxed) {
+    log::warn!("local-asr: GPU runtime disabled for this session ({reason}); using CPU");
+  }
+}
+
+/// Which runtime a new process starts from. GPU only when the user asked for
+/// it, the pack is installed, and it has not already failed this session.
+///
+/// `Auto` resolves to CPU today, deliberately. The only signal available
+/// without a new platform dependency is `--list-devices`, which reports an
+/// integrated GPU's shared system memory as if it were VRAM (a 2017 Intel
+/// HD 630 lists 12 GiB) — so any "enough memory, use the GPU" rule would fire
+/// exactly on the hardware measured to be twice as slow as its own CPU.
+/// Flipping this default needs real numbers from discrete GPUs first.
+fn selected_runtime(base: &Path) -> Runtime {
+  if compute_preference() != ComputePreference::Gpu {
+    return Runtime::Cpu;
+  }
+  if GPU_DISABLED.load(Ordering::Relaxed) || !gpu_runtime_ready_at(base) {
+    return Runtime::Cpu;
+  }
+  Runtime::Gpu
+}
+
+/// Parses `--list-devices` output, whose device lines look like
+/// `  Vulkan0: Intel(R) HD Graphics 630 (12243 MiB, 11475 MiB free)` — take the
+/// name between the device id and the trailing memory figures. The
+/// `Available devices:` header has no `": "` separator and drops out.
+fn parse_device_list(stdout: &str) -> Vec<String> {
+  stdout
+    .lines()
+    .filter_map(|line| {
+      let (id, rest) = line.trim().split_once(": ")?;
+      if id.is_empty() || id.contains(char::is_whitespace) {
+        return None;
+      }
+      let name = rest.rsplit_once(" (").map_or(rest, |(name, _)| name);
+      let name = name.trim();
+      (!name.is_empty()).then(|| name.to_string())
+    })
+    .collect()
+}
+
+/// Ask the installed GPU runtime what it can see. An installed pack with an
+/// empty list means the machine has no usable Vulkan device (no driver, or a
+/// GPU too old) — the Settings panel says so instead of silently running CPU.
+pub async fn gpu_devices() -> Vec<String> {
+  if let Some(cached) = GPU_DEVICES.lock().unwrap().clone() {
+    return cached;
+  }
+  let Ok(base) = local_asr_dir() else { return Vec::new() };
+  if !gpu_runtime_ready_at(&base) {
+    return Vec::new();
+  }
+  let output = local_asr_command(runtime_cli_path(&base, Runtime::Gpu))
+    .arg("--list-devices")
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .kill_on_drop(true)
+    .output()
+    .await;
+  let devices = match output {
+    Ok(output) => parse_device_list(&String::from_utf8_lossy(&output.stdout)),
+    Err(error) => {
+      log::warn!("local-asr: could not list GPU devices: {error}");
+      Vec::new()
+    }
+  };
+  log::info!(
+    "local-asr: GPU devices: {}",
+    if devices.is_empty() { "none".to_string() } else { devices.join(", ") }
+  );
+  *GPU_DEVICES.lock().unwrap() = Some(devices.clone());
+  devices
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuRuntimeStatus {
+  /// Whether this platform has a GPU pack to offer at all.
+  pub supported: bool,
+  /// "absent" | "downloading" | "ready"
+  pub state: String,
+  pub size_bytes: u64,
+  pub downloaded_bytes: u64,
+  /// What the installed runtime can see. Empty while `state == "ready"` means
+  /// the pack works but the machine has no usable device.
+  pub devices: Vec<String>,
+  /// Whether a decode started right now would run on the GPU.
+  pub active: bool,
+  /// Whether a GPU start already failed this session and CPU took over.
+  pub fell_back: bool,
+}
+
+pub async fn gpu_runtime_status(downloading: bool) -> GpuRuntimeStatus {
+  let Some(asset) = gpu_zip_asset() else {
+    return GpuRuntimeStatus {
+      supported: false,
+      state: "absent".into(),
+      size_bytes: 0,
+      downloaded_bytes: 0,
+      devices: Vec::new(),
+      active: false,
+      fell_back: false,
+    };
+  };
+  let dir = local_asr_dir().ok();
+  let ready = dir.as_deref().map(gpu_runtime_ready_at).unwrap_or(false);
+  let downloaded = if ready {
+    asset.size
+  } else {
+    dir
+      .as_deref()
+      .and_then(|dir| fs::metadata(dir.join(format!("{}.part", asset.rel_path))).ok())
+      .map(|meta| meta.len().min(asset.size))
+      .unwrap_or(0)
+  };
+  let state = if downloading {
+    "downloading"
+  } else if ready {
+    "ready"
+  } else {
+    "absent"
+  };
+  GpuRuntimeStatus {
+    supported: true,
+    state: state.into(),
+    size_bytes: asset.size,
+    downloaded_bytes: downloaded,
+    devices: if ready { gpu_devices().await } else { Vec::new() },
+    active: dir.as_deref().map(|dir| selected_runtime(dir) == Runtime::Gpu).unwrap_or(false),
+    fell_back: GPU_DISABLED.load(Ordering::Relaxed),
+  }
+}
+
+fn emit_gpu_progress(app: &tauri::AppHandle, state: &str, downloaded: u64, message: Option<&str>) {
+  let _ = app.emit(
+    "local-gpu-runtime-progress",
+    serde_json::json!({
+      "state": state,
+      "downloadedBytes": downloaded,
+      "totalBytes": gpu_zip_asset().map_or(0, |asset| asset.size),
+      "message": message,
+    }),
+  );
+}
+
+/// Fetch and extract the GPU pack. Resumable and sha256-gated like every other
+/// asset; the archive is removed once extracted. Terminal events are emitted by
+/// the command, matching `download_model`.
+pub async fn download_gpu_runtime(
+  app: tauri::AppHandle,
+  cancel: CancellationToken,
+) -> Result<(), String> {
+  let asset = gpu_zip_asset().ok_or("GPU acceleration is not available on this platform")?;
+  let dir = local_asr_dir().map_err(|e| e.to_string())?;
+  if gpu_runtime_ready_at(&dir) {
+    return Ok(());
+  }
+  let client = reqwest::Client::builder()
+    .connect_timeout(std::time::Duration::from_secs(15))
+    .build()
+    .map_err(|e| e.to_string())?;
+  let report = |downloaded: u64| emit_gpu_progress(&app, "downloading", downloaded, None);
+
+  let archive = dir.join(asset.rel_path);
+  if !fs::metadata(&archive).map(|m| m.len() == asset.size).unwrap_or(false) {
+    download_asset(&report, &client, &dir, asset, &cancel, 0).await?;
+  }
+  let extract_dir = dir.clone();
+  tokio::task::spawn_blocking(move || extract_runtime_archive(&extract_dir, Runtime::Gpu))
+    .await
+    .map_err(|e| e.to_string())??;
+  let _ = fs::remove_file(&archive);
+
+  // Only a process started after this can use the pack, and the device list was
+  // cached as "none" while it was missing.
+  *GPU_DEVICES.lock().unwrap() = None;
+  GPU_DISABLED.store(false, Ordering::Relaxed);
+  shutdown_resident_worker();
+  Ok(())
+}
+
+/// Remove the GPU pack, leaving the required CPU runtime and the models alone.
+pub fn delete_gpu_runtime() -> Result<(), String> {
+  shutdown_resident_worker();
+  let dir = local_asr_dir().map_err(|e| e.to_string())?;
+  if let Some(asset) = gpu_zip_asset() {
+    let _ = fs::remove_file(dir.join(asset.rel_path));
+    let _ = fs::remove_file(dir.join(format!("{}.part", asset.rel_path)));
+  }
+  *GPU_DEVICES.lock().unwrap() = None;
+  match fs::remove_dir_all(runtime_bin_dir(&dir, Runtime::Gpu)) {
+    Ok(()) => Ok(()),
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    Err(err) => Err(err.to_string()),
   }
 }
 
@@ -494,6 +859,9 @@ struct ResidentWorker {
   stdin: ChildStdin,
   stdout: ChildStdout,
   ctx_size: u32,
+  /// Which extracted runtime this process was started from. A parked worker
+  /// cannot change backend, so a preference change retires it.
+  runtime: Runtime,
   generation: u64,
   epoch: u64,
   /// A worker belongs to one uninterrupted hotkey hold. It may serve each
@@ -508,8 +876,13 @@ struct ResidentWorker {
 }
 
 impl ResidentWorker {
-  async fn spawn(base: &Path, ctx_size: u32, session_id: Option<u64>) -> Result<Self> {
-    let mut child = local_asr_command(cli_path(base))
+  async fn spawn(
+    base: &Path,
+    ctx_size: u32,
+    session_id: Option<u64>,
+    runtime: Runtime,
+  ) -> Result<Self> {
+    let mut child = local_asr_command(runtime_cli_path(base, runtime))
       .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
       .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
       .arg("--no-warmup")
@@ -536,12 +909,29 @@ impl ResidentWorker {
       stdin,
       stdout,
       ctx_size,
+      runtime,
       generation: 0,
       session_id,
       last_transcript: None,
       decodes_served: 0,
       epoch: RESIDENT_EPOCH.load(Ordering::Relaxed),
     })
+  }
+
+  /// Start a worker on the runtime the settings ask for, falling back to CPU
+  /// if the GPU one cannot start. A GPU pack that fails here is broken for the
+  /// session (missing driver, no usable device, unsupported adapter), so it is
+  /// switched off for the process rather than retried on every dictation.
+  async fn spawn_selected(base: &Path, ctx_size: u32, session_id: Option<u64>) -> Result<Self> {
+    let runtime = selected_runtime(base);
+    match Self::spawn(base, ctx_size, session_id, runtime).await {
+      Ok(worker) => Ok(worker),
+      Err(error) if runtime == Runtime::Gpu => {
+        disable_gpu_for_process(&format!("worker start failed: {error:#}"));
+        Self::spawn(base, ctx_size, session_id, Runtime::Cpu).await
+      }
+      Err(error) => Err(error),
+    }
   }
 
   fn is_running(&mut self) -> bool {
@@ -898,7 +1288,8 @@ async fn prewarm_resident_worker_inner(
 
   let cached = RESIDENT_WORKER.lock().unwrap().take();
   if let Some(mut worker) = cached {
-    if worker.session_id == Some(session_id)
+    if worker.runtime == selected_runtime(&base)
+      && worker.session_id == Some(session_id)
       && worker.ctx_size == CTX_FLOOR
       && worker.is_running()
     {
@@ -916,12 +1307,14 @@ async fn prewarm_resident_worker_inner(
 
   let spawn_started = std::time::Instant::now();
   progress.enter("worker-start");
-  let mut worker = ResidentWorker::spawn(&base, CTX_FLOOR, Some(session_id)).await?;
+  let mut worker = ResidentWorker::spawn_selected(&base, CTX_FLOOR, Some(session_id)).await?;
   let resident_spawn_ms = spawn_started.elapsed().as_millis();
+  let worker_runtime = worker.runtime.label();
   worker.epoch = lease_epoch;
   park_resident_worker_for(worker, PREWARM_IDLE_TIMEOUT);
   log::info!(
-    "local-asr: prewarm outcome=spawned ctx={} queue_ms={} resident_spawn_ms={} idle_ms={}",
+    "local-asr: prewarm outcome=spawned runtime={} ctx={} queue_ms={} resident_spawn_ms={} idle_ms={}",
+    worker_runtime,
     CTX_FLOOR,
     queue_ms,
     resident_spawn_ms,
@@ -1071,7 +1464,11 @@ async fn transcribe_wav_inner(
   let (reusable, reuse_miss_reason) = match cached {
     None => (None, "cold"),
     Some(mut cached) => {
-      if cached.ctx_size != ctx_size {
+      if cached.runtime != selected_runtime(&base) {
+        // The backend changed under a parked worker (a preference switch, or
+        // the GPU runtime being taken out of the session). Start a fresh one.
+        (None, "runtime_mismatch")
+      } else if cached.ctx_size != ctx_size {
         (None, "ctx_mismatch")
       } else if !cached.is_running() {
         (None, "worker_exited")
@@ -1095,7 +1492,7 @@ async fn transcribe_wav_inner(
     None => {
       progress.enter("worker-start");
       let spawn_started = std::time::Instant::now();
-      let result = ResidentWorker::spawn(&base, ctx_size, session_id).await;
+      let result = ResidentWorker::spawn_selected(&base, ctx_size, session_id).await;
       resident_spawn_ms = Some(spawn_started.elapsed().as_millis());
       match result {
         Ok(worker) => Some(worker),
@@ -1117,11 +1514,13 @@ async fn transcribe_wav_inner(
     ).await {
       Ok(Ok(text)) => {
         let resident_decode_ms = resident_started.elapsed().as_millis();
+        let worker_runtime = worker.runtime.label();
         progress.enter("park-worker");
         park_resident_worker(worker);
         let total_ms = queued_at.elapsed().as_millis();
         log::info!(
-          "local-asr: decode mode=resident session_id={} chunk_index={} ctx={} worker_reused={} reuse_miss={} resident_spawn_ms={} queue_ms={} total_ms={} resident_decode_ms={} first_visible_partial_ms={} wav_kb={} chars={}",
+          "local-asr: decode mode=resident runtime={} session_id={} chunk_index={} ctx={} worker_reused={} reuse_miss={} resident_spawn_ms={} queue_ms={} total_ms={} resident_decode_ms={} first_visible_partial_ms={} wav_kb={} chars={}",
+          worker_runtime,
           session_id.map_or_else(|| "none".into(), |value| value.to_string()),
           chunk_index.map_or_else(|| "none".into(), |value| value.to_string()),
           ctx_size,
@@ -1150,6 +1549,12 @@ async fn transcribe_wav_inner(
         );
       }
     }
+    // A GPU-backed worker that died mid-decode takes the GPU runtime out of
+    // this session with it: the retry below must not walk into the same
+    // failure, and a lost decode costs the user far more than a lost backend.
+    if worker.runtime == Runtime::Gpu {
+      disable_gpu_for_process("resident decode failed");
+    }
     // `worker` is deliberately not returned to the cache after any protocol
     // failure. kill_on_drop terminates it so the one-shot retry starts clean.
     drop(worker);
@@ -1162,7 +1567,8 @@ async fn transcribe_wav_inner(
   // process start, model initialization, and decode as one `one_shot_ms` value.
   let started = std::time::Instant::now();
   progress.enter("one-shot-decode");
-  let mut child = local_asr_command(cli_path(&base))
+  let one_shot_runtime = selected_runtime(&base);
+  let mut child = local_asr_command(runtime_cli_path(&base, one_shot_runtime))
     .arg("-m").arg(base.join(MODEL_ASSETS[0].rel_path))
     .arg("--mmproj").arg(base.join(MODEL_ASSETS[1].rel_path))
     .arg("--audio").arg(&tmp_path)
@@ -1294,7 +1700,8 @@ async fn transcribe_wav_inner(
   let total_ms = queued_at.elapsed().as_millis();
   // Counts only -- no transcribed text in logs.
   log::info!(
-    "local-asr: decode mode=one_shot session_id={} chunk_index={} ctx={} worker_reused={} reuse_miss={} resident_spawn_ms={} queue_ms={} total_ms={} one_shot_ms={} first_visible_partial_ms={} wav_kb={} chars={}",
+    "local-asr: decode mode=one_shot runtime={} session_id={} chunk_index={} ctx={} worker_reused={} reuse_miss={} resident_spawn_ms={} queue_ms={} total_ms={} one_shot_ms={} first_visible_partial_ms={} wav_kb={} chars={}",
+    one_shot_runtime.label(),
     session_id.map_or_else(|| "none".into(), |value| value.to_string()),
     chunk_index.map_or_else(|| "none".into(), |value| value.to_string()),
     ctx_size,
@@ -1367,7 +1774,7 @@ fn ensure_bundled_runtime_at(dir: &Path) -> Result<(), String> {
   }
   fs::write(&part_path, bytes).map_err(|e| e.to_string())?;
   fs::rename(&part_path, &archive_path).map_err(|e| e.to_string())?;
-  extract_llama_archive(dir)?;
+  extract_runtime_archive(dir, Runtime::Cpu)?;
   let _ = fs::remove_file(archive_path);
   Ok(())
 }
@@ -1435,13 +1842,15 @@ pub async fn download_model(app: tauri::AppHandle, cancel: CancellationToken) ->
     .build()
     .map_err(|e| e.to_string())?;
 
+  let report = |downloaded: u64| emit_progress(&app, "downloading", downloaded, None);
+
   let mut done: u64 = 0;
   for a in MODEL_ASSETS {
     if fs::metadata(dir.join(a.rel_path)).map(|m| m.len() == a.size).unwrap_or(false) {
       done += a.size;
       continue;
     }
-    download_asset(&app, &client, &dir, a, &cancel, done).await?;
+    download_asset(&report, &client, &dir, a, &cancel, done).await?;
     done += a.size;
     emit_progress(&app, "downloading", done, None);
   }
@@ -1451,10 +1860,10 @@ pub async fn download_model(app: tauri::AppHandle, cancel: CancellationToken) ->
   if !(fs::metadata(cli_path(&dir)).map(|m| m.is_file()).unwrap_or(false) && is_executable(&cli_path(&dir))) {
     let zip_final = dir.join(zip.rel_path);
     if !fs::metadata(&zip_final).map(|m| m.len() == zip.size).unwrap_or(false) {
-      download_asset(&app, &client, &dir, zip, &cancel, done).await?;
+      download_asset(&report, &client, &dir, zip, &cancel, done).await?;
     }
     let dir2 = dir.clone();
-    tokio::task::spawn_blocking(move || extract_llama_archive(&dir2))
+    tokio::task::spawn_blocking(move || extract_runtime_archive(&dir2, Runtime::Cpu))
       .await
       .map_err(|e| e.to_string())??;
     let _ = fs::remove_file(&zip_final); // archive no longer needed
@@ -1479,10 +1888,11 @@ pub async fn download_model(app: tauri::AppHandle, cancel: CancellationToken) ->
 /// macOS/Linux releases are gzip-compressed tarballs; Windows releases are a
 /// real zip (Task 2 finding) -- so the two platforms use different crates.
 #[cfg(unix)]
-fn extract_llama_archive(base: &Path) -> Result<(), String> {
+fn extract_runtime_archive(base: &Path, runtime: Runtime) -> Result<(), String> {
   use std::os::unix::fs::PermissionsExt;
-  let archive_path = base.join(llama_zip_asset().rel_path);
-  let out_dir = bin_dir(base);
+  let asset = runtime_asset(runtime).ok_or("no runtime archive for this platform")?;
+  let archive_path = base.join(asset.rel_path);
+  let out_dir = runtime_bin_dir(base, runtime);
   fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
   let file = fs::File::open(&archive_path).map_err(|e| e.to_string())?;
   let gz = flate2::read::GzDecoder::new(file);
@@ -1517,17 +1927,18 @@ fn extract_llama_archive(base: &Path) -> Result<(), String> {
     std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
     fs::set_permissions(&out_path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
   }
-  if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
+  if !fs::metadata(runtime_cli_path(base, runtime)).map(|m| m.is_file()).unwrap_or(false) {
     return Err("archive did not contain llama-mtmd-cli".into());
   }
-  write_runtime_stamp(base);
+  write_runtime_stamp(base, runtime);
   Ok(())
 }
 
 #[cfg(windows)]
-fn extract_llama_archive(base: &Path) -> Result<(), String> {
-  let zip_path = base.join(llama_zip_asset().rel_path);
-  let out_dir = bin_dir(base);
+fn extract_runtime_archive(base: &Path, runtime: Runtime) -> Result<(), String> {
+  let asset = runtime_asset(runtime).ok_or("no runtime archive for this platform")?;
+  let zip_path = base.join(asset.rel_path);
+  let out_dir = runtime_bin_dir(base, runtime);
   fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
   let file = fs::File::open(&zip_path).map_err(|e| e.to_string())?;
   let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -1541,15 +1952,15 @@ fn extract_llama_archive(base: &Path) -> Result<(), String> {
     let mut out = fs::File::create(&out_path).map_err(|e| e.to_string())?;
     std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
   }
-  if !fs::metadata(cli_path(base)).map(|m| m.is_file()).unwrap_or(false) {
+  if !fs::metadata(runtime_cli_path(base, runtime)).map(|m| m.is_file()).unwrap_or(false) {
     return Err("archive did not contain llama-mtmd-cli".into());
   }
-  write_runtime_stamp(base);
+  write_runtime_stamp(base, runtime);
   Ok(())
 }
 
 async fn download_asset(
-  app: &tauri::AppHandle,
+  on_progress: &(dyn Fn(u64) + Sync),
   client: &reqwest::Client,
   dir: &Path,
   asset: &Asset,
@@ -1575,7 +1986,7 @@ async fn download_asset(
     let stream_result = if offset == asset.size {
       Ok(())
     } else {
-      stream_to_part(app, client, url, &part_path, offset, asset, cancel, done_bytes).await
+      stream_to_part(on_progress, client, url, &part_path, offset, asset, cancel, done_bytes).await
     };
     match stream_result {
       Ok(()) => {
@@ -1615,7 +2026,7 @@ async fn download_asset(
 
 #[allow(clippy::too_many_arguments)]
 async fn stream_to_part(
-  app: &tauri::AppHandle,
+  on_progress: &(dyn Fn(u64) + Sync),
   client: &reqwest::Client,
   url: &str,
   part_path: &Path,
@@ -1657,7 +2068,7 @@ async fn stream_to_part(
     written += chunk.len() as u64;
     if written - last_emit >= PROGRESS_EMIT_STEP {
       last_emit = written;
-      emit_progress(app, "downloading", done_bytes + written.min(asset.size), None);
+      on_progress(done_bytes + written.min(asset.size));
     }
   }
   out.flush().map_err(|e| e.to_string())?;
@@ -1672,6 +2083,9 @@ pub fn delete_model() -> Result<(), String> {
     let _ = fs::remove_file(dir.join(asset.rel_path));
     let _ = fs::remove_file(dir.join(format!("{}.part", asset.rel_path)));
   }
+  // The GPU pack is useless without the models and would otherwise sit there
+  // as 33 MB the user cannot see, with Settings still reporting it ready.
+  let _ = delete_gpu_runtime();
   match fs::remove_dir_all(bin_dir(&dir)) {
     Ok(()) => Ok(()),
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1707,6 +2121,70 @@ pub fn delete_model_for(model: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn device_list_keeps_names_and_drops_the_header() {
+    let listed = parse_device_list(
+      "Available devices:\n  Vulkan0: Intel(R) HD Graphics 630 (12243 MiB, 11475 MiB free)\n  Vulkan1: NVIDIA GeForce RTX 4070 (12282 MiB, 11000 MiB free)\n",
+    );
+    assert_eq!(listed, vec!["Intel(R) HD Graphics 630", "NVIDIA GeForce RTX 4070"]);
+  }
+
+  #[test]
+  fn device_list_is_empty_when_no_device_is_reported() {
+    // What a machine without a Vulkan driver prints — the pack is installed and
+    // runs, it simply sees nothing, and the UI has to distinguish that from
+    // "not downloaded".
+    assert!(parse_device_list("Available devices:\n").is_empty());
+    assert!(parse_device_list("").is_empty());
+  }
+
+  #[test]
+  fn unknown_compute_preferences_fall_back_to_auto() {
+    // The config file is user-editable, so an unrecognised value must never
+    // select a backend.
+    assert_eq!(ComputePreference::parse("gpu"), ComputePreference::Gpu);
+    assert_eq!(ComputePreference::parse(" cpu "), ComputePreference::Cpu);
+    assert_eq!(ComputePreference::parse("auto"), ComputePreference::Auto);
+    assert_eq!(ComputePreference::parse("CUDA"), ComputePreference::Auto);
+    assert_eq!(ComputePreference::parse(""), ComputePreference::Auto);
+  }
+
+  #[test]
+  fn the_two_runtimes_never_share_a_directory() {
+    // Both packs can be installed at once; switching back to CPU must not
+    // re-download anything, and neither extraction may overwrite the other.
+    let base = Path::new("base");
+    assert_ne!(runtime_bin_dir(base, Runtime::Cpu), runtime_bin_dir(base, Runtime::Gpu));
+    assert_eq!(runtime_bin_dir(base, Runtime::Cpu), bin_dir(base));
+    assert_ne!(runtime_cli_path(base, Runtime::Cpu), runtime_cli_path(base, Runtime::Gpu));
+  }
+
+  #[test]
+  fn an_uninstalled_gpu_pack_is_not_reported_as_installed() {
+    let temp = tempfile::TempDir::new().unwrap();
+    assert!(!gpu_runtime_ready_at(temp.path()));
+
+    // A CLI dropped in by hand, or left by the pre-1.12 manual Vulkan installer,
+    // carries no stamp saying which archive produced it — so it does not count.
+    let dir = runtime_bin_dir(temp.path(), Runtime::Gpu);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(runtime_cli_path(temp.path(), Runtime::Gpu), b"not the real cli").unwrap();
+    assert!(!gpu_runtime_ready_at(temp.path()));
+  }
+
+  #[test]
+  fn only_an_explicit_gpu_choice_with_an_installed_pack_leaves_the_cpu() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let previous = compute_preference();
+    for value in ["auto", "cpu", "gpu"] {
+      COMPUTE_PREFERENCE.store(ComputePreference::parse(value).code(), Ordering::Relaxed);
+      // No pack is installed under this temp dir, so even "gpu" stays on CPU
+      // rather than pointing at a runtime that does not exist.
+      assert_eq!(selected_runtime(temp.path()), Runtime::Cpu, "preference {value}");
+    }
+    COMPUTE_PREFERENCE.store(previous.code(), Ordering::Relaxed);
+  }
 
   #[test]
   fn pipeline_phase_transition_emits_one_line_with_previous_duration() {
@@ -2202,7 +2680,7 @@ mod tests {
       b.into_inner().unwrap().finish().unwrap();
     }
 
-    extract_llama_archive(base).unwrap();
+    extract_runtime_archive(base, Runtime::Cpu).unwrap();
 
     let link = bin_dir(base).join("libllama-common.0.dylib");
     assert!(
@@ -2214,6 +2692,84 @@ mod tests {
       b"real-dylib-bytes",
       "symlink must resolve to the real versioned dylib"
     );
+  }
+
+  /// Real-hardware check for the GPU pack: install it, ask it what devices this
+  /// machine has, and decode one clip on it. Everything below the settings UI.
+  /// Needs the real model assets, plus the Vulkan archive either already
+  /// extracted, sitting in the app-data dir, or pointed at by
+  /// `SAYTYPE_TEST_VULKAN_ZIP` (this test never goes to the network). Run:
+  ///   cargo test real_gpu_runtime_decodes -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn real_gpu_runtime_decodes() {
+    let base = local_asr_dir().expect("assets dir");
+    ensure_bundled_runtime_at(&base).expect("install bundled runtime");
+    assert!(assets_ready_at(&base), "lay out the model assets first");
+    let asset = gpu_zip_asset().expect("this platform ships a GPU pack");
+
+    if !gpu_runtime_ready_at(&base) {
+      let archive = base.join(asset.rel_path);
+      if !archive.exists() {
+        let source = std::env::var("SAYTYPE_TEST_VULKAN_ZIP").expect(
+          "GPU pack not installed: set SAYTYPE_TEST_VULKAN_ZIP to the downloaded archive",
+        );
+        fs::copy(&source, &archive).expect("stage the archive");
+      }
+      extract_runtime_archive(&base, Runtime::Gpu).expect("extract the GPU runtime");
+      // download_gpu_runtime removes the archive once extracted; this staging
+      // path has to do the same or it leaves 33 MB behind in app data.
+      let _ = fs::remove_file(&archive);
+    }
+    assert!(
+      gpu_runtime_ready_at(&base),
+      "extraction must leave a stamp that marks the pack installed"
+    );
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let devices = rt.block_on(gpu_devices());
+    println!("GPU devices: {devices:?}");
+    assert!(
+      !devices.is_empty(),
+      "no Vulkan device on this machine — the pack cannot be exercised here"
+    );
+
+    // 5s of silence, the same clip real_subprocess_smoke uses: shorter digital
+    // silence makes the model hallucinate a filler token.
+    let mut wav = Vec::new();
+    let data_len = 160_000u32;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&32000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 0);
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let clip = temp.path().join("silence.wav");
+    fs::write(&clip, &wav).unwrap();
+
+    let started = std::time::Instant::now();
+    let mut worker = rt
+      .block_on(ResidentWorker::spawn(&base, CTX_FLOOR, Some(9_003), Runtime::Gpu))
+      .expect("a GPU worker must start once the pack is installed");
+    let spawn_ms = started.elapsed().as_millis();
+    let decode_started = std::time::Instant::now();
+    let text = rt
+      .block_on(worker.transcribe(&clip, wav.len(), &mut |_: &str| {}))
+      .expect("GPU decode ok");
+    println!(
+      "GPU spawn {spawn_ms} ms, decode {} ms",
+      decode_started.elapsed().as_millis()
+    );
+    assert_eq!(text, "", "silence must yield empty text on the GPU too");
   }
 
   /// Needs the real assets laid out. Prewarms, decodes once, and proves session
@@ -2342,7 +2898,7 @@ mod tests {
       .iter()
       .map(|(label, path, len)| {
         let mut worker = rt
-          .block_on(ResidentWorker::spawn(&base, ctx, Some(9_002)))
+          .block_on(ResidentWorker::spawn(&base, ctx, Some(9_002), Runtime::Cpu))
           .expect("reference worker");
         let text = rt
           .block_on(worker.transcribe(Path::new(*path), *len, &mut |_: &str| {}))
@@ -2373,7 +2929,7 @@ mod tests {
     for session in 0..sessions {
       let session_id = 9_100 + session as u64;
       let mut worker = rt
-        .block_on(ResidentWorker::spawn(&base, ctx, Some(session_id)))
+        .block_on(ResidentWorker::spawn(&base, ctx, Some(session_id), Runtime::Cpu))
         .expect("session worker");
       let mut served = 0usize;
 
@@ -2410,7 +2966,7 @@ mod tests {
             eprintln!("session {session} chunk {chunk} clip {label} [{population}]: rejected: {message}");
             // Production retires a rejected worker and re-decodes one-shot, so
             // the next chunk here starts a fresh process too.
-            worker = match rt.block_on(ResidentWorker::spawn(&base, ctx, Some(session_id))) {
+            worker = match rt.block_on(ResidentWorker::spawn(&base, ctx, Some(session_id), Runtime::Cpu)) {
               Ok(replacement) => replacement,
               Err(spawn_error) => {
                 // A box already saturated by this loop can fail to start a

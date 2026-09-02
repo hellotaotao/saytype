@@ -54,6 +54,16 @@ pub fn normalize_nemotron_latency_ms(value: u32) -> u32 {
   }
 }
 
+fn default_local_compute() -> String {
+  crate::local_asr::ComputePreference::Auto.as_str().into()
+}
+
+/// Anything unrecognised means "auto" — the config file is user-editable,
+/// and an unknown value must never select a backend.
+pub fn normalize_local_compute(value: &str) -> &'static str {
+  crate::local_asr::ComputePreference::parse(value).as_str()
+}
+
 fn default_shortcut() -> String {
   DEFAULT_RECORD_SHORTCUT.into()
 }
@@ -95,6 +105,10 @@ pub struct AppConfig {
   pub dictionary: String,
   #[serde(default = "default_nemotron_latency_ms")]
   pub nemotron_latency_ms: u32,
+  /// "auto" | "cpu" | "gpu" — which backend the local engine runs on.
+  /// See local_asr::ComputePreference; "auto" resolves to CPU today.
+  #[serde(default = "default_local_compute")]
+  pub local_compute: String,
   #[serde(default)]
   pub onboarding_completed: bool,
 }
@@ -117,6 +131,7 @@ impl Default for AppConfig {
       provider: default_provider(),
       dictionary: String::new(),
       nemotron_latency_ms: default_nemotron_latency_ms(),
+      local_compute: default_local_compute(),
       onboarding_completed: false,
     }
   }
@@ -140,6 +155,8 @@ pub struct SettingsPayload {
   pub start_minimized: bool,
   pub provider: String,
   pub nemotron_latency_ms: u32,
+  /// Which backend the local engine runs on: "auto" | "cpu" | "gpu".
+  pub local_compute: String,
   /// The OS the backend runs on ("macos" | "windows" | "linux"), so the frontend
   /// can choose OS-correct copy and modifier glyphs instead of relying on the
   /// deprecated navigator.platform.
@@ -158,6 +175,10 @@ pub struct SettingsPayload {
   /// not offered — the Settings provider list, the Home engine switcher and the
   /// tray all drop it rather than exposing a backend that can only fail.
   pub nemotron_supported: bool,
+  /// Whether an optional GPU runtime exists for this platform. False on
+  /// macOS, whose runtime already carries Metal, and the Settings row is
+  /// hidden rather than offering a switch that could not do anything.
+  pub gpu_runtime_supported: bool,
 }
 
 impl SettingsPayload {
@@ -187,6 +208,8 @@ impl SettingsPayload {
       start_minimized: config.start_minimized,
       provider: config.provider.clone(),
       nemotron_latency_ms: normalize_nemotron_latency_ms(config.nemotron_latency_ms),
+      local_compute: normalize_local_compute(&config.local_compute).into(),
+      gpu_runtime_supported: crate::local_asr::gpu_runtime_supported(),
       os: std::env::consts::OS.to_string(),
       is_dev: cfg!(debug_assertions),
       onboarding_completed: config.onboarding_completed,
@@ -376,6 +399,27 @@ mod tests {
     assert_eq!(config.shortcut, DEFAULT_RECORD_SHORTCUT);
     assert_eq!(config.translate_shortcut, TRANSLATE_SHORTCUT);
     assert_eq!(config.nemotron_latency_ms, DEFAULT_NEMOTRON_LATENCY_MS);
+  }
+
+  #[test]
+  fn local_compute_defaults_to_auto_and_rejects_unknown_values() {
+    assert_eq!(AppConfig::default().local_compute, "auto");
+    assert_eq!(normalize_local_compute("gpu"), "gpu");
+    assert_eq!(normalize_local_compute("cpu"), "cpu");
+    // A hand-edited config must never end up selecting a backend by accident.
+    assert_eq!(normalize_local_compute("vulkan"), "auto");
+    assert_eq!(normalize_local_compute(""), "auto");
+  }
+
+  #[test]
+  fn settings_payload_normalizes_local_compute_for_the_frontend() {
+    let mut config = AppConfig::default();
+    config.local_compute = "CUDA".into();
+    let payload = SettingsPayload::from_config_with(&config, false);
+    assert_eq!(payload.local_compute, "auto");
+    // The GPU row is hidden where no pack exists, so this flag has to track the
+    // backend rather than being assumed true on every desktop.
+    assert_eq!(payload.gpu_runtime_supported, crate::local_asr::gpu_runtime_supported());
   }
 
   #[test]

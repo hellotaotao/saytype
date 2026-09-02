@@ -203,6 +203,14 @@ function toggleProviderFields(providerChoice) {
   apiKeyItem?.classList.toggle("hidden", provider === "local");
   modelItem?.classList.toggle("hidden", provider === "local");
   nemotronLatencyItem?.classList.toggle("hidden", providerChoice !== LOCAL_NEMOTRON_PROVIDER);
+  // GPU acceleration applies to the Qwen engine only: Nemotron runs on its
+  // own runtime, and platforms without a GPU pack have nothing to switch.
+  document
+    .getElementById("localComputeItem")
+    ?.classList.toggle(
+      "hidden",
+      !gpuRuntimeSupported || providerChoice !== LOCAL_QWEN_PROVIDER
+    );
   fieldGroq.classList.toggle("hidden", provider !== "groq");
   fieldOpenAI.classList.toggle("hidden", provider !== "openai");
 }
@@ -384,6 +392,167 @@ function setupLocalModelSync() {
     }
   });
 
+}
+
+// --- GPU acceleration panel (local Qwen engine) ---
+// The GPU runtime is an optional ~33 MB pack fetched on demand: the required
+// runtime is CPU-only, and which backend runs is decided by which pack the
+// process is started from, not by a flag. Qwen only — Nemotron ships its own
+// runtime and is unaffected by this setting.
+let gpuRuntimeSupported = false;
+let gpuRuntimeState = "absent"; // absent | downloading | ready
+let gpuRuntimeStatus = null;
+let gpuRuntimeSyncBound = false;
+
+function formatMB(bytes) {
+  return `${Math.round((bytes || 0) / 1024 / 1024)} MB`;
+}
+
+function renderLocalComputePanel(status) {
+  const statusEl = document.getElementById("localComputeStatus");
+  const select = document.getElementById("localComputeSelect");
+  const actionBtn = document.getElementById("localComputeActionBtn");
+  const deleteBtn = document.getElementById("localComputeDeleteBtn");
+  const progressEl = document.getElementById("localComputeProgress");
+  if (!statusEl || !select || !actionBtn || !deleteBtn || !progressEl) {
+    return;
+  }
+  gpuRuntimeState = status.state;
+
+  const pct = status.totalBytes ? status.downloadedBytes / status.totalBytes : 0;
+  progressEl.value = Math.round(pct * 1000);
+  progressEl.classList.toggle("hidden", status.state !== "downloading");
+  deleteBtn.classList.toggle("hidden", status.state !== "ready");
+  deleteBtn.textContent = translate("settings.localCompute.delete");
+  actionBtn.classList.add("hidden");
+
+  if (status.state === "downloading") {
+    statusEl.textContent = translate("settings.localCompute.statusDownloading", {
+      done: formatMB(status.downloadedBytes),
+      total: formatMB(status.totalBytes),
+    });
+    actionBtn.classList.remove("hidden");
+    actionBtn.textContent = translate("settings.localCompute.cancel");
+    return;
+  }
+  // The copy follows the control the user is looking at, not the saved value:
+  // the select can be ahead of the config until Save.
+  if (select.value !== "gpu") {
+    statusEl.textContent = translate("settings.localCompute.statusCpu");
+    return;
+  }
+  if (status.state !== "ready") {
+    statusEl.textContent = translate("settings.localCompute.statusAbsent", {
+      total: formatMB(status.totalBytes),
+    });
+    actionBtn.classList.remove("hidden");
+    actionBtn.textContent = translate(
+      status.downloadedBytes > 0
+        ? "settings.localCompute.retry"
+        : "settings.localCompute.download"
+    );
+    return;
+  }
+  if (status.fellBack) {
+    statusEl.textContent = translate("settings.localCompute.statusFellBack");
+    return;
+  }
+  // An installed pack that lists no device is the "no driver / unusable GPU"
+  // case — say so, because the transcription silently runs on the CPU.
+  statusEl.textContent = status.devices?.length
+    ? translate("settings.localCompute.statusReady", { device: status.devices[0] })
+    : translate("settings.localCompute.statusNoDevice");
+}
+
+async function refreshGpuRuntimeStatus() {
+  if (!ipc || !gpuRuntimeSupported) {
+    return;
+  }
+  try {
+    const status = await ipc.invoke("get-gpu-runtime-status");
+    // The status reports the pack size as sizeBytes; progress events use
+    // totalBytes. Normalize here so the panel has one shape to render.
+    gpuRuntimeStatus = { ...status, totalBytes: status.sizeBytes };
+    renderLocalComputePanel(gpuRuntimeStatus);
+  } catch (error) {
+    console.error("Failed to fetch GPU runtime status:", error);
+  }
+}
+
+async function handleGpuRuntimeAction() {
+  try {
+    if (gpuRuntimeState === "downloading") {
+      await ipc.invoke("cancel-gpu-runtime-download");
+      return; // the terminal event repaints the panel
+    }
+    renderLocalComputePanel({
+      ...(gpuRuntimeStatus || {}),
+      state: "downloading",
+      downloadedBytes: 0,
+      totalBytes: gpuRuntimeStatus?.totalBytes || 1,
+    });
+    await ipc.invoke("download-gpu-runtime");
+  } catch (error) {
+    console.error("GPU runtime download failed:", error);
+  }
+}
+
+async function handleGpuRuntimeDelete() {
+  if (!confirm(translate("settings.localCompute.deleteConfirm"))) {
+    return;
+  }
+  try {
+    await ipc.invoke("delete-gpu-runtime");
+    // The backend also rewrites a saved "gpu" back to "auto"; mirror it here so
+    // the form cannot save the removed backend straight back in.
+    const select = document.getElementById("localComputeSelect");
+    if (select?.value === "gpu") {
+      select.value = "auto";
+    }
+    currentSettings.localCompute = "auto";
+    await refreshGpuRuntimeStatus();
+  } catch (error) {
+    console.error("Failed to remove the GPU runtime:", error);
+  }
+}
+
+// Picking the GPU with nothing installed is a request to install it — the
+// setting on its own would save and then quietly keep running on the CPU.
+function handleLocalComputeChange() {
+  const select = document.getElementById("localComputeSelect");
+  if (select?.value === "gpu" && gpuRuntimeState === "absent") {
+    void handleGpuRuntimeAction();
+    return;
+  }
+  renderLocalComputePanel(
+    gpuRuntimeStatus || { state: gpuRuntimeState, downloadedBytes: 0, totalBytes: 0, devices: [] }
+  );
+}
+
+function setupGpuRuntimeSync() {
+  if (gpuRuntimeSyncBound || !ipc) {
+    return;
+  }
+  gpuRuntimeSyncBound = true;
+  ipc.on("local-gpu-runtime-progress", (_event, payload) => {
+    if (!payload) {
+      return;
+    }
+    if (payload.state === "error") {
+      alert(translate("settings.localCompute.downloadFailed", { reason: payload.message || "" }));
+    }
+    if (payload.state === "downloading") {
+      renderLocalComputePanel({
+        state: "downloading",
+        downloadedBytes: payload.downloadedBytes || 0,
+        totalBytes: payload.totalBytes || 0,
+        devices: [],
+      });
+    } else {
+      // ready/cancelled/error/absent: re-derive the real on-disk state.
+      void refreshGpuRuntimeStatus();
+    }
+  });
 }
 
 function revealLocalModelPanel(model = QWEN_LOCAL_MODEL) {
@@ -759,6 +928,15 @@ function bindEventHandlers() {
   document.getElementById("localModelActionBtn")?.addEventListener("click", () => {
     void handleLocalModelAction();
   });
+  document.getElementById("localComputeActionBtn")?.addEventListener("click", () => {
+    void handleGpuRuntimeAction();
+  });
+  document.getElementById("localComputeDeleteBtn")?.addEventListener("click", () => {
+    void handleGpuRuntimeDelete();
+  });
+  document
+    .getElementById("localComputeSelect")
+    ?.addEventListener("change", handleLocalComputeChange);
   document.getElementById("localModelDeleteBtn")?.addEventListener("click", () => {
     void handleLocalModelDelete();
   });
@@ -1076,6 +1254,14 @@ async function loadSettings() {
     const apiKeyGroq = document.getElementById("apiKeyGroq");
     const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
 
+    // Captured out of the payload: saveSettings replaces currentSettings with
+    // the form values, which carry no backend-reported capability flags.
+    gpuRuntimeSupported = !!currentSettings.gpuRuntimeSupported;
+    setSelectValue(
+      document.getElementById("localComputeSelect"),
+      currentSettings.localCompute || "auto",
+      "auto"
+    );
     applyNemotronAvailability();
     setSelectValue(providerSelect, providerChoice, "groq");
     if (provider !== "local") {
@@ -1114,6 +1300,7 @@ async function loadSettings() {
     }
 
     await refreshLocalModelStatus();
+    await refreshGpuRuntimeStatus();
     await Promise.all([
       checkMicrophonePermissionStatus(),
       checkAccessibilityStatus(),
@@ -1151,6 +1338,7 @@ async function saveSettings() {
       autoLaunch: !!document.getElementById("autoLaunchCheck")?.checked,
       startMinimized: !!document.getElementById("startMinimizedCheck")?.checked,
       provider,
+      localCompute: document.getElementById("localComputeSelect")?.value || "auto",
       nemotronLatencyMs: Number(
         document.getElementById("nemotronLatencySelect")?.value || 560
       ),
@@ -1193,6 +1381,7 @@ async function initializeSettingsPage() {
   setupShortcutSync();
   setupThemeSync();
   setupLocalModelSync();
+  setupGpuRuntimeSync();
   setupDiagnosticLogPanel();
   void setupUpdatesPanel();
   await loadSettings();

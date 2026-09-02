@@ -508,6 +508,23 @@
               </div>
             </div>
 
+            <div class="setting-item hidden" id="localComputeItem">
+              <div class="setting-info">
+                <div class="setting-title" data-i18n="settings.localCompute.title">GPU acceleration</div>
+                <div class="setting-description" id="localComputeStatus"></div>
+              </div>
+              <div class="setting-control">
+                <select class="input model-select" id="localComputeSelect" title="Select compute backend" data-i18n="settings.localCompute.selectTitle" data-i18n-attr="title">
+                  <option value="auto" data-i18n="settings.localCompute.auto">Automatic (currently CPU)</option>
+                  <option value="cpu" data-i18n="settings.localCompute.cpu">CPU</option>
+                  <option value="gpu" data-i18n="settings.localCompute.gpu">GPU (Vulkan)</option>
+                </select>
+                <progress id="localComputeProgress" class="hidden" max="1000" value="0"></progress>
+                <button class="btn btn-secondary hidden" id="localComputeActionBtn" type="button"></button>
+                <button class="btn btn-secondary hidden" id="localComputeDeleteBtn" type="button"></button>
+              </div>
+            </div>
+
             <div class="setting-item hidden" id="localModelItem">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.localModel.title">Local model</div>

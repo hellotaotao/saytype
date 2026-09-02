@@ -401,6 +401,7 @@ pub fn save_settings(
     config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
     config.nemotron_latency_ms =
       settings::normalize_nemotron_latency_ms(config.nemotron_latency_ms);
+    config.local_compute = settings::normalize_local_compute(&config.local_compute).into();
     if config.provider == crate::local_asr::LOCAL_PROVIDER {
       config.model = crate::local_asr::normalize_local_model_id(&config.model).into();
     }
@@ -542,6 +543,7 @@ pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), Stri
 }
 
 pub(crate) fn sync_local_runtime(app: &AppHandle, config: &AppConfig) {
+  crate::local_asr::set_compute_preference(&config.local_compute);
   let selected = crate::local_asr::normalize_local_model_id(&config.model);
   if config.provider == crate::local_asr::LOCAL_PROVIDER
     && selected == crate::local_asr::NEMOTRON_MODEL_ID
@@ -1291,6 +1293,96 @@ pub fn cancel_local_model_download(state: State<'_, AppState>) -> Result<bool, S
     return Ok(true);
   }
   Ok(false)
+}
+
+/// Status of the optional GPU acceleration pack, including which devices the
+/// installed runtime can actually see — an installed pack that lists nothing
+/// means this machine has no usable Vulkan device, and the panel says so.
+#[tauri::command]
+pub async fn get_gpu_runtime_status(
+  state: State<'_, AppState>,
+) -> Result<crate::local_asr::GpuRuntimeStatus, String> {
+  let downloading = state.gpu_runtime_download.lock().unwrap().is_some();
+  Ok(crate::local_asr::gpu_runtime_status(downloading).await)
+}
+
+#[tauri::command]
+pub async fn download_gpu_runtime(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<bool, String> {
+  log::info!("command:download_gpu_runtime");
+  let cancel = CancellationToken::new();
+  {
+    let mut slot = state.gpu_runtime_download.lock().unwrap();
+    if slot.is_some() {
+      return Err("GPU runtime download already in progress".into());
+    }
+    *slot = Some(cancel.clone());
+  }
+
+  let result = crate::local_asr::download_gpu_runtime(app.clone(), cancel).await;
+  *state.gpu_runtime_download.lock().unwrap() = None;
+
+  let status = crate::local_asr::gpu_runtime_status(false).await;
+  let base = json!({
+    "downloadedBytes": status.downloaded_bytes,
+    "totalBytes": status.size_bytes,
+    "devices": status.devices,
+  });
+  let emit = |state_name: &str, message: Option<String>| {
+    let mut payload = base.clone();
+    payload["state"] = json!(state_name);
+    if let Some(message) = message {
+      payload["message"] = json!(message);
+    }
+    let _ = app.emit("local-gpu-runtime-progress", payload);
+  };
+  match result {
+    Ok(()) => {
+      emit("ready", None);
+      Ok(true)
+    }
+    Err(err) if err == "DOWNLOAD_CANCELLED" => {
+      emit("cancelled", None);
+      Ok(false)
+    }
+    Err(err) => {
+      emit("error", Some(err.clone()));
+      Err(err)
+    }
+  }
+}
+
+#[tauri::command]
+pub fn cancel_gpu_runtime_download(state: State<'_, AppState>) -> Result<bool, String> {
+  log::info!("command:cancel_gpu_runtime_download");
+  if let Some(cancel) = state.gpu_runtime_download.lock().unwrap().as_ref() {
+    cancel.cancel();
+    return Ok(true);
+  }
+  Ok(false)
+}
+
+/// Remove the GPU pack and fall back to CPU. The models and the required CPU
+/// runtime stay: this frees 33 MB, not the ~1 GB the engine needs.
+#[tauri::command]
+pub fn delete_gpu_runtime(app: AppHandle) -> Result<bool, String> {
+  log::info!("command:delete_gpu_runtime");
+  crate::local_asr::delete_gpu_runtime()?;
+  settings::mutate_config(|config| {
+    if settings::normalize_local_compute(&config.local_compute) == "gpu" {
+      config.local_compute = "auto".into();
+    }
+    Ok(())
+  })
+  .map_err(stringify_error)?;
+  crate::local_asr::set_compute_preference("auto");
+  let _ = app.emit(
+    "local-gpu-runtime-progress",
+    json!({ "state": "absent", "downloadedBytes": 0, "totalBytes": 0, "devices": [] }),
+  );
+  Ok(true)
 }
 
 #[tauri::command]
