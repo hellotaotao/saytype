@@ -2023,12 +2023,13 @@ class VoiceInputPrompt {
       // Setup audio context for visualization
       this.audioContext = new (window.AudioContext ||
         window.webkitAudioContext)();
-      // WebKit starts an AudioContext built without a user gesture in
-      // "suspended", and this window is raised by the Rust event tap, so the
-      // webview never sees a gesture. A suspended context renders nothing: the
-      // waveform (analyser) AND the local engine's capture (AudioWorklet) both
-      // sit dead until something resumes it. Resume explicitly, and record the
-      // state we found so the log says whether that was actually the cause.
+      // WebKit reports "suspended" here on every recording, because this window
+      // is raised by the Rust event tap and no user gesture ever reaches the
+      // webview. That state is NOT the cause of anything: measured with this
+      // resume() removed, audio still arrives from ~8 ms and the envelope is
+      // identical, so WebKit auto-starts a context fed by a live capture source
+      // and the suspension is transient. Kept as belt-and-braces only — relying
+      // on an undocumented auto-start would be fragile — not as a fix.
       const audioContextStateBefore = this.audioContext.state;
       let audioContextResumeMs = 0;
       if (this.audioContext.state === "suspended") {

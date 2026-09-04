@@ -439,10 +439,15 @@ degrading system-wide audio quality**. Only the indicator has been re-accepted; 
 has never been discussed. If Bluetooth input ever matters, revisit — options are a long
 idle-release, a device-class check, or restoring the old `keepMicWarm` toggle.
 
-Related: the AudioContext must be explicitly `resume()`d — WebKit starts it `suspended` when
-no user gesture reaches the page, and the input-prompt window is raised by the Rust event
-tap, so one never arrives. A suspended context renders nothing, killing the AudioWorklet
-(transcript) and the analyser (waveform) together.
+**A note on `AudioContext.state`, because it looks like a second bug and is not one.**
+Every recording logs `ctx_state_before=suspended`: this window is raised by the Rust event
+tap, so no user gesture ever reaches the webview. It is tempting to conclude the context
+never renders. It does. Measured with the explicit `resume()` removed, audio still arrives
+from ~8 ms and the envelope is byte-for-byte the same shape, so WebKit auto-starts a context
+that has a live capture source. The `resume()` call is belt-and-braces against relying on an
+undocumented auto-start; it fixes nothing, and the 3.0 s attenuation above is the only real
+defect here. The tell was logical, not instrumental: a context that truly never rendered
+would produce silence forever, not a clean recovery at 3.0 s.
 
 ### Decision: do NOT add NS/AGC, and do NOT pre-denoise (researched 2026-06-22)
 
