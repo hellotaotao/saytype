@@ -54,6 +54,105 @@ const AUDIO_CONSTRAINTS = {
     autoGainControl: false,
   },
 };
+
+// --- Audio onset probe -------------------------------------------------------
+// One question only: when the opening seconds of a dictation come back empty,
+// did the AudioWorklet receive NO blocks (the graph never ran) or blocks full
+// of silence (the device handed us zeros)? The analyser cannot tell those
+// apart — getByteTimeDomainData is 8-bit, so its smallest step is ~-42 dBFS and
+// ordinary room tone quantizes to an exact zero. This float tap can.
+//
+// Onset positions are measured on the AUDIO timeline (samples seen so far), not
+// on wall clock, so main-thread jank cannot smear the reading. Pairing that with
+// the wall clock of the first block is what separates the two causes:
+//   device silence  -> first_signal_ms ~= 3000, first_block_wall_ms ~= 0
+//   graph ran late  -> first_signal_ms ~= 0,    first_block_wall_ms ~= 3000
+const PROBE_SIGNAL_RMS = 1e-4; // ~-80 dBFS: above the noise floor of a live mic
+const PROBE_SPEECH_RMS = 0.01; // ~-40 dBFS: unmistakably someone talking
+const PROBE_BUCKET_MS = 500;
+const PROBE_BUCKETS = 24; // first 12 s; longer holds just stop extending it
+
+function createOnsetProbe(sampleRate, originMs) {
+  return {
+    sampleRate,
+    originMs,
+    connectedAtMs: null,
+    firstBlockWallMs: null,
+    blocks: 0,
+    samples: 0,
+    zeroLeadBlocks: 0,
+    quietLeadBlocks: 0,
+    firstNonZeroMs: null,
+    firstSignalMs: null,
+    firstSpeechMs: null,
+    peak: 0,
+    analyserFrames: 0,
+    analyserSilentFrames: 0,
+    ctxStateAtSignal: null,
+    ctxTimeAtSignal: null,
+    // Coarse level-over-time, so "the bar barely moves" can be told apart from
+    // "the bar isn't being painted": envSum/envCount are RMS accumulators on the
+    // AUDIO timeline, frameCounts is how many analyser ticks the rAF loop
+    // actually ran in the same wall-clock bucket. A stalled compositor shows
+    // full frame counts with a healthy envelope; a genuinely quiet opening
+    // shows full frame counts with a low envelope.
+    envSum: new Float64Array(PROBE_BUCKETS),
+    envCount: new Int32Array(PROBE_BUCKETS),
+    frameCounts: new Int32Array(PROBE_BUCKETS),
+    clipped: 0,
+    reported: false,
+  };
+}
+
+function pushOnsetBlock(probe, samples, audioContext) {
+  if (!probe || !samples.length) return;
+  // Position of THIS block on the audio timeline, before it is counted.
+  const positionMs = (probe.samples / probe.sampleRate) * 1000;
+  if (probe.firstBlockWallMs === null) {
+    probe.firstBlockWallMs = performance.now() - probe.originMs;
+  }
+  probe.blocks += 1;
+  probe.samples += samples.length;
+
+  let peak = 0;
+  let sumSquares = 0;
+  let clipped = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const value = samples[i];
+    const magnitude = value < 0 ? -value : value;
+    if (magnitude > peak) peak = magnitude;
+    // Float capture is not clamped; encodeWavPcm16 hard-clips anything past 1.
+    if (magnitude > 1) clipped += 1;
+    sumSquares += value * value;
+  }
+  if (peak > probe.peak) probe.peak = peak;
+  probe.clipped += clipped;
+  const rms = Math.sqrt(sumSquares / samples.length);
+
+  const bucket = Math.floor(positionMs / PROBE_BUCKET_MS);
+  if (bucket >= 0 && bucket < PROBE_BUCKETS) {
+    probe.envSum[bucket] += sumSquares;
+    probe.envCount[bucket] += samples.length;
+  }
+
+  if (probe.firstNonZeroMs === null) {
+    if (peak > 0) probe.firstNonZeroMs = positionMs;
+    else probe.zeroLeadBlocks += 1;
+  }
+  if (probe.firstSignalMs === null) {
+    if (rms > PROBE_SIGNAL_RMS) {
+      probe.firstSignalMs = positionMs;
+      probe.ctxStateAtSignal = audioContext ? audioContext.state : null;
+      probe.ctxTimeAtSignal = audioContext ? audioContext.currentTime : null;
+    } else {
+      probe.quietLeadBlocks += 1;
+    }
+  }
+  if (probe.firstSpeechMs === null && rms > PROBE_SPEECH_RMS) {
+    probe.firstSpeechMs = positionMs;
+  }
+}
+
 const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
 let currentThemePref = "elegant";
 
@@ -165,6 +264,8 @@ class VoiceInputPrompt {
     this.translateMode = false;
     this.audioContext = null;
     this.mediaStream = null;
+    this.sharedStream = null;
+    this.streamAcquisition = null;
     this.mediaRecorder = null;
     this.audioChunks = [];
     this.analyser = null;
@@ -268,11 +369,59 @@ class VoiceInputPrompt {
     setTimeout(() => this.prewarmQwenWorker(recordingSession), delayMs);
   }
 
-  // Prime the WebKit audio stack once at launch. The first getUserMedia in a
-  // fresh process pays a one-time init cost (~150ms+); a throwaway capture here
-  // — stopped immediately — moves that cost off the user's first dictation. The
-  // mic indicator only blips briefly at startup; nothing is recorded or sent.
-  async primeMicrophone() {
+  // One capture stream for the whole process, shared by every recording.
+  //
+  // A FRESH WKWebView capture stream delivers ~30 dB of attenuation for exactly
+  // its first 3.0 s. Measured with no speech at all: env_db sat at -80 for six
+  // consecutive 500 ms buckets and then stepped to -50, reproducibly, and it is
+  // none of the things it looked like — it survives a 531 ms prewarm as well as
+  // a 3105 ms one, the analyser loop ticks 7-8 times per bucket throughout, and
+  // forcing the track to 48 kHz (removing WebKit's resampler) does not move it.
+  // ffmpeg on the same microphone records a flat -56 dBFS from t=0, so this is
+  // WebKit's capture path, not the device.
+  //
+  // Because the cost is per fresh stream, acquiring one per recording made every
+  // dictation open with three near-silent seconds — loud speech survived it,
+  // quiet speech would not. Keeping one stream alive removes it entirely.
+  //
+  // The trade-off is deliberate: macOS keeps its orange microphone indicator lit
+  // for as long as a stream is open, which per-recording acquisition avoided.
+  // Nothing is captured between dictations — MediaRecorder and the AudioWorklet
+  // are still created and destroyed per recording — but the dot stays on.
+  async acquireCaptureStream() {
+    const existing = this.sharedStream?.getAudioTracks?.()[0];
+    if (existing && existing.readyState === "live") {
+      return this.sharedStream;
+    }
+    // Single-flight: the prime and a first recording can land together, and two
+    // concurrent getUserMedia calls would each open a stream — the loser would
+    // be overwritten and leak, holding the microphone open forever.
+    if (this.streamAcquisition) return this.streamAcquisition;
+    // A track that ended (device unplugged, or the OS revoked it) can't be
+    // revived; drop it and open a replacement.
+    this.releaseCaptureStream();
+    this.streamAcquisition = navigator.mediaDevices
+      .getUserMedia(AUDIO_CONSTRAINTS)
+      .then((stream) => {
+        this.sharedStream = stream;
+        return stream;
+      })
+      .finally(() => {
+        this.streamAcquisition = null;
+      });
+    return this.streamAcquisition;
+  }
+
+  releaseCaptureStream() {
+    const stream = this.sharedStream;
+    this.sharedStream = null;
+    stream?.getTracks?.().forEach((track) => track.stop());
+  }
+
+  // Prime the WebKit audio stack once at launch, and keep the stream: this is
+  // what puts the 3.0 s attenuation window behind us before the first hotkey
+  // rather than inside it.
+  async primeMicrophone(attempt = 0) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return;
     }
@@ -282,13 +431,45 @@ class VoiceInputPrompt {
       // first permission prompt behind the onboarding UI.
       const permission = await ipc.invoke("check-microphone-permission");
       if (permission?.status !== "granted") {
+        this.reportPrime(`attempt=${attempt} outcome=skipped permission=${permission?.status}`);
+        this.retryPrime(attempt);
         return;
       }
-      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
-      stream.getTracks().forEach((track) => track.stop());
+      await this.acquireCaptureStream();
+      const track = this.sharedStream?.getAudioTracks?.()[0];
+      this.reportPrime(
+        `attempt=${attempt} outcome=acquired permission=granted track_state=${track?.readyState} muted=${track?.muted}`
+      );
     } catch (error) {
-      // No mic permission yet or no device — the first real recording will just
-      // pay the init cost as before. Nothing actionable here.
+      // Reached when the bridge is not up yet, when permission has not been
+      // granted yet, or when there is no device. Only the first two resolve
+      // themselves, so retry rather than leaving the first dictation to pay
+      // the 3.0 s attenuation window.
+      this.reportPrime(`attempt=${attempt} outcome=error name=${error?.name}`);
+      this.retryPrime(attempt);
+    }
+  }
+
+  // Backs off across ~30 s: long enough to outlast a slow bridge or a
+  // permission granted during onboarding, bounded so a machine with no
+  // microphone does not retry forever.
+  retryPrime(attempt) {
+    if (attempt >= 5) return;
+    const delayMs = [500, 1500, 4000, 10000, 15000][attempt];
+    setTimeout(() => {
+      const track = this.sharedStream?.getAudioTracks?.()[0];
+      if (track && track.readyState === "live") return;
+      void this.primeMicrophone(attempt + 1);
+    }, delayMs);
+  }
+
+  reportPrime(detail) {
+    try {
+      void Promise.resolve(
+        ipc.invoke("report-audio-probe", { sessionId: 0, stage: "prime", detail, slow: false })
+      ).catch(() => {});
+    } catch {
+      // The bridge may be unavailable this early in page load.
     }
   }
 
@@ -717,6 +898,73 @@ class VoiceInputPrompt {
     }
   }
 
+
+  reportAudioProbe(recordingSession, stage, detail, slow = false) {
+    if (!Number.isSafeInteger(recordingSession?.id)) return;
+    // A diagnostic failure must never become part of the transcription chain.
+    try {
+      void Promise.resolve(ipc.invoke("report-audio-probe", {
+        sessionId: recordingSession.id,
+        stage,
+        detail,
+        slow,
+      })).catch(() => {});
+    } catch {
+      // The bridge may be unavailable while the window is shutting down.
+    }
+  }
+
+  // Emitted once per recording, from whichever of stop/finalize runs first.
+  reportAudioOnset(recordingSession) {
+    const probe = recordingSession?.onsetProbe;
+    if (!probe || probe.reported) return;
+    probe.reported = true;
+    const ms = (value) => (value === null ? -1 : Math.round(value));
+    const capturedMs = Math.round((probe.samples / probe.sampleRate) * 1000);
+    const holdMs = Math.round(performance.now() - probe.originMs);
+    const detail = [
+      `chunked=${!!recordingSession.chunked}`,
+      `blocks=${probe.blocks}`,
+      `captured_ms=${capturedMs}`,
+      `hold_ms=${holdMs}`,
+      `missing_ms=${Math.max(0, holdMs - capturedMs)}`,
+      `connect_ms=${ms(probe.connectedAtMs)}`,
+      `first_block_wall_ms=${ms(probe.firstBlockWallMs)}`,
+      `first_nonzero_ms=${ms(probe.firstNonZeroMs)}`,
+      `first_signal_ms=${ms(probe.firstSignalMs)}`,
+      `first_speech_ms=${ms(probe.firstSpeechMs)}`,
+      `zero_lead_blocks=${probe.zeroLeadBlocks}`,
+      `quiet_lead_blocks=${probe.quietLeadBlocks}`,
+      `peak=${probe.peak.toFixed(4)}`,
+      `ctx_state_at_signal=${probe.ctxStateAtSignal || "none"}`,
+      `ctx_time_at_signal=${probe.ctxTimeAtSignal === null ? -1 : probe.ctxTimeAtSignal.toFixed(3)}`,
+      `analyser_frames=${probe.analyserFrames}`,
+      `analyser_silent_frames=${probe.analyserSilentFrames}`,
+    ].join(" ");
+    const slow = probe.firstSignalMs === null || probe.firstSignalMs > 500;
+    this.reportAudioProbe(recordingSession, "onset", detail, slow);
+
+    const used = Math.min(
+      PROBE_BUCKETS,
+      Math.ceil((probe.samples / probe.sampleRate) * 1000 / PROBE_BUCKET_MS)
+    );
+    const envDb = [];
+    const frames = [];
+    for (let i = 0; i < used; i++) {
+      const count = probe.envCount[i];
+      const rms = count ? Math.sqrt(probe.envSum[i] / count) : 0;
+      envDb.push(rms > 0 ? Math.round(20 * Math.log10(rms)) : -99);
+      frames.push(probe.frameCounts[i]);
+    }
+    this.reportAudioProbe(recordingSession, "envelope", [
+      `bucket_ms=${PROBE_BUCKET_MS}`,
+      `clipped=${probe.clipped}`,
+      `clipped_pct=${probe.samples ? (probe.clipped / probe.samples * 100).toFixed(2) : "0"}`,
+      `env_db=${envDb.join(",")}`,
+      `frames=${frames.join(",")}`,
+    ].join(" "), false);
+  }
+
   isSessionCancelled(recordingSession) {
     return recordingSession?.lifecycle?.state === "cancelled" ||
       this.cancelledTranscriptionSessionIds.has(recordingSession?.id);
@@ -820,6 +1068,7 @@ class VoiceInputPrompt {
 
   finalizeRecordingSession(recordingSession, reason = "onstop") {
     if (!recordingSession) return Promise.resolve();
+    this.reportAudioOnset(recordingSession);
     if (reason === "onstop" && this.isRecording && this.activeRecordingSession === recordingSession) {
       // An ended track can stop the recorder before the hotkey is released.
       // Close the matching PCM capture before joining its queue as a final.
@@ -1454,6 +1703,7 @@ class VoiceInputPrompt {
           return;
         }
         const samples = new Float32Array(event.data);
+        pushOnsetBlock(recordingSession.onsetProbe, samples, this.audioContext);
         chunked.blocks.push(samples);
         chunked.blockSamples += samples.length;
         window.SayTypeChunk.pushFrame(
@@ -1470,6 +1720,10 @@ class VoiceInputPrompt {
       source.connect(node);
       node.connect(mutedOutput);
       mutedOutput.connect(this.audioContext.destination);
+      if (recordingSession.onsetProbe) {
+        recordingSession.onsetProbe.connectedAtMs =
+          performance.now() - recordingSession.onsetProbe.originMs;
+      }
       recordingSession.chunked = chunked;
       chunked.recordingSession = recordingSession;
     } catch (error) {
@@ -1625,6 +1879,7 @@ class VoiceInputPrompt {
     if (flush && chunked.blockSamples > 0 && !chunked.aborted) {
       this.closeChunk(chunked, chunked.blockSamples);
     }
+    this.reportAudioOnset(recordingSession);
   }
 
   async finishChunkedLocal(recordingSession) {
@@ -1710,17 +1965,16 @@ class VoiceInputPrompt {
         this.clearTranscriptionPreview();
       }
 
-      // Acquire a fresh stream for this recording; it is fully released when
-      // recording stops, so the mic indicator only shows while recording. The
-      // launch prime keeps the first dictation fast despite the fresh open.
+      // Attach to the process-wide capture stream (see acquireCaptureStream):
+      // it has been open since launch, so this recording starts past WebKit's
+      // 3.0 s attenuation window instead of inside it.
       // On macOS, microphone/Accessibility permissions are handled by the OS and the Rust backend.
-      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      const stream = await this.acquireCaptureStream();
       const microphoneReadyAt = performance.now();
 
       if (this.stopRequested) {
-        // This stream has not been assigned to a recording session. Release it
-        // directly without clearing older work or hiding recoverable text.
-        stream.getTracks().forEach((track) => track.stop());
+        // The stream is shared and outlives this attempt, so leave it running;
+        // just bail without clearing older work or hiding recoverable text.
         this.scheduleHidePrompt(300);
         return;
       }
@@ -1730,6 +1984,27 @@ class VoiceInputPrompt {
       // Setup audio context for visualization
       this.audioContext = new (window.AudioContext ||
         window.webkitAudioContext)();
+      // WebKit starts an AudioContext built without a user gesture in
+      // "suspended", and this window is raised by the Rust event tap, so the
+      // webview never sees a gesture. A suspended context renders nothing: the
+      // waveform (analyser) AND the local engine's capture (AudioWorklet) both
+      // sit dead until something resumes it. Resume explicitly, and record the
+      // state we found so the log says whether that was actually the cause.
+      const audioContextStateBefore = this.audioContext.state;
+      let audioContextResumeMs = 0;
+      if (this.audioContext.state === "suspended") {
+        const resumeStartedAt = performance.now();
+        try {
+          await this.audioContext.resume();
+        } catch (error) {
+          if (isDev) console.warn("AudioContext resume failed:", error);
+        }
+        audioContextResumeMs = performance.now() - resumeStartedAt;
+      }
+      const audioTrack = this.mediaStream.getAudioTracks()[0];
+      const trackSettings = audioTrack?.getSettings ? audioTrack.getSettings() : {};
+      const onsetProbe = createOnsetProbe(this.audioContext.sampleRate, microphoneReadyAt);
+      this.onsetProbe = onsetProbe;
       const source = this.audioContext.createMediaStreamSource(
         this.mediaStream
       );
@@ -1764,9 +2039,23 @@ class VoiceInputPrompt {
         provider: this.currentProvider,
         mediaStream: this.mediaStream,
         audioContext: this.audioContext,
+        onsetProbe,
       };
       this.ensureRecordingSession(recordingSession);
       this.reportLifecycle(recordingSession, "capture", "start");
+      this.reportAudioProbe(recordingSession, "capture", [
+        `device=${String(audioTrack?.label || "?").replace(/\s+/g, "_")}`,
+        `rate=${trackSettings.sampleRate}`,
+        `channels=${trackSettings.channelCount}`,
+        `ec=${trackSettings.echoCancellation}`,
+        `ns=${trackSettings.noiseSuppression}`,
+        `agc=${trackSettings.autoGainControl}`,
+        `ctx_rate=${this.audioContext.sampleRate}`,
+        `ctx_state_before=${audioContextStateBefore}`,
+        `ctx_resume_ms=${Math.round(audioContextResumeMs)}`,
+        `ctx_state_after=${this.audioContext.state}`,
+        `mic_ms=${Math.round(microphoneReadyAt - preflightReadyAt)}`,
+      ].join(" "), audioContextStateBefore !== "running");
       this.activeRecordingSession = recordingSession;
       this.pendingInsertionOrder.push(sessionId);
       this.audioChunks = recordingSession.chunks;
@@ -2049,8 +2338,13 @@ class VoiceInputPrompt {
     const ownsCurrentResources = !recordingSession || this.activeRecordingSession === recordingSession;
     logMicrophoneCleanup("Starting microphone cleanup...");
 
-    // Stop all media tracks — the mic is released as soon as a recording ends.
-    if (mediaStream) {
+    // The shared capture stream deliberately outlives the recording; stopping
+    // it here would make the next dictation pay the 3.0 s attenuation again.
+    if (mediaStream && mediaStream === this.sharedStream) {
+      logMicrophoneCleanup("Keeping the shared capture stream open");
+      if (this.mediaStream === mediaStream) this.mediaStream = null;
+      if (recordingSession) recordingSession.mediaStream = null;
+    } else if (mediaStream) {
       logMicrophoneCleanup("Stopping media stream tracks...");
       mediaStream.getTracks().forEach((track) => {
         logMicrophoneCleanup(
@@ -2557,7 +2851,17 @@ class VoiceInputPrompt {
         const v = (this.dataArray[i] - 128) / 128; // centered samples, -1..1
         sumSquares += v * v;
       }
-      return Math.sqrt(sumSquares / this.dataArray.length);
+      const rms = Math.sqrt(sumSquares / this.dataArray.length);
+      const probe = this.activeRecordingSession?.onsetProbe;
+      if (probe) {
+        probe.analyserFrames += 1;
+        const bucket = Math.floor((performance.now() - probe.originMs) / PROBE_BUCKET_MS);
+        if (bucket >= 0 && bucket < PROBE_BUCKETS) probe.frameCounts[bucket] += 1;
+        // 8-bit samples: room tone below ~-42 dBFS reads as an exact zero here,
+        // which is why the float tap above is the one that decides the verdict.
+        if (rms <= 0) probe.analyserSilentFrames += 1;
+      }
+      return rms;
     };
 
     const render = () => {

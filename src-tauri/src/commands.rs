@@ -37,6 +37,50 @@ pub struct RecordingStartupTiming {
   pub end_to_end_ms: u64,
 }
 
+/// Audio-capture diagnostics from the input-prompt window. `detail` is a
+/// preformatted `key=value` tail rather than typed fields because the probe is
+/// a moving target; it is sanitized below so a device name coming from the OS
+/// can never inject newlines or unbounded text into the persistent log.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioProbeReport {
+  pub session_id: u64,
+  pub stage: AudioProbeStage,
+  pub detail: String,
+  #[serde(default)]
+  pub slow: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioProbeStage {
+  Capture,
+  Onset,
+  Envelope,
+  Prime,
+}
+
+impl AudioProbeStage {
+  fn as_str(&self) -> &'static str {
+    match self {
+      Self::Capture => "audio-capture",
+      Self::Onset => "audio-onset",
+      Self::Envelope => "audio-envelope",
+      Self::Prime => "audio-prime",
+    }
+  }
+}
+
+const MAX_AUDIO_PROBE_DETAIL_CHARS: usize = 512;
+
+fn sanitize_audio_probe_detail(detail: &str) -> String {
+  detail
+    .chars()
+    .filter(|c| !c.is_control())
+    .take(MAX_AUDIO_PROBE_DETAIL_CHARS)
+    .collect()
+}
+
 // Fixed labels and numeric metadata only: the renderer cannot accidentally
 // send transcript content or an arbitrary error string into persistent logs.
 #[derive(Debug, Deserialize)]
@@ -288,6 +332,30 @@ pub fn report_recording_startup(
       timing.end_to_end_ms
     );
   }
+  Ok(())
+}
+
+#[tauri::command]
+pub fn report_audio_probe(
+  window: tauri::WebviewWindow,
+  report: AudioProbeReport,
+) -> Result<(), String> {
+  if window.label() != "input-prompt" {
+    return Err("audio probe reports are only accepted from input-prompt".into());
+  }
+  // saytype_lifecycle is kept at INFO in release builds, unlike saytype_lib::*,
+  // so these lines survive in a packaged build the way the other frontend
+  // lifecycle lines do. ":slow" additionally makes the bad case greppable.
+  let level = if report.slow { log::Level::Warn } else { log::Level::Info };
+  log::log!(
+    target: "saytype_lifecycle",
+    level,
+    "{}{} session_id={} {}",
+    report.stage.as_str(),
+    if report.slow { ":slow" } else { "" },
+    report.session_id,
+    sanitize_audio_probe_detail(&report.detail)
+  );
   Ok(())
 }
 
@@ -1895,6 +1963,29 @@ pub fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+  #[test]
+  fn audio_probe_detail_drops_control_characters_and_caps_length() {
+    // A device label comes from the OS, so a newline in it must not be able to
+    // forge a second log line.
+    assert_eq!(
+      sanitize_audio_probe_detail("device=Mic\nlevel=WARN forged"),
+      "device=Miclevel=WARN forged"
+    );
+    let long = "x".repeat(MAX_AUDIO_PROBE_DETAIL_CHARS + 50);
+    assert_eq!(
+      sanitize_audio_probe_detail(&long).chars().count(),
+      MAX_AUDIO_PROBE_DETAIL_CHARS
+    );
+  }
+
+  #[test]
+  fn audio_probe_stage_labels_match_the_log_grep() {
+    assert_eq!(AudioProbeStage::Capture.as_str(), "audio-capture");
+    assert_eq!(AudioProbeStage::Onset.as_str(), "audio-onset");
+    assert_eq!(AudioProbeStage::Envelope.as_str(), "audio-envelope");
+    assert_eq!(AudioProbeStage::Prime.as_str(), "audio-prime");
+  }
+
   use super::*;
 
   #[test]
