@@ -359,6 +359,43 @@ pub fn report_audio_probe(
   Ok(())
 }
 
+/// Verification only: capture briefly through CoreAudio and report the level
+/// envelope, so the native path can be checked inside the real app process
+/// (its microphone grant, its threads) before any of the pipeline moves over.
+#[tauri::command]
+pub async fn probe_native_capture(seconds: f64) -> Result<String, String> {
+  let seconds = seconds.clamp(1.0, 15.0);
+  log::info!(target: "saytype_lifecycle", "native-capture entered seconds={seconds}");
+  tokio::task::spawn_blocking(move || crate::native_capture::probe_capture(seconds))
+    .await
+    .map_err(stringify_error)?
+    .map(|(device, rate, pcm)| {
+      let resampled = crate::native_capture::resample_to_target(&pcm, rate);
+      let env = crate::native_capture::envelope_db(
+        &resampled,
+        crate::native_capture::TARGET_RATE as f64,
+        500.0,
+      );
+      let peak = pcm.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+      let summary = format!(
+        "device={} in_rate={} in_samples={} out_samples={} peak={:.4} env_db={}",
+        device.replace(char::is_whitespace, "_"),
+        rate,
+        pcm.len(),
+        resampled.len(),
+        peak,
+        env.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",")
+      );
+      log::info!(target: "saytype_lifecycle", "native-capture {summary}");
+      summary
+    })
+    .map_err(|error| {
+      let message = stringify_error(error);
+      log::warn!(target: "saytype_lifecycle", "native-capture failed: {message}");
+      message
+    })
+}
+
 fn qwen_prewarm_eligible(config: &AppConfig) -> bool {
   config.provider == crate::local_asr::LOCAL_PROVIDER
     && crate::local_asr::normalize_local_model_id(&config.model)

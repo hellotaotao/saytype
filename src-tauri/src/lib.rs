@@ -3,6 +3,7 @@ mod commands;
 mod history;
 mod hotkey;
 mod local_asr;
+mod native_capture;
 mod nemotron_asr;
 mod scrub;
 mod platform;
@@ -193,6 +194,7 @@ pub fn run() {
       commands::get_settings,
       commands::report_recording_startup,
       commands::report_audio_probe,
+      commands::probe_native_capture,
       commands::report_transcription_lifecycle,
       commands::prewarm_qwen_worker,
       commands::finish_qwen_worker_session,

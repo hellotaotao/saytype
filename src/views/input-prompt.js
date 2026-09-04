@@ -70,6 +70,13 @@ const AUDIO_CONSTRAINTS = {
 const PROBE_SIGNAL_RMS = 1e-4; // ~-80 dBFS: above the noise floor of a live mic
 const PROBE_SPEECH_RMS = 0.01; // ~-40 dBFS: unmistakably someone talking
 const PROBE_BUCKET_MS = 500;
+// Diagnostic only: a Goertzel filter locked to a 440 Hz reference tone. RMS
+// alone cannot say whether the 3.0 s attenuation happens before or after the
+// ADC — room tone is acoustic, so it scales in both cases. Per-bucket SNR can:
+// a digital gain scales signal and converter noise together and leaves SNR
+// untouched, while an analog attenuation adds a fixed converter floor
+// afterwards and craters SNR inside the window.
+const PROBE_TONE_HZ = 440;
 const PROBE_BUCKETS = 24; // first 12 s; longer holds just stop extending it
 
 function createOnsetProbe(sampleRate, originMs) {
@@ -98,6 +105,9 @@ function createOnsetProbe(sampleRate, originMs) {
     // shows full frame counts with a low envelope.
     envSum: new Float64Array(PROBE_BUCKETS),
     envCount: new Int32Array(PROBE_BUCKETS),
+    gzS1: new Float64Array(PROBE_BUCKETS),
+    gzS2: new Float64Array(PROBE_BUCKETS),
+    gzCoeff: 2 * Math.cos((2 * Math.PI * PROBE_TONE_HZ) / sampleRate),
     frameCounts: new Int32Array(PROBE_BUCKETS),
     clipped: 0,
     reported: false,
@@ -133,6 +143,19 @@ function pushOnsetBlock(probe, samples, audioContext) {
   if (bucket >= 0 && bucket < PROBE_BUCKETS) {
     probe.envSum[bucket] += sumSquares;
     probe.envCount[bucket] += samples.length;
+    // Goertzel state carries across blocks within a bucket. A block spans
+    // ~2.7 ms, so attributing the whole block to its opening bucket is exact
+    // enough for a 500 ms window.
+    const coeff = probe.gzCoeff;
+    let s1 = probe.gzS1[bucket];
+    let s2 = probe.gzS2[bucket];
+    for (let i = 0; i < samples.length; i++) {
+      const s0 = samples[i] + coeff * s1 - s2;
+      s2 = s1;
+      s1 = s0;
+    }
+    probe.gzS1[bucket] = s1;
+    probe.gzS2[bucket] = s2;
   }
 
   if (probe.firstNonZeroMs === null) {
@@ -950,17 +973,33 @@ class VoiceInputPrompt {
     );
     const envDb = [];
     const frames = [];
+    const snrDb = [];
     for (let i = 0; i < used; i++) {
       const count = probe.envCount[i];
       const rms = count ? Math.sqrt(probe.envSum[i] / count) : 0;
       envDb.push(rms > 0 ? Math.round(20 * Math.log10(rms)) : -99);
       frames.push(probe.frameCounts[i]);
+      // Mean-square power of the reference tone, and everything that is not it.
+      if (count) {
+        const s1 = probe.gzS1[i];
+        const s2 = probe.gzS2[i];
+        const toneMs = Math.max(
+          (2 * (s1 * s1 + s2 * s2 - probe.gzCoeff * s1 * s2)) / (count * count),
+          0
+        );
+        const totalMs = probe.envSum[i] / count;
+        const noiseMs = Math.max(totalMs - toneMs, 1e-20);
+        snrDb.push(toneMs > 0 ? Math.round(10 * Math.log10(toneMs / noiseMs)) : -99);
+      } else {
+        snrDb.push(-99);
+      }
     }
     this.reportAudioProbe(recordingSession, "envelope", [
       `bucket_ms=${PROBE_BUCKET_MS}`,
       `clipped=${probe.clipped}`,
       `clipped_pct=${probe.samples ? (probe.clipped / probe.samples * 100).toFixed(2) : "0"}`,
       `env_db=${envDb.join(",")}`,
+      `snr_db=${snrDb.join(",")}`,
       `frames=${frames.join(",")}`,
     ].join(" "), false);
   }
