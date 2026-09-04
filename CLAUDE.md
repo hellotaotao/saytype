@@ -396,6 +396,54 @@ So the limitation is **macOS-only**:
   machines, and Linux recording is blocked on WebKitGTK `getUserMedia` — so they aren't live
   targets yet.)
 
+### A fresh WKWebView capture stream is attenuated ~30 dB for its first 3.0 s (measured 2026-09-04)
+
+**One capture stream is kept open for the whole process** (`acquireCaptureStream` in
+`input-prompt.js`); every recording attaches to it rather than calling `getUserMedia`
+itself. This is not an optimization — a *fresh* WKWebView stream hands back audio about
+30 dB down for exactly its first 3.0 seconds, so acquiring one per recording made every
+dictation open with three near-silent seconds.
+
+Measured on an M1 MacBook Air's built-in mic with **no speech at all** — per-500ms RMS of
+the AudioWorklet's float samples:
+
+```
+env_db = -86,-89,-90,-87,-91,-91, │ -52,-49,-47,-53,-47,-50,…
+         └──── 0 – 3.0 s ────────┘ └──── 3.0 s onward ───────┘
+```
+
+It is none of the things it resembles. It survives a 531 ms Qwen prewarm as readily as a
+3105 ms one; the analyser loop ticks a uniform 7–8 times per 500 ms bucket throughout, so
+nothing stalls; and forcing the track to 48 kHz (removing WebKit's resampler) does not move
+it. `ffmpeg` on the same microphone records a flat −56 dBFS from t=0, so this is **WebKit's
+capture path, not the device**. Not reproduced on Windows (WebView2 = Chromium) or on the
+Mac mini's USB mic — likely device-class dependent, unverified.
+
+**Why this was missed for three months.** The 2026-06-19 investigation that removed the
+warm-keep (`3eeec04`, shipped in v1.3.0) measured getUserMedia *call latency* — ~150 ms
+cold, 18–28 ms settled — concluded the cold-start cost was ~150 ms, and traded warm-keep
+away for a cleaner mic indicator. Latency was the wrong quantity: the call returns fast and
+hands back a live track that is merely quiet. **When judging capture health, measure the
+signal level over time, not how quickly the promise resolves.** The `audio-envelope` probe
+exists for exactly this.
+
+That commit also relied on `primeMicrophone()` burning the init cost at launch. It never
+ran: **the input-prompt page does not load until its window is first shown** (verified — no
+prime is logged in 35 s after a restart), so the first dictation of each app session still
+pays the 3.0 s. Fixing that needs the webview forced to load from Rust at startup.
+
+**Trade-off, and a cost not yet re-evaluated.** Holding a stream open keeps macOS's orange
+mic indicator lit for as long as SayType runs. Always-on warm-keep was *rejected* back in
+v1.0.97 on two grounds: that indicator, **and Bluetooth headsets being forced into HFP mode,
+degrading system-wide audio quality**. Only the indicator has been re-accepted; the HFP cost
+has never been discussed. If Bluetooth input ever matters, revisit — options are a long
+idle-release, a device-class check, or restoring the old `keepMicWarm` toggle.
+
+Related: the AudioContext must be explicitly `resume()`d — WebKit starts it `suspended` when
+no user gesture reaches the page, and the input-prompt window is raised by the Rust event
+tap, so one never arrives. A suspended context renders nothing, killing the AudioWorklet
+(transcript) and the analyser (waveform) together.
+
 ### Decision: do NOT add NS/AGC, and do NOT pre-denoise (researched 2026-06-22)
 
 This was previously framed as "NS/AGC are marginal, add if needed." **Research overturns that:
