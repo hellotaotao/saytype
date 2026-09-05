@@ -18,6 +18,8 @@
     "report-transcription-lifecycle": "report_transcription_lifecycle",
     "report-audio-probe": "report_audio_probe",
     "probe-native-capture": "probe_native_capture",
+    "start-native-capture": "start_native_capture",
+    "stop-native-capture": "stop_native_capture",
     "prewarm-qwen-worker": "prewarm_qwen_worker",
     "finish-qwen-worker-session": "finish_qwen_worker_session",
     "get-diagnostic-log": "get_diagnostic_log",
@@ -78,6 +80,12 @@
     "report-transcription-lifecycle": [["report"]],
     "report-audio-probe": [["report"]],
     "probe-native-capture": [["seconds"]],
+    "start-native-capture": [
+      ["sessionId", "session_id"],
+      ["microphone"],
+      ["onAudio", "on_audio"],
+    ],
+    "stop-native-capture": [["sessionId", "session_id"]],
     "prewarm-qwen-worker": [["sessionId", "session_id"]],
     "finish-qwen-worker-session": [["sessionId", "session_id"]],
     "cancel-transcription": [["sessionId", "session_id"]],
@@ -353,9 +361,21 @@
     };
   }
 
+  // Tauri Channels preserve ordering and carry raw Rust response bytes as an
+  // ArrayBuffer. Native microphone PCM uses this instead of JSON events, whose
+  // number-array encoding is roughly an order of magnitude larger.
+  function createChannel(handler) {
+    const api = getTauriApi();
+    if (!api?.core || typeof api.core.Channel !== "function") {
+      throw new Error("ipc-bridge: Tauri Channel API unavailable");
+    }
+    return new api.core.Channel(handler);
+  }
+
   window[BRIDGE_GLOBAL] = {
     invoke,
     on,
+    createChannel,
     get isTauri() {
       return !!getTauriApi() || !!getTauriInternals() || hasTauriRuntimeHint();
     },

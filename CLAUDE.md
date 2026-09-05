@@ -359,9 +359,16 @@ latent gap — they don't reach the renderer either.)
   tccutil reset Microphone com.tao.saytype
   ```
 
-### Audio capture: echo cancellation off, and the missing NS/AGC (macOS WebKit)
+### Audio capture: native on macOS, WebKit fallback on Windows/Linux
 
-Mic capture runs in the webview via `getUserMedia` (`AUDIO_CONSTRAINTS` in
+macOS capture runs per dictation in Rust through cpal/CoreAudio. It takes the
+configured input device, converts its first channel to mono, windowed-sinc
+resamples to 16 kHz, and streams ordered PCM16LE blocks to `input-prompt.js` over
+a binary Tauri Channel. The frontend keeps the existing Qwen chunking, Nemotron
+streaming, waveform, onset diagnostics, recovery, cancellation and insertion
+state machines. Whole-clip/cloud audio is a 16 kHz mono PCM16 WAV.
+
+Windows/Linux retain webview `getUserMedia` (`AUDIO_CONSTRAINTS` in
 `input-prompt.js`). **All processing constraints are pinned `false`**
 (`echoCancellation`/`noiseSuppression`/`autoGainControl`) — this is a deliberate fix for
 dropped first words on external/USB mics, not a style choice:
@@ -398,11 +405,15 @@ So the limitation is **macOS-only**:
 
 ### A fresh WKWebView capture stream is attenuated ~30 dB for its first 3.0 s (measured 2026-09-04)
 
-**One capture stream is kept open for the whole process** (`acquireCaptureStream` in
-`input-prompt.js`); every recording attaches to it rather than calling `getUserMedia`
-itself. This is not an optimization — a *fresh* WKWebView stream hands back audio about
-30 dB down for exactly its first 3.0 seconds, so acquiring one per recording made every
-dictation open with three near-silent seconds.
+**macOS now bypasses WKWebView capture entirely.** Every dictation opens a fresh
+native CoreAudio stream, which measured at full level from its first sample and
+closes on release. `primeMicrophone()` skips macOS, so SayType no longer holds an
+idle microphone stream (or its orange indicator / Bluetooth HFP side effect).
+`acquireCaptureStream()` remains the shared-stream fallback for Windows/Linux.
+
+The reason for that platform split is that a *fresh* WKWebView stream hands back
+audio about 30 dB down for exactly its first 3.0 seconds, so the old per-recording
+WebKit path made every dictation open with three near-silent seconds.
 
 Measured on an M1 MacBook Air's built-in mic with **no speech at all** — per-500ms RMS of
 the AudioWorklet's float samples:
@@ -429,15 +440,8 @@ exists for exactly this.
 
 That commit also relied on `primeMicrophone()` burning the init cost at launch. It never
 ran: **the input-prompt page does not load until its window is first shown** (verified — no
-prime is logged in 35 s after a restart), so the first dictation of each app session still
-pays the 3.0 s. Fixing that needs the webview forced to load from Rust at startup.
-
-**Trade-off, and a cost not yet re-evaluated.** Holding a stream open keeps macOS's orange
-mic indicator lit for as long as SayType runs. Always-on warm-keep was *rejected* back in
-v1.0.97 on two grounds: that indicator, **and Bluetooth headsets being forced into HFP mode,
-degrading system-wide audio quality**. Only the indicator has been re-accepted; the HFP cost
-has never been discussed. If Bluetooth input ever matters, revisit — options are a long
-idle-release, a device-class check, or restoring the old `keepMicWarm` toggle.
+prime is logged in 35 s after a restart). Native capture makes that lazy-load detail moot
+on macOS; it is retained only as historical context for the regression.
 
 **A note on `AudioContext.state`, because it looks like a second bug and is not one.**
 Every recording logs `ctx_state_before=suspended`: this window is raised by the Rust event
@@ -475,7 +479,12 @@ RNNoise NS in a frontend AudioWorklet (`@jitsi/rnnoise-wasm`, or Rust `nnnoisele
 stack (`webrtc-audio-processing`, C++ build) and native-Rust VoiceProcessingIO capture are heavier and
 only worth it if that fails. Default, evidence-backed stance: **don't**.
 
-### Recording format & bitrate (measured 2026-06-22)
+### Recording format & bitrate
+
+Native macOS capture produces **PCM16 WAV, 16 kHz, mono, 256 kbps / 32 KB/s**. This
+is about 65% larger than the previous WKWebView AAC payload, but it is already the
+format local ASR consumes and avoids an extra codec dependency. Windows/Linux
+retain their existing `MediaRecorder` format.
 
 WKWebView records **AAC-LC, 48 kHz, stereo, ~155 kbps** (a ~10 s clip ≈ 200 KB). **WebKit's
 MediaRecorder ignores `audioBitsPerSecond`** — requesting 32 kbps still produced ~155 kbps, so upload

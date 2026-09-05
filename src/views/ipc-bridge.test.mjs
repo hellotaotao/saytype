@@ -7,14 +7,21 @@ const source = await readFile(new URL("./ipc-bridge.js", import.meta.url), "utf8
 
 function loadBridge() {
   const calls = [];
+  const channels = [];
+  class Channel {
+    constructor(handler) {
+      this.onmessage = handler;
+      channels.push(this);
+    }
+  }
   const window = {
     __TAURI__: {
-      core: { invoke: async (...args) => { calls.push(args); return "saved-id"; } },
+      core: { Channel, invoke: async (...args) => { calls.push(args); return "saved-id"; } },
       event: { listen: async () => () => {} },
     },
   };
   vm.runInNewContext(source, { window });
-  return { bridge: window.__SAYTYPE_IPC__, calls };
+  return { bridge: window.__SAYTYPE_IPC__, calls, channels };
 }
 
 test("recovered text uses the strict recovery payload command", async () => {
@@ -43,4 +50,24 @@ test("legacy two-argument pending audio does not send a recovery id header", asy
   assert.equal(calls[0][1], audio);
   assert.equal(calls[0][2].headers["mime-type"], "audio/mp4");
   assert.equal(Object.hasOwn(calls[0][2].headers, "recovery-id"), false);
+});
+
+test("native capture passes a Tauri binary channel and session-scoped stop", async () => {
+  const { bridge, calls, channels } = loadBridge();
+  const received = [];
+  const channel = bridge.createChannel((message) => received.push(message));
+  await bridge.invoke("start-native-capture", 7, "Built-in Microphone", channel);
+  await bridge.invoke("stop-native-capture", 7);
+
+  assert.equal(channels.length, 1);
+  channel.onmessage("pcm");
+  assert.deepEqual(received, ["pcm"]);
+  assert.equal(calls[0][0], "start_native_capture");
+  assert.equal(calls[0][1].sessionId, 7);
+  assert.equal(calls[0][1].session_id, 7);
+  assert.equal(calls[0][1].microphone, "Built-in Microphone");
+  assert.equal(calls[0][1].onAudio, channel);
+  assert.equal(calls[0][1].on_audio, channel);
+  assert.equal(calls[1][0], "stop_native_capture");
+  assert.equal(calls[1][1].sessionId, 7);
 });

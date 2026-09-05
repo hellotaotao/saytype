@@ -35,6 +35,7 @@ pub fn run() {
       tray::show_main_window(app);
     }))
     .manage(state::AppState::default())
+    .manage(native_capture::NativeCaptureState::default())
     .on_page_load(|webview, payload| {
       let label = webview.label().to_string();
       let event = payload.event();
@@ -195,6 +196,8 @@ pub fn run() {
       commands::report_recording_startup,
       commands::report_audio_probe,
       commands::probe_native_capture,
+      commands::start_native_capture,
+      commands::stop_native_capture,
       commands::report_transcription_lifecycle,
       commands::prewarm_qwen_worker,
       commands::finish_qwen_worker_session,

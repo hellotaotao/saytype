@@ -44,9 +44,13 @@ function loadVoiceInputPrompt(options = {}) {
         if (command === "report-transcription-lifecycle" && !options.captureLifecycle) {
           return Promise.resolve(null);
         }
+        if (command === "report-audio-probe" && !options.captureAudioProbe) {
+          return Promise.resolve(null);
+        }
         return options.invoke ? options.invoke(command, ...args) : Promise.resolve(null);
       },
       on: options.on || (() => {}),
+      createChannel: options.createChannel || ((handler) => ({ onmessage: handler })),
     },
     SayTypeI18n: {
       initI18n() {},
@@ -439,6 +443,368 @@ test("recording startup reports native, delivery, microphone, and first-paint ti
     },
   ]]);
   assert.equal(prompt.cancelInProgress, false);
+});
+
+test("macOS records through native PCM without opening WebKit capture", async () => {
+  const calls = [];
+  let channelHandler = null;
+  let webkitOpens = 0;
+  let finalized = 0;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      calls.push([command, ...args]);
+      if (command === "start-native-capture") {
+        return Promise.resolve({
+          device: "Built-in Microphone",
+          inputRate: 48000,
+          outputRate: 16000,
+          channels: 1,
+          sampleFormat: "f32",
+        });
+      }
+      if (command === "stop-native-capture") {
+        channelHandler({ event: "stopped", stats: { outputSamples: 4 } });
+        return Promise.resolve({ outputSamples: 4 });
+      }
+      return Promise.resolve(null);
+    },
+    createChannel(handler) {
+      channelHandler = handler;
+      return { channel: true };
+    },
+    globals: {
+      navigator: {
+        mediaDevices: {
+          async getUserMedia() {
+            webkitOpens += 1;
+            return {};
+          },
+        },
+      },
+    },
+    requestAnimationFrame(callback) {
+      callback(1200);
+      return 1;
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    osName: "macos",
+    currentMicrophone: "default",
+    pageStartedAt: 0,
+    translateMode: false,
+    stopRequested: false,
+    cancelInProgress: false,
+    activeRecordingSession: null,
+    mediaStream: null,
+    mediaRecorder: null,
+    audioChunks: [],
+    promptElement: { classList: { add() {} } },
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    clearTranscriptionPreview() {},
+    updateModelBadge() {},
+    hasUsableApiKey: async () => true,
+    startWaveAnimation() {},
+    stopWaveAnimation() {},
+    startRecordingTimer() {},
+    stopRecordingTimer() {},
+    cleanup() {},
+    scheduleHidePrompt() {},
+    finalizeRecordingSession() {
+      finalized += 1;
+      return Promise.resolve();
+    },
+  });
+
+  await prompt.startRecording({ nativeMs: 0, eventDeliveryMs: 0 });
+  assert.equal(prompt.isRecording, true);
+  assert.equal(webkitOpens, 0);
+  assert.equal(calls.some(([command]) => command === "start-native-capture"), true);
+
+  channelHandler(new Uint8Array([0x00, 0x00, 0xff, 0x7f, 0x00, 0x80, 0x34, 0x12]).buffer);
+  const session = prompt.activeRecordingSession;
+  prompt.stopRecording();
+  await session.nativeCapture.stopPromise;
+  await Promise.resolve();
+
+  assert.equal(finalized, 1);
+  assert.equal(session.chunks.length, 1);
+  assert.equal(session.mimeType, "audio/wav");
+  const wav = new Uint8Array(await session.chunks[0].arrayBuffer());
+  assert.equal(new TextDecoder().decode(wav.subarray(0, 4)), "RIFF");
+  assert.equal(new DataView(wav.buffer).getUint32(24, true), 16000);
+  assert.deepEqual(Array.from(wav.subarray(44)), [0x00, 0x00, 0xff, 0x7f, 0x00, 0x80, 0x34, 0x12]);
+});
+
+test("a new native recording waits for the previous capture to release the device", async () => {
+  // hotkey.rs only ARMS a stop deadline on release; the stop is dispatched
+  // ~250 ms later, so a re-press just past the debounce races that stop. Rust
+  // refuses a second stream while the first is shutting down, and on macOS the
+  // WebKit fallback is cold, so losing this ordering costs 3.0 s of the new
+  // dictation. Start must wait for the previous release, not rely on timing.
+  const calls = [];
+  let releasePrevious;
+  const previousStop = new Promise((resolve) => {
+    releasePrevious = resolve;
+  });
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      calls.push(command);
+      if (command === "start-native-capture") {
+        return Promise.resolve({
+          device: "Built-in Microphone",
+          inputRate: 48000,
+          outputRate: 16000,
+          channels: 1,
+          sampleFormat: "f32",
+        });
+      }
+      return Promise.resolve(null);
+    },
+    createChannel() {
+      return {};
+    },
+    requestAnimationFrame(callback) {
+      callback(1200);
+      return 1;
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    osName: "macos",
+    currentMicrophone: "default",
+    pageStartedAt: 0,
+    translateMode: false,
+    stopRequested: false,
+    cancelInProgress: false,
+    activeRecordingSession: null,
+    audioChunks: [],
+    promptElement: { classList: { add() {}, remove() {} } },
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    clearTranscriptionPreview() {},
+    updateModelBadge() {},
+    hasUsableApiKey: async () => true,
+    startWaveAnimation() {},
+    stopWaveAnimation() {},
+    startRecordingTimer() {},
+    stopRecordingTimer() {},
+    cleanup() {},
+    scheduleHidePrompt() {},
+    finalizeRecordingSession: () => Promise.resolve(),
+  });
+  // A previous capture is still shutting down.
+  prompt.nativeCapture = { stopPromise: previousStop };
+
+  const starting = prompt.startRecording({ nativeMs: 0, eventDeliveryMs: 0 });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(
+    calls.includes("start-native-capture"),
+    false,
+    "claimed the device before the previous capture released it"
+  );
+
+  releasePrevious();
+  await starting;
+  assert.equal(calls.includes("start-native-capture"), true);
+  assert.equal(prompt.isRecording, true);
+});
+
+test("a macOS native capture failure falls back to WebKit instead of losing the dictation", async () => {
+  // Native capture is verified on exactly one Mac, but it is the path every Mac
+  // takes. A machine where CoreAudio cannot open must still record — degraded by
+  // the 3.0 s WKWebView attenuation, not dead.
+  const calls = [];
+  let webkitOpens = 0;
+  const track = { readyState: "live", stop() {}, getSettings: () => ({}) };
+  const stream = { getAudioTracks: () => [track], getTracks: () => [track] };
+  class FakeAudioContext {
+    constructor() {
+      this.state = "running";
+      this.sampleRate = 48000;
+      this.destination = {};
+    }
+    createMediaStreamSource() {
+      return { connect() {} };
+    }
+    createAnalyser() {
+      return { fftSize: 0 };
+    }
+    resume() {
+      return Promise.resolve();
+    }
+  }
+  class FakeMediaRecorder {
+    static isTypeSupported() {
+      return true;
+    }
+    constructor() {
+      this.state = "inactive";
+    }
+    start() {
+      this.state = "recording";
+    }
+  }
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    invoke(command, ...args) {
+      calls.push([command, ...args]);
+      if (command === "start-native-capture") {
+        return Promise.reject(new Error("no default input device"));
+      }
+      return Promise.resolve(null);
+    },
+    createChannel() {
+      return {};
+    },
+    requestAnimationFrame(callback) {
+      callback(1200);
+      return 1;
+    },
+    window: { AudioContext: FakeAudioContext },
+    globals: {
+      MediaRecorder: FakeMediaRecorder,
+      navigator: {
+        mediaDevices: {
+          async getUserMedia() {
+            webkitOpens += 1;
+            return stream;
+          },
+        },
+      },
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    osName: "macos",
+    currentMicrophone: "default",
+    pageStartedAt: 0,
+    translateMode: false,
+    stopRequested: false,
+    cancelInProgress: false,
+    activeRecordingSession: null,
+    mediaStream: null,
+    mediaRecorder: null,
+    audioChunks: [],
+    promptElement: { classList: { add() {}, remove() {} } },
+    clearHidePromptTimer() {},
+    clearActualHideTimer() {},
+    clearInsertFailedUi() {},
+    clearTranscriptionPreview() {},
+    updateModelBadge() {},
+    hasUsableApiKey: async () => true,
+    startWaveAnimation() {},
+    stopWaveAnimation() {},
+    startRecordingTimer() {},
+    stopRecordingTimer() {},
+    cleanup() {},
+    scheduleHidePrompt() {},
+    finalizeRecordingSession: () => Promise.resolve(),
+  });
+
+  await prompt.startRecording({ nativeMs: 0, eventDeliveryMs: 0 });
+
+  assert.equal(calls.some(([command]) => command === "start-native-capture"), true);
+  // The dictation survives on the WebKit path.
+  assert.equal(webkitOpens, 1);
+  assert.equal(prompt.isRecording, true);
+  assert.equal(prompt.activeRecordingSession.nativeCapture, undefined);
+  // A start whose response was lost can still leave a live session in Rust, so
+  // stop is issued even though the start reported failure.
+  assert.equal(calls.some(([command]) => command === "stop-native-capture"), true);
+});
+
+test("native PCM drives Qwen chunking at 16 kHz and retains a recovery WAV", async () => {
+  let channelHandler;
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    window: { SayTypeChunk: chunkDecision },
+    createChannel(handler) {
+      channelHandler = handler;
+      return {};
+    },
+    invoke(command) {
+      if (command === "stop-native-capture") {
+        channelHandler({ event: "stopped" });
+      }
+      return Promise.resolve({});
+    },
+  });
+  let closedChunk = null;
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    osName: "macos",
+    currentProvider: "local",
+    currentModel: "qwen3-asr-0.6b-q8_0",
+    translateMode: false,
+    enqueueChunkDecode(_chunked, pcm) {
+      closedChunk = pcm;
+    },
+  });
+  const session = {
+    id: 11,
+    chunks: [],
+    mimeType: "audio/wav",
+    translateMode: false,
+    provider: "local",
+    onsetProbe: null,
+    audioContext: null,
+  };
+  prompt.createNativeCapture(session);
+  await prompt.setupNativeConsumers(session);
+  channelHandler(new Uint8Array([0x00, 0x40, 0x00, 0xc0]).buffer);
+  await prompt.finishNativeCapture(session);
+
+  assert.equal(session.chunked.sampleRate, 16000);
+  assert.equal(closedChunk.length, 2);
+  assert.ok(Math.abs(closedChunk[0] - 0.5) < 0.0001);
+  assert.ok(Math.abs(closedChunk[1] + 0.5) < 0.0001);
+  assert.equal(session.chunks.length, 1);
+  assert.equal(session.chunks[0].type, "audio/wav");
+});
+
+test("native PCM feeds Nemotron's existing binary upload queue", async () => {
+  let channelHandler;
+  const calls = [];
+  const VoiceInputPrompt = loadVoiceInputPrompt({
+    createChannel(handler) {
+      channelHandler = handler;
+      return {};
+    },
+    invoke(command, ...args) {
+      calls.push([command, ...args]);
+      if (command === "stop-native-capture") {
+        channelHandler({ event: "stopped" });
+      }
+      return Promise.resolve(command === "finish-live-transcription" ? "done" : {});
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    osName: "macos",
+    currentProvider: "local",
+    currentModel: "nemotron-3.5-asr-streaming-0.6b-q8_0",
+    currentLanguage: "auto",
+    translateMode: false,
+  });
+  const session = {
+    id: 12,
+    chunks: [],
+    mimeType: "audio/wav",
+    translateMode: false,
+    provider: "local",
+    onsetProbe: null,
+    audioContext: null,
+  };
+  prompt.createNativeCapture(session);
+  await prompt.setupNativeConsumers(session);
+  const pcm = new Uint8Array([1, 2, 3, 4]);
+  channelHandler(pcm.buffer);
+  await prompt.finishNativeCapture(session);
+  await session.live.uploadTail;
+
+  const started = calls.find(([command]) => command === "start-live-transcription");
+  const pushed = calls.find(([command]) => command === "push-live-audio");
+  assert.equal(started[2], 16000);
+  assert.deepEqual(Array.from(pushed[1]), Array.from(pcm));
+  assert.equal(pushed[2], 12);
 });
 
 test("Qwen prewarm eligibility requires an active non-translation recording", async () => {
@@ -2091,7 +2457,7 @@ test("cancelling pending microphone acquisition does not hide older recovery tex
   microphone.resolve();
   await starting;
   await settlePromises();
-  assert.equal(h.streams[1].stops, 1, "the late microphone stream is released");
+  assert.equal(h.streams[1].stops, 0, "the shared warm stream remains available");
   assert.equal(h.hides, hidesBeforeStartup, "older recovery must not disappear with the cancelled startup");
   assert.deepEqual(h.recovered, []);
   assert.equal(h.prompt.cancelInProgress, false);

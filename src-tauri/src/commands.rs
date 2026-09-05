@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
@@ -394,6 +395,65 @@ pub async fn probe_native_capture(seconds: f64) -> Result<String, String> {
       log::warn!(target: "saytype_lifecycle", "native-capture failed: {message}");
       message
     })
+}
+
+/// Start one per-dictation CoreAudio stream on macOS. PCM16LE blocks are sent
+/// over a raw Tauri channel so the renderer receives ArrayBuffers rather than
+/// JSON number arrays. The command resolves only after the device is live.
+#[tauri::command]
+pub async fn start_native_capture(
+  window: tauri::WebviewWindow,
+  state: State<'_, crate::native_capture::NativeCaptureState>,
+  session_id: u64,
+  microphone: String,
+  on_audio: Channel<InvokeResponseBody>,
+) -> Result<crate::native_capture::NativeCaptureInfo, String> {
+  if window.label() != "input-prompt" {
+    return Err("native capture is only available to input-prompt".into());
+  }
+  log::info!(
+    target: "saytype_lifecycle",
+    "native-capture start session_id={session_id}"
+  );
+  let capture_state = state.inner().clone();
+  tokio::task::spawn_blocking(move || {
+    crate::native_capture::start_capture(&capture_state, session_id, microphone, on_audio)
+  })
+  .await
+  .map_err(stringify_error)?
+  .map_err(|error| stringify_error(error))
+}
+
+/// Stop exactly the requested recording and wait until its final PCM block has
+/// been queued on the channel. Session matching prevents a stale frontend stop
+/// from tearing down a newer recording.
+#[tauri::command]
+pub async fn stop_native_capture(
+  window: tauri::WebviewWindow,
+  state: State<'_, crate::native_capture::NativeCaptureState>,
+  session_id: u64,
+) -> Result<crate::native_capture::NativeCaptureStats, String> {
+  if window.label() != "input-prompt" {
+    return Err("native capture is only available to input-prompt".into());
+  }
+  let capture_state = state.inner().clone();
+  let stats = tokio::task::spawn_blocking(move || {
+    crate::native_capture::stop_capture(&capture_state, session_id)
+  })
+  .await
+  .map_err(stringify_error)?
+  .map_err(|error| stringify_error(error))?;
+  log::info!(
+    target: "saytype_lifecycle",
+    "native-capture stopped session_id={} input_samples={} output_samples={} peak={:.4} clipped={} channel_failures={}",
+    stats.session_id,
+    stats.input_samples,
+    stats.output_samples,
+    stats.peak,
+    stats.clipped_samples,
+    stats.channel_send_failures
+  );
+  Ok(stats)
 }
 
 fn qwen_prewarm_eligible(config: &AppConfig) -> bool {

@@ -1,9 +1,19 @@
 # Handover: macOS native audio capture (WKWebView 3.0 s attenuation)
 
 **Date:** 2026-09-05
-**State:** one real bug found and mitigated; a native-capture replacement is proven
-in a spike but not wired in. Commits `1a49a8a`, `22d8942`, `f7c879f`, `9c58b57` — none pushed.
+**Original handover state:** one real bug found and mitigated; a native-capture
+replacement was proven in a spike but not wired in. Commits `1a49a8a`, `22d8942`,
+`f7c879f`, `9c58b57`.
 **Audience:** whoever picks this up next.
+
+**Continuation update (2026-09-05):** the native path is now wired in the working
+tree. All Macs use a fresh per-dictation cpal/CoreAudio stream; Windows and Linux
+retain the WebKit path. Rust resamples to 16 kHz mono and sends ordered PCM16LE
+blocks through a binary Tauri Channel. The existing frontend Qwen chunking,
+Nemotron streaming, waveform, onset diagnostics, recovery, cancellation and FIFO
+insertion state machines consume those blocks; whole-clip/cloud audio is wrapped
+as WAV. The macOS launch prime is disabled, so the idle orange microphone indicator
+and Bluetooth HFP side effect are removed. The implementation is not committed yet.
 
 ---
 
@@ -166,13 +176,11 @@ committed `src-tauri/src/native_capture.rs` supersedes it and is reachable via t
 
 Also, untracked and **not** committed (gitignored): `scripts/sign.env` — see §7.
 
-**Current mitigation and its cost.** Holding one stream open removes the
-attenuation for every recording after the first, at the price of macOS keeping the
-orange microphone indicator lit for as long as SayType runs. The user accepted
-that. **They were not asked about the other cost**: v1.0.97 rejected always-on
-warm-keep partly because it forces Bluetooth headsets into HFP mode, degrading
-system-wide audio quality. That has never been re-evaluated. Going native (§6)
-removes both costs, because native capture needs no warm stream.
+**Superseded mitigation and its cost.** Holding one WebKit stream open removed the
+attenuation after the first recording, at the price of macOS keeping the orange
+microphone indicator lit and potentially forcing Bluetooth headsets into HFP mode.
+The implemented native path (§6) removes both costs because it opens CoreAudio only
+while recording. The shared WebKit stream remains solely as the Windows/Linux path.
 
 ---
 
@@ -204,18 +212,18 @@ the first dictation per launch was affected, which is rare enough not to registe
 
 ---
 
-## 6. Proposed next step — **treat as a hypothesis**
+## 6. Implemented continuation (originally a hypothesis)
 
 The user's decision was: **go native on macOS, all devices, no per-device
 detection** (a Settings toggle is acceptable; a self-calibrating device probe was
 judged over-engineering for now). Windows and Linux keep the existing WebKit path.
 
-The agreed shape is **"PCM back to the frontend"**: Rust captures, and the frontend
-keeps chunking, VAD, the waveform and the recording state machine exactly as they
-are. The seam is clean because `setupChunkedLocal`'s `node.port.onmessage` already
-consumes Float32 blocks — it becomes an IPC handler and little else changes.
+The implemented shape is **"PCM back to the frontend"**: Rust captures, while the
+frontend keeps chunking, the waveform and the recording state machine. Native
+blocks are PCM16LE at 16 kHz; the frontend converts a copy to Float32 only for the
+existing Qwen chunk decision path and retains the original PCM16 for recovery/WAV.
 
-Sketch, in dependency order:
+Implemented dependency order:
 
 1. Rust: cpal capture → resample to 16 kHz mono → stream PCM16 blocks to the
    frontend. **Use a Tauri `Channel` (binary), not JSON events** — 48 kHz f32 as
@@ -224,24 +232,41 @@ Sketch, in dependency order:
 2. Frontend: feed those blocks to `SayTypeChunk` as today. `chunked.sampleRate`
    becomes 16000; `decideCut` is already parameterised by rate.
 3. Waveform: compute from the same PCM; `AnalyserNode` can go away entirely.
-4. **The cloud path needs redesign.** It currently gets AAC from `MediaRecorder`.
-   Native capture has no MediaRecorder, so cloud uploads become WAV (~+60% bytes,
-   probably fine) — but `adoptLateRecorderAudio` recovery also leans on the
-   single-`dataavailable` MediaRecorder contract. **This is the part most likely
-   to bite; it was not in the original "just swap capture" framing.**
-5. Device selection (`config.microphone`) and hot-plug must be handled explicitly;
-   WebKit did this for free.
+4. Cloud/whole-clip uploads and recovery use a PCM16 WAV assembled from the same
+   retained native blocks. The WebKit-only late-`MediaRecorder` recovery path is
+   unchanged for Windows/Linux.
+5. Device selection uses the exact configured cpal device name, or the current
+   default for `default`. Stream errors are sent to the frontend and stop the
+   matching session; automatic mid-recording hot-plug migration is not attempted.
 6. Platform branch: macOS native, Windows/Linux unchanged.
 
-**Things worth challenging before you build this:**
+Validation completed in the continuation:
+
+- `cargo check` passes.
+- All 6 native-capture unit tests pass, including streaming-vs-batch resampling,
+  exact 16 kHz passthrough and PCM16 byte order.
+- All 124 frontend tests pass, including native Qwen, Nemotron, WAV recovery and
+  binary Channel argument coverage.
+- The Rust library suite passes 152 tests with 3 intentionally ignored tests when
+  the existing headless macOS clipboard round-trip is filtered out. The unfiltered
+  suite's only failure is that sandboxed `pbcopy` test, unrelated to capture.
+- `node --check` and `git diff --check` pass.
+
+One manual gate remains: hold Ctrl+Shift in the running app, speak immediately,
+and verify first-word capture, live waveform, final insertion, orange-indicator
+shutdown and (if available) Bluetooth playback recovery. The available UI
+automation cannot hold a modifier-only shortcut, so this was not faked into a
+false end-to-end pass.
+
+**Architectural follow-ups worth challenging after real-device validation:**
 
 - Is the frontend the right home for chunking at all, now that PCM originates in
   Rust? Shipping it back across IPC only to have the frontend hand chunks back for
   decode is a round trip. Moving `SayTypeChunk` into Rust is more work but may be
   the better structure. The "回传" decision was made to minimise disruption, not
   because it is architecturally superior.
-- Is `cpal` the right dependency, or is a thin CoreAudio/AudioUnit binding
-  preferable given only macOS is targeted?
+- Is `cpal` still the right dependency long-term, or would a thin
+  CoreAudio/AudioUnit binding buy something measurable?
 - Does the 3.0 s window exist on other Macs / other input devices? Everything here
   is one machine, one built-in mic. **The Mac mini reportedly does not show it**,
   and nobody has checked why. If it is device-class dependent, a smaller fix might
@@ -264,9 +289,9 @@ lossless linear scaling, not the kind of pre-processing CLAUDE.md argues against
 (that section is about denoising/AGC as enhancement). **Going native does not fix
 this** — cpal showed `peak=1.38` on the same source, so it is input gain, not API.
 
-**First dictation per app launch still pays the 3.0 s**, because the input-prompt
-page loads lazily (§5). Fixing it needs the webview forced to load from Rust at
-startup. Native capture makes this moot.
+**The lazy input-prompt launch prime is now moot on macOS.** Native capture has no
+3.0 s attenuation window and `primeMicrophone()` explicitly skips macOS. Windows
+and Linux retain their existing shared WebKit stream behavior.
 
 **Local signing.** `scripts/sign.env` did not exist on this machine, so every local
 build was ad-hoc signed with a fresh cdhash, which silently revoked the app's

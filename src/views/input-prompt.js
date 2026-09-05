@@ -176,6 +176,46 @@ function pushOnsetBlock(probe, samples, audioContext) {
   }
 }
 
+function pcm16LeToFloat(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const samples = new Float32Array(Math.floor(bytes.byteLength / 2));
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = view.getInt16(index * 2, true);
+    samples[index] = value < 0 ? value / 32768 : value / 32767;
+  }
+  return samples;
+}
+
+function encodePcm16LeWav(blocks, sampleCount, sampleRate) {
+  const dataBytes = sampleCount * 2;
+  const wav = new Uint8Array(44 + dataBytes);
+  const view = new DataView(wav.buffer);
+  const ascii = (offset, text) => {
+    for (let index = 0; index < text.length; index += 1) {
+      view.setUint8(offset + index, text.charCodeAt(index));
+    }
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, dataBytes, true);
+  let offset = 44;
+  for (const block of blocks) {
+    wav.set(block, offset);
+    offset += block.byteLength;
+  }
+  return wav;
+}
+
 const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
 let currentThemePref = "elegant";
 
@@ -293,6 +333,7 @@ class VoiceInputPrompt {
     this.audioChunks = [];
     this.analyser = null;
     this.dataArray = null;
+    this.nativeCapture = null;
     this.animationId = null;
     this.starting = false;
     this.stopRequested = false;
@@ -333,11 +374,12 @@ class VoiceInputPrompt {
     this.currentProvider = null;
     this.currentModel = "";
     this.currentLanguage = "auto";
+    this.currentMicrophone = "default";
     this._failedText = "";
 
     this.createWaveBars();
     this.setupEventListeners();
-    this.syncShortcutFromSettings();
+    this.settingsReady = this.syncShortcutFromSettings();
     this.primeMicrophone();
     this.primeVad();
   }
@@ -392,7 +434,9 @@ class VoiceInputPrompt {
     setTimeout(() => this.prewarmQwenWorker(recordingSession), delayMs);
   }
 
-  // One capture stream for the whole process, shared by every recording.
+  // WebKit fallback (Windows/Linux): one capture stream for the whole process,
+  // shared by every recording. macOS bypasses this path and opens a fresh
+  // native CoreAudio stream only while the hotkey is held.
   //
   // A FRESH WKWebView capture stream delivers ~30 dB of attenuation for exactly
   // its first 3.0 s. Measured with no speech at all: env_db sat at -80 for six
@@ -407,10 +451,8 @@ class VoiceInputPrompt {
   // dictation open with three near-silent seconds — loud speech survived it,
   // quiet speech would not. Keeping one stream alive removes it entirely.
   //
-  // The trade-off is deliberate: macOS keeps its orange microphone indicator lit
-  // for as long as a stream is open, which per-recording acquisition avoided.
-  // Nothing is captured between dictations — MediaRecorder and the AudioWorklet
-  // are still created and destroyed per recording — but the dot stays on.
+  // Keeping this fallback preserves the existing Windows/Linux behavior without
+  // coupling those platforms to the macOS-only native implementation.
   async acquireCaptureStream() {
     const existing = this.sharedStream?.getAudioTracks?.()[0];
     if (existing && existing.readyState === "live") {
@@ -445,6 +487,13 @@ class VoiceInputPrompt {
   // what puts the 3.0 s attenuation window behind us before the first hotkey
   // rather than inside it.
   async primeMicrophone(attempt = 0) {
+    await this.settingsReady;
+    // macOS records through a fresh CoreAudio stream per dictation. Priming a
+    // WebKit stream there would bring back the always-on orange indicator and
+    // Bluetooth HFP side effect that native capture is meant to remove.
+    if (this.osName === "macos") {
+      return;
+    }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return;
     }
@@ -621,7 +670,13 @@ class VoiceInputPrompt {
 
     // Add window beforeunload event to ensure cleanup
     window.addEventListener("beforeunload", () => {
+      const native = this.activeRecordingSession?.nativeCapture;
+      if (native && !native.stopped && !native.stopPromise) {
+        native.accepting = false;
+        void ipc.invoke("stop-native-capture", native.sessionId).catch(() => {});
+      }
       this.cleanup();
+      this.releaseCaptureStream();
     });
 
     // Insertion-failure "Copy" affordance — explicit click only (no auto copy).
@@ -640,6 +695,7 @@ class VoiceInputPrompt {
       this.currentProvider = settings.provider || "openai";
       this.currentModel = settings.model || "";
       this.currentLanguage = settings.language || "auto";
+      this.currentMicrophone = settings.microphone || "default";
       this.updateShortcutHint(
         settings.shortcut || DEFAULT_RECORD_SHORTCUT,
         settings.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT
@@ -996,8 +1052,17 @@ class VoiceInputPrompt {
     }
     this.reportAudioProbe(recordingSession, "envelope", [
       `bucket_ms=${PROBE_BUCKET_MS}`,
-      `clipped=${probe.clipped}`,
-      `clipped_pct=${probe.samples ? (probe.clipped / probe.samples * 100).toFixed(2) : "0"}`,
+      // Native capture clamps in Rust before quantising to PCM16, so by the
+      // time these samples reach the renderer nothing can exceed full scale and
+      // this counter would always read 0 — next to the native-capture line's
+      // real count, that is worse than useless. The authoritative numbers are
+      // `peak` and `clipped` on `native-capture stopped`.
+      ...(recordingSession.nativeCapture
+        ? ["clipped=see-native-capture-line"]
+        : [
+          `clipped=${probe.clipped}`,
+          `clipped_pct=${probe.samples ? (probe.clipped / probe.samples * 100).toFixed(2) : "0"}`,
+        ]),
       `env_db=${envDb.join(",")}`,
       `snr_db=${snrDb.join(",")}`,
       `frames=${frames.join(",")}`,
@@ -1565,22 +1630,13 @@ class VoiceInputPrompt {
     );
   }
 
-  async setupNemotronLive(recordingSession, source) {
-    if (!this.shouldUseNemotronLive(recordingSession.translateMode)) {
-      return;
-    }
-    if (!this.audioContext?.audioWorklet) {
-      throw new Error("AudioWorklet is required for Nemotron live transcription");
-    }
-
-    await this.audioContext.audioWorklet.addModule("live-pcm-worklet.js");
+  async beginNemotronLive(recordingSession, sampleRate) {
     await ipc.invoke(
       "start-live-transcription",
       recordingSession.id,
-      Math.round(this.audioContext.sampleRate),
+      Math.round(sampleRate),
       this.currentLanguage || "auto"
     );
-
     const live = {
       sessionId: recordingSession.id,
       node: null,
@@ -1592,6 +1648,19 @@ class VoiceInputPrompt {
       stopped: false,
     };
     recordingSession.live = live;
+    return live;
+  }
+
+  async setupNemotronLive(recordingSession, source) {
+    if (!this.shouldUseNemotronLive(recordingSession.translateMode)) {
+      return;
+    }
+    if (!this.audioContext?.audioWorklet) {
+      throw new Error("AudioWorklet is required for Nemotron live transcription");
+    }
+
+    await this.audioContext.audioWorklet.addModule("live-pcm-worklet.js");
+    const live = await this.beginNemotronLive(recordingSession, this.audioContext.sampleRate);
 
     const node = new AudioWorkletNode(this.audioContext, "saytype-pcm16-capture");
     const mutedOutput = this.audioContext.createGain();
@@ -1699,32 +1768,62 @@ class VoiceInputPrompt {
     );
   }
 
+  createChunkedSession(recordingSession, sampleRate) {
+    const chunked = {
+      sessionId: recordingSession.id,
+      sampleRate,
+      node: null,
+      mutedOutput: null,
+      blocks: [],
+      blockSamples: 0,
+      state: window.SayTypeChunk.createChunkState(),
+      nextChunkIndex: 0,
+      results: [],
+      failedChunks: 0,
+      queue: Promise.resolve(),
+      livePartial: null,
+      aborted: false,
+      stopped: false,
+      recordingSession,
+    };
+    recordingSession.chunked = chunked;
+    return chunked;
+  }
+
+  consumeChunkedSamples(recordingSession, samples) {
+    const chunked = recordingSession?.chunked;
+    if (!chunked || chunked.stopped || chunked.aborted || !samples.length) {
+      return;
+    }
+    pushOnsetBlock(recordingSession.onsetProbe, samples, recordingSession.audioContext);
+    chunked.blocks.push(samples);
+    chunked.blockSamples += samples.length;
+    window.SayTypeChunk.pushFrame(
+      chunked.state,
+      window.SayTypeChunk.frameRms(samples),
+      samples.length
+    );
+    const cut = window.SayTypeChunk.decideCut(chunked.state, chunked.sampleRate);
+    if (cut) {
+      this.closeChunk(chunked, cut.cutAtSample);
+    }
+  }
+
   async setupChunkedLocal(recordingSession, source) {
     if (!this.shouldUseChunkedLocal(recordingSession.translateMode)) {
       return;
     }
+    let chunked = null;
     try {
       if (!this.audioContext?.audioWorklet) {
         throw new Error("AudioWorklet is required for chunked local transcription");
       }
       await this.audioContext.audioWorklet.addModule("live-pcm-worklet.js");
 
-      const chunked = {
-        sessionId: recordingSession.id,
-        sampleRate: this.audioContext.sampleRate,
-        node: null,
-        mutedOutput: null,
-        blocks: [], // Float32Array capture blocks of the chunk being filled
-        blockSamples: 0,
-        state: window.SayTypeChunk.createChunkState(),
-        nextChunkIndex: 0,
-        results: [],
-        failedChunks: 0,
-        queue: Promise.resolve(),
-        livePartial: null,
-        aborted: false,
-        stopped: false,
-      };
+      chunked = this.createChunkedSession(
+        recordingSession,
+        this.audioContext.sampleRate
+      );
 
       // "f32" keeps the original float samples: each closed chunk is resampled
       // to 16 kHz through an OfflineAudioContext, so a round trip through Int16
@@ -1741,19 +1840,7 @@ class VoiceInputPrompt {
         if (chunked.stopped || chunked.aborted || !(event.data instanceof ArrayBuffer)) {
           return;
         }
-        const samples = new Float32Array(event.data);
-        pushOnsetBlock(recordingSession.onsetProbe, samples, this.audioContext);
-        chunked.blocks.push(samples);
-        chunked.blockSamples += samples.length;
-        window.SayTypeChunk.pushFrame(
-          chunked.state,
-          window.SayTypeChunk.frameRms(samples),
-          samples.length
-        );
-        const cut = window.SayTypeChunk.decideCut(chunked.state, chunked.sampleRate);
-        if (cut) {
-          this.closeChunk(chunked, cut.cutAtSample);
-        }
+        this.consumeChunkedSamples(recordingSession, new Float32Array(event.data));
       };
 
       source.connect(node);
@@ -1764,10 +1851,14 @@ class VoiceInputPrompt {
           performance.now() - recordingSession.onsetProbe.originMs;
       }
       recordingSession.chunked = chunked;
-      chunked.recordingSession = recordingSession;
     } catch (error) {
       // Never abort a recording over this: the whole-clip path still works, it
       // just pays the old tail latency.
+      chunked?.node?.disconnect?.();
+      chunked?.mutedOutput?.disconnect?.();
+      if (recordingSession.chunked === chunked) {
+        recordingSession.chunked = null;
+      }
       console.warn("chunked local capture unavailable; using the whole-clip path:", error);
     }
   }
@@ -1971,6 +2062,300 @@ class VoiceInputPrompt {
     void ipc.invoke("cancel-transcription", chunked.sessionId).catch(() => {});
   }
 
+  shouldUseNativeCapture() {
+    return this.osName === "macos";
+  }
+
+  async setupNativeConsumers(recordingSession) {
+    if (this.shouldUseNemotronLive(recordingSession.translateMode)) {
+      await this.beginNemotronLive(recordingSession, 16000);
+    }
+    if (this.shouldUseChunkedLocal(recordingSession.translateMode)) {
+      this.createChunkedSession(recordingSession, 16000);
+    }
+  }
+
+  createNativeCapture(recordingSession) {
+    let resolveDone;
+    const capture = {
+      sessionId: recordingSession.id,
+      sampleRate: 16000,
+      pcmBlocks: [],
+      sampleCount: 0,
+      latestRms: 0,
+      accepting: true,
+      started: false,
+      stopped: false,
+      error: null,
+      stats: null,
+      stopPromise: null,
+      done: new Promise((resolve) => {
+        resolveDone = resolve;
+      }),
+      resolveDone: (stats) => {
+        if (capture.stopped) return;
+        capture.stopped = true;
+        capture.stats = stats || null;
+        resolveDone(stats || null);
+      },
+    };
+    capture.channel = ipc.createChannel((message) => {
+      this.consumeNativeCaptureMessage(recordingSession, message);
+    });
+    recordingSession.nativeCapture = capture;
+    return capture;
+  }
+
+  consumeNativeCaptureMessage(recordingSession, message) {
+    const capture = recordingSession?.nativeCapture;
+    if (!capture) return;
+    if (message instanceof ArrayBuffer || ArrayBuffer.isView(message)) {
+      if (!capture.accepting) return;
+      const source = message instanceof ArrayBuffer
+        ? new Uint8Array(message)
+        : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+      const length = source.byteLength - (source.byteLength % 2);
+      if (!length) return;
+      const bytes = source.slice(0, length);
+      const samples = pcm16LeToFloat(bytes);
+      capture.pcmBlocks.push(bytes);
+      capture.sampleCount += samples.length;
+
+      let sumSquares = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        sumSquares += samples[index] * samples[index];
+      }
+      capture.latestRms = Math.sqrt(sumSquares / samples.length);
+
+      if (recordingSession.chunked) {
+        this.consumeChunkedSamples(recordingSession, samples);
+      } else {
+        pushOnsetBlock(recordingSession.onsetProbe, samples, null);
+      }
+      const live = recordingSession.live;
+      if (live && !live.stopped && !live.cancelled) {
+        live.pendingPcm.push(bytes);
+        live.pendingPcmBytes += bytes.byteLength;
+        if (live.pendingPcmBytes >= 4096) {
+          this.flushNemotronPcm(live);
+        }
+      }
+      return;
+    }
+
+    if (!message || typeof message !== "object") return;
+    if (message.event === "error") {
+      capture.error = new Error(message.message || "Native microphone stream failed");
+      if (this.isRecording && this.activeRecordingSession === recordingSession) {
+        setTimeout(() => {
+          if (this.isRecording && this.activeRecordingSession === recordingSession) {
+            this.stopRequested = true;
+            this.stopRecording();
+          }
+        }, 0);
+      }
+    } else if (message.event === "stopped") {
+      capture.resolveDone(message.stats);
+    }
+  }
+
+  async finishNativeCapture(recordingSession, { flush = true } = {}) {
+    const capture = recordingSession?.nativeCapture;
+    if (!capture) return;
+    if (capture.stopPromise) return capture.stopPromise;
+    capture.stopPromise = (async () => {
+      let commandStats = null;
+      try {
+        commandStats = await ipc.invoke("stop-native-capture", capture.sessionId);
+      } catch (error) {
+        capture.error ||= error instanceof Error ? error : new Error(errorMessage(error));
+      }
+
+      if (!capture.stopped) {
+        let timeoutId;
+        await Promise.race([
+          capture.done,
+          new Promise((resolve) => {
+            timeoutId = setTimeout(resolve, 5000);
+          }),
+        ]);
+        clearTimeout(timeoutId);
+      }
+      if (!capture.stopped) capture.resolveDone(commandStats);
+      capture.accepting = false;
+
+      this.stopNemotronCapture(recordingSession);
+      this.stopChunkedCapture(recordingSession, { flush });
+      this.reportAudioOnset(recordingSession);
+
+      if (flush && capture.sampleCount > 0) {
+        const wav = encodePcm16LeWav(
+          capture.pcmBlocks,
+          capture.sampleCount,
+          capture.sampleRate
+        );
+        recordingSession.chunks.push(new Blob([wav], { type: "audio/wav" }));
+        recordingSession.mimeType = "audio/wav";
+        this.reportLifecycle(recordingSession, "capture", "complete");
+      } else if (flush) {
+        recordingSession.finalizationError = capture.error || new Error("No native audio captured");
+        this.reportLifecycle(recordingSession, "capture", "error");
+      }
+      capture.pcmBlocks = [];
+      if (this.nativeCapture === capture) this.nativeCapture = null;
+    })();
+    return capture.stopPromise;
+  }
+
+  async startNativeRecording(startupTiming, startupStartedAt, preflightReadyAt) {
+    // A native stream stays live in Rust until stop-native-capture returns, and
+    // start_capture refuses a second one during that window. hotkey.rs's
+    // STOP_DEBOUNCE does NOT rule this out: releasing only arms a deadline, and
+    // the stop is dispatched ~250 ms later, so a re-press just past the debounce
+    // races the very stop it triggered. The window is a few milliseconds — Rust
+    // frees the slot before joining its threads — but nothing in the code
+    // ordered these, so it was luck rather than a guarantee.
+    //
+    // Falling back to WebKit is not an acceptable outcome here either: macOS no
+    // longer primes a WebKit stream, so that fallback opens a cold one and pays
+    // the full 3.0 s attenuation — on a short utterance, most of the dictation.
+    // The fallback is the last-resort net for a device that cannot open at all.
+    //
+    // Waiting costs nothing in normal use: nativeCapture is already null unless
+    // a stop is genuinely in flight.
+    const previous = this.nativeCapture;
+    if (previous?.stopPromise) {
+      try {
+        await previous.stopPromise;
+      } catch {
+        // Its own path reports the failure; all that matters here is that the
+        // device has been released before this recording claims it.
+      }
+    }
+    this.statusText.textContent = "";
+    if (!this.pendingInsertionOrder.length && this.transcriptionInProgressCount === 0) {
+      this.clearTranscriptionPreview();
+    }
+    const captureStartedAt = performance.now();
+    const sessionId = ++this.recordingSessionId;
+    const onsetProbe = createOnsetProbe(16000, captureStartedAt);
+    const recordingSession = {
+      id: sessionId,
+      chunks: [],
+      mimeType: "audio/wav",
+      translateMode: this.translateMode,
+      qwenSession: this.currentProvider === "local" &&
+        this.currentModel !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
+      cancelledShortPress: false,
+      provider: this.currentProvider,
+      mediaStream: null,
+      audioContext: null,
+      onsetProbe,
+    };
+    const capture = this.createNativeCapture(recordingSession);
+    this.ensureRecordingSession(recordingSession);
+    this.reportLifecycle(recordingSession, "capture", "start");
+    this.activeRecordingSession = recordingSession;
+    this.pendingInsertionOrder.push(sessionId);
+    this.audioChunks = recordingSession.chunks;
+    this.recordingMimeType = "audio/wav";
+
+    try {
+      await this.setupNativeConsumers(recordingSession);
+      onsetProbe.connectedAtMs = performance.now() - onsetProbe.originMs;
+      const info = await ipc.invoke(
+        "start-native-capture",
+        sessionId,
+        this.currentMicrophone || "default",
+        capture.channel
+      );
+      capture.started = true;
+      capture.info = info;
+    } catch (error) {
+      // Native capture is macOS's better path, not its only one — the WebKit
+      // path is still compiled in for Windows/Linux. A Mac where CoreAudio
+      // cannot open (device busy, an unusual format, a permission edge) should
+      // fall back and pay the 3.0 s attenuation on this one dictation rather
+      // than lose it outright. This mirrors the chunked-local path, which
+      // likewise refuses to abort a recording over its own optimization.
+      this.cancelRecordingSession(recordingSession);
+      // Resolve first: finishNativeCapture otherwise waits 5 s for a "stopped"
+      // event that a stream which never started will never send. The stop
+      // invoke below is issued regardless of capture.started, because a start
+      // whose response was lost can still have left a live session in Rust,
+      // and that would block every later recording.
+      capture.resolveDone(null);
+      try {
+        await this.finishNativeCapture(recordingSession, { flush: false });
+      } catch {
+        // Teardown is best-effort; the fallback matters more than its tidiness.
+      }
+      this.reportAudioProbe(recordingSession, "capture", [
+        "path=native",
+        "outcome=failed",
+        "fallback=webkit",
+        `error=${String(error?.message || error).replace(/\s+/g, "_").slice(0, 120)}`,
+      ].join(" "), true);
+      return false;
+    }
+    const microphoneReadyAt = performance.now();
+
+    if (this.stopRequested) {
+      this.cancelRecordingSession(recordingSession);
+      await this.finishNativeCapture(recordingSession, { flush: false });
+      this.scheduleHidePrompt(300);
+      return true;
+    }
+
+    const info = capture.info || {};
+    this.reportAudioProbe(recordingSession, "capture", [
+      `device=${String(info.device || "?").replace(/\s+/g, "_")}`,
+      `rate=${info.inputRate}`,
+      `channels=${info.channels}`,
+      `format=${info.sampleFormat}`,
+      `target_rate=${capture.sampleRate}`,
+      `path=native`,
+      `mic_ms=${Math.round(microphoneReadyAt - preflightReadyAt)}`,
+    ].join(" "), false);
+    this.nativeCapture = capture;
+
+    this.promptElement.classList.add("visible", "recording");
+    this.promptText.textContent = this.translateMode
+      ? t("inputPrompt.listeningEnglish")
+      : t("inputPrompt.listening");
+    this.recordingStartedAt = Date.now();
+    this.cancelledShortPress = false;
+    this.isRecording = true;
+    this.startWaveAnimation();
+    this.startRecordingTimer();
+
+    const setupReadyAt = performance.now();
+    requestAnimationFrame((paintedAt) => {
+      const nativeMs = nonNegativeMilliseconds(Number(startupTiming.nativeMs));
+      const eventDeliveryMs = nonNegativeMilliseconds(Number(startupTiming.eventDeliveryMs));
+      const frontendMs = nonNegativeMilliseconds(paintedAt - startupStartedAt);
+      const endToEndMs = nativeMs + eventDeliveryMs + frontendMs;
+      void ipc.invoke("report-recording-startup", {
+        recordingNumber: sessionId,
+        uptimeMs: nonNegativeMilliseconds(startupStartedAt - this.pageStartedAt),
+        nativeMs,
+        eventDeliveryMs,
+        preflightMs: nonNegativeMilliseconds(preflightReadyAt - startupStartedAt),
+        microphoneMs: nonNegativeMilliseconds(microphoneReadyAt - preflightReadyAt),
+        setupMs: nonNegativeMilliseconds(setupReadyAt - microphoneReadyAt),
+        renderMs: nonNegativeMilliseconds(paintedAt - setupReadyAt),
+        frontendMs,
+        endToEndMs,
+      }).catch((error) => {
+        if (isDev) console.warn("Failed to report recording startup timing:", error);
+      });
+      this.scheduleQwenPrewarm(recordingSession, endToEndMs);
+    });
+
+    if (this.stopRequested) this.stopRecording();
+    return true;
+  }
+
   async startRecording(startupTiming = {}) {
     if (this.isRecording || this.starting) return;
 
@@ -1993,6 +2378,20 @@ class VoiceInputPrompt {
         return;
       }
       const preflightReadyAt = performance.now();
+
+      if (this.settingsReady) {
+        await this.settingsReady;
+      }
+      if (this.shouldUseNativeCapture()) {
+        // false means native capture could not start; fall through to the
+        // WebKit path below rather than failing the dictation.
+        const handled = await this.startNativeRecording(
+          startupTiming,
+          startupStartedAt,
+          preflightReadyAt
+        );
+        if (handled) return;
+      }
 
       // Do NOT reveal the prompt during "starting": the window appearing is the
       // signal users act on, and if it shows before the mic is actually open
@@ -2041,7 +2440,7 @@ class VoiceInputPrompt {
         }
         audioContextResumeMs = performance.now() - resumeStartedAt;
       }
-      const audioTrack = this.mediaStream.getAudioTracks()[0];
+      const audioTrack = this.mediaStream.getAudioTracks?.()[0];
       const trackSettings = audioTrack?.getSettings ? audioTrack.getSettings() : {};
       const onsetProbe = createOnsetProbe(this.audioContext.sampleRate, microphoneReadyAt);
       this.onsetProbe = onsetProbe;
@@ -2222,9 +2621,15 @@ class VoiceInputPrompt {
       const lifecycle = this.ensureRecordingSession(recordingSession);
       lifecycle.state = "waiting-stop";
       lifecycle.stopRequestedAt = Date.now();
-      this.reportLifecycle(recordingSession, "recorder-stop", "start");
+      this.reportLifecycle(
+        recordingSession,
+        recordingSession.nativeCapture ? "capture" : "recorder-stop",
+        "start"
+      );
       if (shouldCancel) {
         this.cancelRecordingSession(recordingSession);
+      } else if (recordingSession.nativeCapture) {
+        finalizeOnRelease = true;
       } else if (recordingSession.chunked || recordingSession.live) {
         // Chunked/live audio is captured through the AudioWorklet, and the
         // stop* calls below close the final segment — the whole set of segments
@@ -2261,6 +2666,26 @@ class VoiceInputPrompt {
     } else {
       this.promptText.textContent = t("inputPrompt.processing");
       this.statusText.textContent = t("inputPrompt.transcribing");
+    }
+
+    if (recordingSession?.nativeCapture) {
+      this.cleanup({ preserveAudioChunks: true, recordingSession });
+      this.stopWaveAnimation();
+      void this.finishNativeCapture(recordingSession, { flush: !shouldCancel })
+        .then(() => {
+          if (!shouldCancel) {
+            return this.finalizeRecordingSession(recordingSession, "release");
+          }
+        })
+        .catch((error) => {
+          recordingSession.finalizationError = error;
+          if (!shouldCancel) {
+            return this.finalizeRecordingSession(recordingSession, "error");
+          }
+        });
+      this.flushPendingInsertions();
+      if (shouldCancel) this.scheduleHidePrompt(300);
+      return;
     }
 
     this.stopNemotronCapture(recordingSession);
@@ -2405,7 +2830,7 @@ class VoiceInputPrompt {
       logMicrophoneCleanup(
         `Closing audio context, current state: ${audioContext.state}`
       );
-      if (audioContext.state !== 'closed') {
+      if (audioContext.state !== 'closed' && typeof audioContext.close === "function") {
         audioContext.close().then(() => {
           logMicrophoneCleanup("Audio context closed successfully");
         }).catch(err => {
@@ -2882,6 +3307,17 @@ class VoiceInputPrompt {
     };
 
     const sampleVolume = () => {
+      const native = this.activeRecordingSession?.nativeCapture;
+      if (native) {
+        const probe = this.activeRecordingSession?.onsetProbe;
+        if (probe) {
+          probe.analyserFrames += 1;
+          const bucket = Math.floor((performance.now() - probe.originMs) / PROBE_BUCKET_MS);
+          if (bucket >= 0 && bucket < PROBE_BUCKETS) probe.frameCounts[bucket] += 1;
+          if (native.latestRms <= 0) probe.analyserSilentFrames += 1;
+        }
+        return native.latestRms;
+      }
       if (!this.analyser || !this.dataArray) {
         return Math.random() * 0.15; // fallback so the wave still scrolls
       }
