@@ -296,6 +296,22 @@ function errorMessage(error) {
       : String(error ?? "");
 }
 
+// Stable native IPC contract; messages are diagnostic text, not control flow.
+const NATIVE_CAPTURE_ERROR_CODES = new Set([
+  "NATIVE_CAPTURE_BUSY",
+  "NATIVE_CAPTURE_START_TIMEOUT",
+  "NATIVE_CAPTURE_STOP_TIMEOUT",
+  "NATIVE_CAPTURE_NOT_ACTIVE",
+  "NATIVE_CAPTURE_FAILED",
+]);
+
+function nativeCaptureError(error) {
+  return Object.assign(new Error(errorMessage(error)), {
+    code: NATIVE_CAPTURE_ERROR_CODES.has(error?.code) ? error.code : "NATIVE_CAPTURE_FAILED",
+    deviceReleased: error?.deviceReleased === true,
+  });
+}
+
 // Whether a failed transcription is worth one automatic retry. A hung/timed-out
 // decode is transient — the local watchdog (local_asr.rs) aborts a wedged
 // subprocess with a "treating as hung" message, and a network/hard timeout is
@@ -2171,28 +2187,35 @@ class VoiceInputPrompt {
     if (capture.stopPromise) return capture.stopPromise;
     capture.stopPromise = (async () => {
       let timeoutId;
+      let commandStats = null;
+      let integrityReason = "complete";
       try {
         // Bound both IPC completion and channel drainage. A missing IPC reply
         // must not prevent finalization or block every subsequent recording.
         const stopped = Promise.resolve()
           .then(() => ipc.invoke("stop-native-capture", capture.sessionId))
           .then(async (stats) => {
+            commandStats = stats;
+            capture.releaseConfirmed = true;
             await capture.done;
             return stats;
           });
         const stats = await Promise.race([
           stopped,
           new Promise((_, reject) => {
-            timeoutId = setTimeout(() => reject(new Error("Native capture stop timed out")),
+            timeoutId = setTimeout(() => reject(nativeCaptureError({
+              code: "NATIVE_CAPTURE_STOP_TIMEOUT", message: "Native capture stop timed out",
+            })),
               NATIVE_CAPTURE_STOP_TIMEOUT_MS);
           }),
         ]);
         if (stats?.channelSendFailures > 0 ||
           (Number.isFinite(stats?.outputSamples) && stats.outputSamples !== capture.sampleCount)) {
+          integrityReason = stats?.channelSendFailures > 0 ? "channel-send-failure" : "sample-mismatch";
           capture.error ||= new Error("Native audio delivery was incomplete");
         }
       } catch (error) {
-        capture.stopError = error instanceof Error ? error : new Error(errorMessage(error));
+        capture.stopError = nativeCaptureError(error);
         capture.error ||= capture.stopError;
       } finally {
         clearTimeout(timeoutId);
@@ -2201,11 +2224,28 @@ class VoiceInputPrompt {
       // a timeout. Do not label that local deadline as a native stopped ACK.
       recordingSession.captureIncomplete = !!capture.error;
       capture.accepting = false;
+      const finalStats = commandStats || capture.stats;
+      if (integrityReason === "complete" && capture.error) {
+        integrityReason = capture.stopError ? "stop-failure" : "stream-error";
+      }
 
       try {
-        this.stopNemotronCapture(recordingSession);
-        this.stopChunkedCapture(recordingSession, { flush });
-        this.reportAudioOnset(recordingSession);
+        // A consumer teardown failure must not skip the other consumer or the
+        // recovery WAV. Already queued decodes remain eligible for recovery.
+        for (const finish of [
+          () => this.stopNemotronCapture(recordingSession),
+          () => this.stopChunkedCapture(recordingSession, { flush }),
+        ]) {
+          try { finish(); } catch (error) {
+            recordingSession.finalizationError ||= error;
+            recordingSession.captureIncomplete = true;
+            integrityReason = "consumer-finalization-failure";
+          }
+        }
+
+        try { this.reportAudioOnset(recordingSession); } catch (error) {
+          console.warn("Native capture diagnostics failed:", error);
+        }
 
         if (flush && capture.sampleCount > 0) {
           const wav = encodePcm16LeWav(
@@ -2215,17 +2255,38 @@ class VoiceInputPrompt {
           );
           recordingSession.chunks.push(new Blob([wav], { type: "audio/wav" }));
           recordingSession.mimeType = "audio/wav";
-          this.reportLifecycle(recordingSession, "capture", capture.error ? "error" : "complete");
-          if (capture.error && !this.isSessionCancelled(recordingSession)) {
+          if (recordingSession.captureIncomplete && !this.isSessionCancelled(recordingSession)) {
             recordingSession.captureRecoveryWav = wav;
           }
         } else if (flush) {
           recordingSession.finalizationError = capture.error || new Error("No native audio captured");
-          this.reportLifecycle(recordingSession, "capture", "error");
+          recordingSession.captureIncomplete = true;
+          integrityReason = "no-audio";
         }
+      } catch (error) {
+        recordingSession.finalizationError ||= error;
+        recordingSession.captureIncomplete = true;
+        integrityReason = "wav-encoding-failure";
+        throw error;
       } finally {
         capture.pcmBlocks = [];
         if (this.nativeCapture === capture) this.nativeCapture = null;
+        // Report the final decision after consumer teardown and WAV encoding.
+        // Diagnostics must never prevent resource release or result recovery.
+        try {
+          this.reportAudioProbe(recordingSession, "capture", [
+            "path=native", `reason=${integrityReason}`,
+            `incomplete=${!!recordingSession.captureIncomplete}`,
+            `out_samples=${finalStats?.outputSamples ?? "unknown"}`,
+            `recv_samples=${capture.sampleCount}`,
+            `channel_failures=${finalStats?.channelSendFailures ?? "unknown"}`,
+            `error_code=${capture.stopError?.code || "none"}`,
+          ].join(" "), !!recordingSession.captureIncomplete);
+          if (flush) this.reportLifecycle(recordingSession, "capture",
+            recordingSession.captureIncomplete ? "error" : "complete");
+        } catch (error) {
+          console.warn("Native integrity diagnostics failed:", error);
+        }
       }
     })();
     return capture.stopPromise;
@@ -2234,6 +2295,9 @@ class VoiceInputPrompt {
   async startNativeRecording(startupTiming, startupStartedAt, preflightReadyAt) {
     // Serialize normal release/start transitions. The preceding stop has a
     // bounded wait; Rust retains ownership if the device is still stopping.
+    // Hotkey release only arms STOP_DEBOUNCE; the stop is dispatched about
+    // 250 ms later. A re-press just beyond that deadline can overlap its stop,
+    // so debounce alone does not serialize device release and the next start.
     const previous = this.nativeCapture;
     if (previous?.stopPromise) {
       try {
@@ -2293,7 +2357,7 @@ class VoiceInputPrompt {
       // than lose it outright. This mirrors the chunked-local path, which
       // likewise refuses to abort a recording over its own optimization.
       this.cancelRecordingSession(recordingSession);
-      // Resolve first: finishNativeCapture otherwise waits 5 s for a "stopped"
+      // Resolve first: finishNativeCapture otherwise waits for a "stopped"
       // event that a stream which never started will never send. The stop
       // invoke below is issued regardless of capture.started, because a start
       // whose response was lost can still have left a live session in Rust,
@@ -2307,9 +2371,12 @@ class VoiceInputPrompt {
       // A timed-out native operation may still own CoreAudio. Do not open a
       // competing WebKit stream until release is known; the next native start
       // can reap the old handle once its thread actually exits.
-      if (/native capture (?:session .*active|.*timed out)/i.test(errorMessage(error)) ||
-        /timed out/i.test(errorMessage(capture.stopError))) {
-        throw capture.stopError || error;
+      const startError = nativeCaptureError(error);
+      const releaseKnown = capture.releaseConfirmed || capture.stopError?.deviceReleased === true ||
+        capture.stopError?.code === "NATIVE_CAPTURE_NOT_ACTIVE";
+      if (startError.code === "NATIVE_CAPTURE_START_TIMEOUT") throw startError;
+      if (startError.code === "NATIVE_CAPTURE_BUSY" || !releaseKnown) {
+        throw capture.stopError || startError;
       }
       this.reportAudioProbe(recordingSession, "capture", [
         "path=native",
@@ -2963,8 +3030,12 @@ class VoiceInputPrompt {
     this.activeTranscriptionSessionIds.add(sessionId);
     this.updateStatusText();
     try {
-      if (recordingSession.finalizationError &&
-        (recordingSession.nativeCapture || (!useChunkedLocal && !useNemotronLive))) {
+      // A failed recovery WAV does not invalidate PCM already sent to a decoder.
+      // Collect its final text, but keep it out of automatic insertion/history.
+      if (recordingSession.nativeCapture && recordingSession.finalizationError) {
+        recordingSession.captureIncomplete = true;
+      }
+      if (recordingSession.finalizationError && !useChunkedLocal && !useNemotronLive) {
         throw recordingSession.finalizationError;
       }
       if (
@@ -3243,9 +3314,10 @@ class VoiceInputPrompt {
       errorMessageKey = "inputPrompt.permissionDenied";
     } else if (error.name === "NotFoundError") {
       errorMessageKey = "inputPrompt.noMicrophone";
+    } else if (error?.code === "NATIVE_CAPTURE_START_TIMEOUT") {
+      errorMessageKey = "inputPrompt.microphoneStartupTimeout";
     } else if (error.name === "NotReadableError" ||
-      /^native capture session \d+ is (?:still active|active, not \d+)$/.test(errorMessage(error)) ||
-      errorMessage(error) === "native capture stop timed out; device is still stopping") {
+      error?.code === "NATIVE_CAPTURE_BUSY" || error?.code === "NATIVE_CAPTURE_STOP_TIMEOUT") {
       errorMessageKey = "inputPrompt.microphoneBusy";
     } else if (error.name === "OverconstrainedError") {
       errorMessageKey = "inputPrompt.microphoneUnsupported";

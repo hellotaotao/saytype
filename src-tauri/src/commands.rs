@@ -407,9 +407,11 @@ pub async fn start_native_capture(
   session_id: u64,
   microphone: String,
   on_audio: Channel<InvokeResponseBody>,
-) -> Result<crate::native_capture::NativeCaptureInfo, String> {
+) -> Result<crate::native_capture::NativeCaptureInfo, crate::native_capture::NativeCaptureError> {
   if window.label() != "input-prompt" {
-    return Err("native capture is only available to input-prompt".into());
+    return Err(crate::native_capture::NativeCaptureError::failed(
+      "native capture is only available to input-prompt",
+    ));
   }
   log::info!(
     target: "saytype_lifecycle",
@@ -420,8 +422,8 @@ pub async fn start_native_capture(
     crate::native_capture::start_capture(&capture_state, session_id, microphone, on_audio)
   })
   .await
-  .map_err(stringify_error)?
-  .map_err(|error| stringify_error(error))
+  .map_err(|error| crate::native_capture::NativeCaptureError::failed(stringify_error(error)))?
+  .map_err(crate::native_capture::NativeCaptureError::from)
 }
 
 /// Stop exactly the requested recording and wait until its final PCM block has
@@ -432,17 +434,19 @@ pub async fn stop_native_capture(
   window: tauri::WebviewWindow,
   state: State<'_, crate::native_capture::NativeCaptureState>,
   session_id: u64,
-) -> Result<crate::native_capture::NativeCaptureStats, String> {
+) -> Result<crate::native_capture::NativeCaptureStats, crate::native_capture::NativeCaptureError> {
   if window.label() != "input-prompt" {
-    return Err("native capture is only available to input-prompt".into());
+    return Err(crate::native_capture::NativeCaptureError::failed(
+      "native capture is only available to input-prompt",
+    ));
   }
   let capture_state = state.inner().clone();
   let stats = tokio::task::spawn_blocking(move || {
     crate::native_capture::stop_capture(&capture_state, session_id)
   })
   .await
-  .map_err(stringify_error)?
-  .map_err(|error| stringify_error(error))?;
+  .map_err(|error| crate::native_capture::NativeCaptureError::failed(stringify_error(error)))?
+  .map_err(crate::native_capture::NativeCaptureError::from)?;
   log::info!(
     target: "saytype_lifecycle",
     "native-capture stopped session_id={} input_samples={} output_samples={} peak={:.4} clipped={} channel_failures={}",

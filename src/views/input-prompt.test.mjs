@@ -2903,14 +2903,14 @@ test("native stop timeout after Escape cannot recover or insert the cancelled cl
 
 test("native startup cannot fall back while the previous device is still owned", async () => {
   const V = loadVoiceInputPrompt({ invoke(command) {
-    if (command === "start-native-capture") return Promise.reject(new Error("native capture session 99 is still active"));
+    if (command === "start-native-capture") return Promise.reject({ code: "NATIVE_CAPTURE_BUSY", message: "A device is still reserved" });
     return Promise.resolve(null);
   } });
   const prompt = createBarePrompt(V, {
     osName: "macos", translateMode: false, stopRequested: false,
     clearTranscriptionPreview() {},
   });
-  await assert.rejects(prompt.startNativeRecording({}, 0, 0), /still active/);
+  await assert.rejects(prompt.startNativeRecording({}, 0, 0), /reserved/);
   assert.equal(prompt.isRecording, false);
   assert.equal(prompt.pendingInsertionOrder.length, 0);
 });
@@ -2965,11 +2965,12 @@ test("native stop deadline also covers a missing stopped channel event", async (
 });
 
 for (const [error, expected] of [
-  [new Error("native capture session 99 is still active"), "microphoneBusy"],
-  ["native capture session 99 is active, not 100", "microphoneBusy"],
-  [new Error("native capture stop timed out; device is still stopping"), "microphoneBusy"],
+  [{ code: "NATIVE_CAPTURE_BUSY", message: "A device is still reserved" }, "microphoneBusy"],
+  [{ code: "NATIVE_CAPTURE_BUSY", message: "Changed backend wording" }, "microphoneBusy"],
+  [{ code: "NATIVE_CAPTURE_STOP_TIMEOUT", message: "Changed stop wording" }, "microphoneBusy"],
   [Object.assign(new Error("device busy"), { name: "NotReadableError" }), "microphoneBusy"],
-  [new Error("native capture startup timed out"), "recordingFailed"],
+  [{ code: "NATIVE_CAPTURE_START_TIMEOUT", message: "Changed startup wording" }, "microphoneStartupTimeout"],
+  [new Error("native capture session 99 is still active"), "recordingFailed"],
   [new Error("failed to build native input stream"), "recordingFailed"],
 ]) {
   test(`recording error maps ${String(error)} to ${expected}`, async () => {
@@ -2980,5 +2981,123 @@ for (const [error, expected] of [
     });
     await prompt.handleRecordingError(error);
     assert.equal(prompt.promptText.textContent, `inputPrompt.${expected}`);
+  });
+}
+
+for (const mode of ["chunked", "live"]) {
+  test(`native WAV finalization failure still collects ${mode} final text`, async () => {
+    const final = createDeferred();
+    const h = await createLifecycleHarness({ batch: mode === "live", invoke(command) {
+      if (command === "transcribe-audio" || command === "finish-live-transcription") return final.promise;
+      return Promise.resolve(null);
+    } });
+    h.session.nativeCapture = {};
+    h.session.finalizationError = new Error("WAV encoding failed");
+    if (mode === "live") h.session.live = {
+      sessionId: h.session.id, pendingPcm: [], pendingPcmBytes: 0, uploadTail: Promise.resolve(),
+    };
+    else h.prompt.stopChunkedCapture(h.session);
+    h.prompt.isRecording = false;
+    const processing = h.prompt.processRecording(h.session);
+    await settlePromises();
+    assert.equal(h.calls.some(([command]) => command === "cancel-live-transcription" || command === "cancel-transcription"), false);
+    final.resolve("preserved final words");
+    await processing;
+    assert.deepEqual(h.inserted, []);
+    assert.deepEqual(h.recovered, ["preserved final words"]);
+  });
+}
+
+test("native integrity diagnostics contain both counts and the failure reason", async () => {
+  const reports = [];
+  const V = loadVoiceInputPrompt({ captureAudioProbe: true, invoke(command, report) {
+    if (command === "report-audio-probe") reports.push(report);
+    return Promise.resolve({ outputSamples: 2, channelSendFailures: 0 });
+  } });
+  const prompt = createBarePrompt(V);
+  const session = { id: 71, chunks: [] };
+  prompt.createNativeCapture(session);
+  prompt.consumeNativeCaptureMessage(session, new Uint8Array([0, 64]).buffer);
+  prompt.consumeNativeCaptureMessage(session, { event: "stopped" });
+  await prompt.finishNativeCapture(session);
+  assert.ok(reports.some((report) => report.sessionId === 71 &&
+    /out_samples=2/.test(report.detail) && /recv_samples=1/.test(report.detail) &&
+    /reason=sample-mismatch/.test(report.detail)));
+});
+
+for (const stopCode of ["NATIVE_CAPTURE_NOT_ACTIVE", "NATIVE_CAPTURE_STOP_TIMEOUT", "NATIVE_CAPTURE_FAILED"]) {
+  test(`native startup fallback requires release confirmation: ${stopCode}`, async () => {
+    const V = loadVoiceInputPrompt({ invoke(command) {
+      if (command === "start-native-capture") return Promise.reject({ code: "NATIVE_CAPTURE_FAILED", message: "Cannot open device" });
+      if (command === "stop-native-capture") return Promise.reject({ code: stopCode, message: "Diagnostics can change" });
+      return Promise.resolve(null);
+    } });
+    const prompt = createBarePrompt(V, { translateMode: false, clearTranscriptionPreview() {} });
+    if (stopCode === "NATIVE_CAPTURE_NOT_ACTIVE") {
+      assert.equal(await prompt.startNativeRecording({}, 0, 0), false);
+    } else {
+      await assert.rejects(prompt.startNativeRecording({}, 0, 0), (error) => error.code === stopCode);
+    }
+  });
+}
+
+test("startup timeout retains its specific error after successful device cleanup", async () => {
+  const V = loadVoiceInputPrompt({ invoke(command) {
+    if (command === "start-native-capture") return Promise.reject({ code: "NATIVE_CAPTURE_START_TIMEOUT", message: "Diagnostic text" });
+    return Promise.resolve(null);
+  } });
+  const prompt = createBarePrompt(V, { translateMode: false, clearTranscriptionPreview() {} });
+  await assert.rejects(prompt.startNativeRecording({}, 0, 0), (error) => error.code === "NATIVE_CAPTURE_START_TIMEOUT");
+});
+
+test("chunk consumer teardown failure does not skip the recovery WAV or queued final", async () => {
+  const V = loadVoiceInputPrompt({ invoke: () => Promise.resolve({ outputSamples: 1 }) });
+  const prompt = createBarePrompt(V, { stopChunkedCapture() { throw new Error("tail flush failed"); } });
+  const session = { id: 1, chunks: [] };
+  prompt.createNativeCapture(session);
+  prompt.consumeNativeCaptureMessage(session, new Uint8Array([0, 64]).buffer);
+  prompt.consumeNativeCaptureMessage(session, { event: "stopped" });
+  await prompt.finishNativeCapture(session);
+  assert.equal(session.chunks.length, 1);
+  assert.equal(session.captureIncomplete, true);
+  assert.equal(session.finalizationError.message, "tail flush failed");
+});
+
+test("failed native setup can fall back after the backend confirms device release", async () => {
+  const V = loadVoiceInputPrompt({ invoke(command) {
+    if (command === "start-native-capture" || command === "stop-native-capture") {
+      return Promise.reject({ code: "NATIVE_CAPTURE_FAILED", message: "Configured device unavailable",
+        deviceReleased: command === "stop-native-capture" });
+    }
+    return Promise.resolve(null);
+  } });
+  const prompt = createBarePrompt(V, { translateMode: false, clearTranscriptionPreview() {} });
+  assert.equal(await prompt.startNativeRecording({}, 0, 0), false);
+});
+
+for (const failure of ["consumer", "wav"]) {
+  test(`native integrity probe reports final ${failure} failure`, async () => {
+    const reports = [];
+    const V = loadVoiceInputPrompt({ captureAudioProbe: true, invoke(command, report) {
+      if (command === "report-audio-probe") reports.push(report);
+      return Promise.resolve({ outputSamples: 1 });
+    }, ...(failure === "wav" ? { globals: { Blob: class {
+      constructor() { throw new Error("WAV allocation failed"); }
+    } } } : {}) });
+    const prompt = createBarePrompt(V, failure === "consumer" ? {
+      stopChunkedCapture() { throw new Error("Consumer teardown failed"); },
+    } : {});
+    const session = { id: 72, chunks: [] };
+    prompt.nativeCapture = prompt.createNativeCapture(session);
+    prompt.consumeNativeCaptureMessage(session, new Uint8Array([0, 64]).buffer);
+    prompt.consumeNativeCaptureMessage(session, { event: "stopped" });
+    const finishing = prompt.finishNativeCapture(session);
+    if (failure === "wav") await assert.rejects(finishing, /WAV allocation failed/);
+    else await finishing;
+    assert.equal(session.captureIncomplete, true);
+    assert.equal(prompt.nativeCapture, null);
+    assert.ok(reports.some((report) => report.sessionId === 72 &&
+      report.detail.includes(`reason=${failure === "wav" ? "wav-encoding-failure" : "consumer-finalization-failure"}`) &&
+      report.detail.includes("incomplete=true")));
   });
 }

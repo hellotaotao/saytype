@@ -20,6 +20,60 @@ use std::thread::JoinHandle;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 pub const TARGET_RATE: u32 = 16_000;
+pub const STOP_TIMEOUT_MS: u64 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum NativeCaptureErrorCode {
+  #[serde(rename = "NATIVE_CAPTURE_BUSY")]
+  NativeCaptureBusy,
+  #[serde(rename = "NATIVE_CAPTURE_START_TIMEOUT")]
+  NativeCaptureStartTimeout,
+  #[serde(rename = "NATIVE_CAPTURE_STOP_TIMEOUT")]
+  NativeCaptureStopTimeout,
+  #[serde(rename = "NATIVE_CAPTURE_NOT_ACTIVE")]
+  NativeCaptureNotActive,
+  #[serde(rename = "NATIVE_CAPTURE_FAILED")]
+  NativeCaptureFailed,
+}
+
+/// Stable IPC classification is independent of human-readable diagnostics.
+#[derive(Debug, Clone, Serialize)]
+pub struct NativeCaptureError {
+  pub code: NativeCaptureErrorCode,
+  pub message: String,
+  #[serde(rename = "deviceReleased")]
+  pub device_released: bool,
+}
+
+impl NativeCaptureError {
+  fn new(code: NativeCaptureErrorCode, message: impl Into<String>) -> Self {
+    Self { code, message: message.into(), device_released: false }
+  }
+
+  pub fn failed(message: impl Into<String>) -> Self {
+    Self::new(NativeCaptureErrorCode::NativeCaptureFailed, message)
+  }
+}
+
+impl std::fmt::Display for NativeCaptureError {
+  fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    formatter.write_str(&self.message)
+  }
+}
+
+impl std::error::Error for NativeCaptureError {}
+
+impl From<anyhow::Error> for NativeCaptureError {
+  fn from(error: anyhow::Error) -> Self {
+    let code = error.downcast_ref::<Self>()
+      .map(|error| error.code)
+      .unwrap_or(NativeCaptureErrorCode::NativeCaptureFailed);
+    let device_released = error.downcast_ref::<Self>()
+      .map(|error| error.device_released).unwrap_or(false);
+    Self { code, message: format!("{error:#}"), device_released }
+  }
+}
+
 const RESAMPLE_HALF_WINDOW: i64 = 32;
 const CHANNEL_BLOCK_SAMPLES: usize = 640; // 40 ms at 16 kHz
 
@@ -54,7 +108,7 @@ struct CaptureHandle {
   session_id: u64,
   control: mpsc::Sender<CaptureControl>,
   thread: Option<JoinHandle<Result<NativeCaptureStats>>>,
-  completed: Option<Result<NativeCaptureStats, String>>,
+  completed: Option<Result<NativeCaptureStats, NativeCaptureError>>,
 }
 
 /// One native input stream at a time. Transcription may overlap, but the UI
@@ -423,10 +477,10 @@ pub fn start_capture(
     }
   }
   if let Some(existing) = active.as_ref() {
-    return Err(anyhow!(
-      "native capture session {} is still active",
-      existing.session_id
-    ));
+    return Err(NativeCaptureError::new(
+      NativeCaptureErrorCode::NativeCaptureBusy,
+      format!("native capture session {} is still active", existing.session_id),
+    ).into());
   }
 
   let (control_tx, control_rx) = mpsc::channel();
@@ -469,11 +523,18 @@ fn await_capture_ready(
       let _ = control_tx.send(CaptureControl::Stop);
       Err(anyhow!(message))
     }
-    Err(_) => {
+    Err(mpsc::RecvTimeoutError::Timeout) => {
       let _ = control_tx.send(CaptureControl::Stop);
       // CoreAudio teardown may never return. Keep ownership until it does,
       // rather than joining here and defeating the startup deadline.
-      Err(anyhow!("native capture startup timed out"))
+      Err(NativeCaptureError::new(
+        NativeCaptureErrorCode::NativeCaptureStartTimeout,
+        "native capture startup timed out",
+      ).into())
+    }
+    Err(mpsc::RecvTimeoutError::Disconnected) => {
+      let _ = control_tx.send(CaptureControl::Stop);
+      Err(anyhow!("native capture startup thread disconnected"))
     }
   }
 }
@@ -493,22 +554,27 @@ impl CaptureHandle {
     self.thread.as_ref().map(JoinHandle::is_finished).unwrap_or(true)
   }
 
-  fn completed_result(&mut self) -> Option<Result<NativeCaptureStats, String>> {
+  fn completed_result(&mut self) -> Option<Result<NativeCaptureStats, NativeCaptureError>> {
     if !self.is_finished() {
       return None;
     }
     if let Some(thread) = self.thread.take() {
       self.completed = Some(match thread.join() {
-        Ok(result) => result.map_err(|error| format!("{error:#}")),
-        Err(_) => Err("native capture thread panicked".into()),
-      });
+        Ok(result) => result.map_err(NativeCaptureError::from),
+        Err(_) => Err(NativeCaptureError::failed("native capture thread panicked")),
+      }.map_err(|mut error| {
+        // Only an exited, joined capture thread proves its stream was released.
+        // Generic command/IPC errors must retain the conservative default.
+        error.device_released = true;
+        error
+      }));
     }
     self.completed.clone()
   }
 }
 
 pub fn stop_capture(state: &NativeCaptureState, session_id: u64) -> Result<NativeCaptureStats> {
-  stop_capture_with_timeout(state, session_id, std::time::Duration::from_secs(5))
+  stop_capture_with_timeout(state, session_id, std::time::Duration::from_millis(STOP_TIMEOUT_MS))
 }
 
 fn stop_capture_with_timeout(
@@ -522,13 +588,16 @@ fn stop_capture_with_timeout(
     {
       let mut active = state.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
       let Some(current) = active.as_mut() else {
-        return Err(anyhow!("no native capture session is active"));
+        return Err(NativeCaptureError::new(
+          NativeCaptureErrorCode::NativeCaptureNotActive,
+          "no native capture session is active",
+        ).into());
       };
       if current.session_id != session_id {
-        return Err(anyhow!(
-          "native capture session {} is active, not {session_id}",
-          current.session_id
-        ));
+        return Err(NativeCaptureError::new(
+          NativeCaptureErrorCode::NativeCaptureBusy,
+          format!("native capture session {} is active, not {session_id}", current.session_id),
+        ).into());
       }
       if !requested_stop {
         let _ = current.control.send(CaptureControl::Stop);
@@ -537,12 +606,15 @@ fn stop_capture_with_timeout(
       if let Some(result) = current.completed_result() {
         // Retain the result for concurrent/repeated stops. The next start reaps
         // this finished handle; stale stops cannot remove the replacement.
-        return result.map_err(|message| anyhow!(message));
+        return result.map_err(anyhow::Error::from);
       }
     }
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     if remaining.is_zero() {
-      return Err(anyhow!("native capture stop timed out; device is still stopping"));
+      return Err(NativeCaptureError::new(
+        NativeCaptureErrorCode::NativeCaptureStopTimeout,
+        "native capture stop timed out; device is still stopping",
+      ).into());
     }
     std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
   }
@@ -654,6 +726,23 @@ pub fn probe_capture(_seconds: f64) -> Result<(String, f64, Vec<f32>)> {
 mod tests {
   use super::*;
 
+  #[test]
+  fn completed_setup_failure_confirms_device_release_but_generic_failure_does_not() {
+    let state = NativeCaptureState::default();
+    let (control, _) = mpsc::channel();
+    *state.active.lock().unwrap() = Some(CaptureHandle {
+      session_id: 501, control,
+      thread: Some(std::thread::spawn(|| Err(anyhow!("device unavailable")))),
+      completed: None,
+    });
+    let error = NativeCaptureError::from(stop_capture(&state, 501).unwrap_err());
+    assert_eq!(serde_json::to_value(&error).unwrap()["deviceReleased"], true);
+    let wrapped = NativeCaptureError::from(anyhow::Error::new(error).context("stop failed"));
+    assert_eq!(serde_json::to_value(wrapped).unwrap()["deviceReleased"], true);
+    let unknown = NativeCaptureError::failed("IPC failure");
+    assert_eq!(serde_json::to_value(unknown).unwrap()["deviceReleased"], false);
+  }
+
   fn install_blocked_capture(state: &NativeCaptureState, session_id: u64) -> mpsc::Sender<()> {
     let (control, _) = mpsc::channel();
     let (release, blocked) = mpsc::channel();
@@ -677,6 +766,9 @@ mod tests {
     let error = stop_capture_with_timeout(&state, 7, std::time::Duration::from_millis(5))
       .unwrap_err();
     assert!(error.to_string().contains("timed out"));
+    let error = NativeCaptureError::from(error);
+    assert!(!error.device_released);
+    assert_eq!(error.code, NativeCaptureErrorCode::NativeCaptureStopTimeout);
     let active = state.active.lock().unwrap();
     assert_eq!(active.as_ref().unwrap().session_id, 7);
     assert!(!active.as_ref().unwrap().thread.as_ref().unwrap().is_finished());
@@ -695,6 +787,7 @@ mod tests {
     let error = await_capture_ready(ready_rx, &control, std::time::Duration::from_millis(5))
       .unwrap_err();
     assert!(error.to_string().contains("startup timed out"));
+    assert_eq!(NativeCaptureError::from(error).code, NativeCaptureErrorCode::NativeCaptureStartTimeout);
     assert!(matches!(requests.try_recv(), Ok(CaptureControl::Stop)));
     assert!(!state.active.lock().unwrap().as_ref().unwrap().is_finished());
     release.send(()).unwrap();
@@ -716,10 +809,67 @@ mod tests {
   fn stale_stop_does_not_remove_a_newer_capture() {
     let state = NativeCaptureState::default();
     let release = install_blocked_capture(&state, 9);
-    assert!(stop_capture(&state, 8).unwrap_err().to_string().contains("not 8"));
+    let error = stop_capture(&state, 8).unwrap_err();
+    assert!(error.to_string().contains("not 8"));
+    assert_eq!(NativeCaptureError::from(error).code, NativeCaptureErrorCode::NativeCaptureBusy);
     assert_eq!(state.active.lock().unwrap().as_ref().unwrap().session_id, 9);
     release.send(()).unwrap();
     stop_capture(&state, 9).unwrap();
+  }
+
+  #[test]
+  fn typed_error_code_survives_context_and_message_changes() {
+    let error = anyhow!(NativeCaptureError::new(
+      NativeCaptureErrorCode::NativeCaptureBusy,
+      "different human-readable wording",
+    )).context("additional context");
+    let response = NativeCaptureError::from(error);
+    let json = serde_json::to_value(response).unwrap();
+    assert_eq!(json["code"], "NATIVE_CAPTURE_BUSY");
+    assert_eq!(json["message"], "additional context: different human-readable wording");
+  }
+
+  #[test]
+  fn untyped_error_text_cannot_impersonate_a_lifecycle_code() {
+    let response = NativeCaptureError::from(anyhow!("native capture startup timed out"));
+    let json = serde_json::to_value(response).unwrap();
+    assert_eq!(json["code"], "NATIVE_CAPTURE_FAILED");
+    assert_eq!(json["message"], "native capture startup timed out");
+  }
+
+  #[test]
+  fn thread_panic_is_cached_as_generic_failure() {
+    let state = NativeCaptureState::default();
+    let (control, _) = mpsc::channel();
+    *state.active.lock().unwrap() = Some(CaptureHandle {
+      session_id: 17,
+      control,
+      thread: Some(std::thread::spawn(|| panic!("injected capture panic"))),
+      completed: None,
+    });
+    for _ in 0..2 {
+      let response = NativeCaptureError::from(stop_capture(&state, 17).unwrap_err());
+      assert_eq!(response.code, NativeCaptureErrorCode::NativeCaptureFailed);
+      assert_eq!(response.message, "native capture thread panicked");
+    }
+  }
+
+  #[test]
+  fn missing_session_has_a_stable_error_code() {
+    let error = stop_capture(&NativeCaptureState::default(), 42).unwrap_err();
+    let response = NativeCaptureError::from(error);
+    assert_eq!(response.code, NativeCaptureErrorCode::NativeCaptureNotActive);
+    assert!(!response.message.is_empty());
+  }
+
+  #[test]
+  fn disconnected_startup_is_failure_not_timeout() {
+    let (ready, ready_rx) = mpsc::sync_channel(1);
+    drop(ready);
+    let (control, _) = mpsc::channel();
+    let error = await_capture_ready(ready_rx, &control, std::time::Duration::from_secs(1))
+      .unwrap_err();
+    assert_eq!(NativeCaptureError::from(error).code, NativeCaptureErrorCode::NativeCaptureFailed);
   }
 
   #[test]
