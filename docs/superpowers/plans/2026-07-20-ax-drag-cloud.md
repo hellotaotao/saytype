@@ -12,7 +12,7 @@
 
 - **平台**:仅 macOS 实现;`platform/fallback.rs` 提供空实现,非 macOS 编译必须通过。
 - **IPC 三处同步**:每个新命令必须同时改 `commands.rs` 的 `#[tauri::command]`、`lib.rs` 的 `generate_handler!`、`ipc-bridge.js` 的 `tauriCommands`(带参数的还要 `tauriArgs`)。`scripts/ipc-contract.test.mjs` 会在 CI 拦截漏登记。
-- **事件广播**:Rust→前端一律用 `app.emit`(广播),**不要用 `emit_to`** —— 前端监听器注册的 target 是 `{ kind: "Any" }`,`emit_to` 会被静默丢弃。
+- **事件广播**:Rust→前端默认用 `app.emit`(广播)。~~**不要用 `emit_to`** —— 前端监听器注册的 target 是 `{ kind: "Any" }`,`emit_to` 会被静默丢弃。~~ **这条理由是错的**(2026-08-31 对锁定的 tauri 2.10.3 源码核实):`match_any_or_filter` 遇到 `EventTarget::Any` 会在比较 label 之前短路放行,`emit_to` 照样送达 `bridge.on`。广播只是「可能不止一个窗口要」时的默认选择,不是正确性要求。详见 CLAUDE.md 的 IPC contract 一节。
 - **文案**:所有用户可见字符串进 `src/views/i18n.js`,英文 + 中文两套,不得硬编码进 HTML。
 - **窗口 `focus:false` 是硬要求**:用户正在「系统设置」里点开关,浮窗抢焦点会打断他。因此**键盘事件收不到,Escape 不可用**。
 - **测试命令**:Rust `cargo test --manifest-path src-tauri/Cargo.toml`(**从仓库根目录跑,不要管道接 `tail`**,那会掩盖退出码);Node `node --test src/views/*.test.mjs scripts/*.test.mjs`。

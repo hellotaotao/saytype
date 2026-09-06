@@ -1396,12 +1396,12 @@ pub async fn transcribe_wav(
   let progress = PipelineProgress::new("decode", session_id, chunk_index);
   let inference = transcribe_wav_inner(session_id, chunk_index, wav_bytes, &progress, |text| {
     let Some(app) = app else { return };
-    // Broadcast, NOT emit_to: the frontend registers its listener with
-    // target { kind: "Any" } (ipc-bridge.js), which only receives app.emit()
-    // events. An emit_to("input-prompt", …) targets Webview("input-prompt") and
-    // is silently dropped by an Any listener — every working event in this app
-    // broadcasts. input-prompt is the only window listening for this, so a
-    // broadcast is harmless.
+    // Broadcast rather than emit_to, by choice — not by necessity. (An earlier
+    // version of this comment claimed an Any listener cannot receive a targeted
+    // event; that is false — tauri's match_any_or_filter short-circuits on
+    // EventTarget::Any before comparing labels, so emit_to would reach
+    // ipc-bridge.js too.) input-prompt is the only window listening today, and a
+    // broadcast keeps it that way if another window ever wants the partials.
     let _ = app.emit(
       "local-transcription-partial",
       partial_event_payload(session_id, chunk_index, text),

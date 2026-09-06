@@ -332,14 +332,24 @@ hotkey, transcribes speech via a cloud Whisper API, and inserts the text into th
 
 Renderer → Rust: `bridge.invoke("type-text", text)` → Tauri `invoke("type_text", { text })`.
 Rust → Renderer: `app.emit("shortcut-updated", …)` / `"ui-theme-updated"` /
-`"accessibility-permission-changed"`, received via `bridge.on(...)`. **Always
-`emit` (broadcast), never `emit_to`**: the frontend registers listeners with
-target `{ kind: "Any" }` (ipc-bridge.js), so an `emit_to("<window>", …)` targets a
-specific webview and is silently dropped — it never reaches `bridge.on`. e.g.
-`local-transcription-partial` (`{ text }`), the local decoder's transcript-so-far,
-is broadcast even though only `input-prompt` listens. (The existing
-`emit_to(..., "cleanup-microphone")` / `"open-local-model-panel"` calls share this
-latent gap — they don't reach the renderer either.)
+`"accessibility-permission-changed"`, received via `bridge.on(...)`. The frontend
+registers every listener with target `{ kind: "Any" }` (ipc-bridge.js), and **an
+`Any` listener receives targeted events too** — `emit_to("<window>", …)` reaches
+it. Tauri's filter short-circuits on `Any` before the label is ever compared
+(`match_any_or_filter` in `tauri-<ver>/src/event/listener.rs`: `*target ==
+EventTarget::Any || filter(…)`), on both the Rust-handler and the JS-handler
+path; tauri's own `emit_to()` test covers the `Any` listeners. So `emit` and
+`emit_to` both work here, and the existing `emit_to(..., "cleanup-microphone")` /
+`"open-local-model-panel"` calls are fine.
+
+> An earlier version of this section claimed the opposite — that `emit_to` is
+> silently dropped by `Any` listeners, and that those two calls were a latent
+> bug. **That was wrong** (checked 2026-08-31 against the locked tauri 2.10.3
+> source). Don't reintroduce it, and don't "fix" a working `emit_to` on its
+> authority. `emit` is still the reasonable default for events more than one
+> window may want (e.g. `local-transcription-partial`, broadcast even though only
+> `input-prompt` listens today) — but that's a broadcast-vs-unicast choice, not a
+> correctness one.
 
 **When adding a new IPC command, update three places:** the `#[tauri::command]` in
 `commands.rs`, its registration in the `invoke_handler!` list in `lib.rs`, and the
