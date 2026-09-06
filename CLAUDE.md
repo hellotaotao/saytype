@@ -515,8 +515,35 @@ It is **not sufficient**, and no request-parameter tweak fixes it. A 77-call con
   real-use trial (settings → model) before any default change.
 - **Bigger ≠ better punctuation: full `gpt-4o-transcribe` collapses like Whisper** (follow-up
   2026-07-07, same clip ×3): 0/1/0 marks vs mini's 6/8/7, identical words otherwise. The
-  "High Quality" tier is about word accuracy, not punctuation — for zh dictation the mini is
-  the right OpenAI recommendation, confirmed against its bigger sibling.
+  "High Quality" tier is about word accuracy, not punctuation. (This made the mini the right
+  OpenAI recommendation until `gpt-transcribe` arrived — see the next bullet.)
+- **`gpt-transcribe` supersedes the whole OpenAI family, so the picker is now one row**
+  (measured 2026-09-07). OpenAI shipped `gpt-transcribe` on 2026-07-28 at **$0.0045/min**,
+  cheaper than `gpt-4o-transcribe`/`whisper-1` ($0.006) and dearer than the mini ($0.003).
+  Head-to-head against the mini — same 20 s / 92-char run-on colloquial zh clip (macOS `say`
+  -v Tingting, 16 kHz mono PCM16 WAV, i.e. exactly what SayType uploads), 3 reps each, request
+  shape identical to production (file + model + `response_format=text`, no `language`, no
+  `prompt`):
+
+  | | marks | comma glyph | sentences | words | deterministic |
+  |---|---|---|---|---|---|
+  | `gpt-transcribe` | 6 | `，` full-width | 2 | 92/92 | 3/3 identical |
+  | `gpt-4o-mini-transcribe` | 6 | `,` **half-width ASCII** | 1 | 92/92 | 3/3 identical |
+
+  Same mark count and identical words, but the mini emits **half-width ASCII commas into
+  Chinese text** and runs the whole utterance together as a single sentence. `scrub.rs` does
+  no width normalization, so that reaches the user's document verbatim. The mini's 33% price
+  edge is ~$0.68/month at 15 min/day of real audio — not worth it. So `gpt-4o-transcribe`,
+  `whisper-1` and `gpt-4o-mini-transcribe` were all dropped from the picker on 2026-09-06/07
+  and `gpt-transcribe` became the OpenAI default (`settings.rs` `default_model`,
+  `default_model_for`, the empty-model fallback, and `RECORD_DEFAULT_MODEL`).
+  **whisper-1 stays in the code regardless** — OpenAI's `/audio/translations` endpoint accepts
+  only whisper-1, so translate mode is hardcoded to it; retired ids also keep their
+  `MODEL_LABEL` entries so old history rows still render a name.
+  *Caveats:* n=1 clip, TTS-synthesized (cleaner and more evenly paced than a real mic), and
+  this clip did **not** reproduce the hard case — neither model collapsed to zero punctuation,
+  so it says nothing about the collapse axis that killed lv3/whisper-1. What it does establish
+  reproducibly is comma width and sentence segmentation.
 - **Prompt-leak is real on degenerate audio**: on a repetitive clip, `whisper-1` emitted the seed
   text ("欢迎使用听写工具。" ×15) as its entire output, and lv3 hallucinated video-spam
   boilerplate. The VAD gate already drops non-speech clips before upload, which covers the main

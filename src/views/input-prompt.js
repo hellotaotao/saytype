@@ -13,7 +13,7 @@ const DEBUG_MICROPHONE_CLEANUP = false;
 // Mirror of commands.rs perform_transcription_request model selection, so the
 // badge shows the model that will ACTUALLY run (incl. the translate-mode
 // override and the empty-model default). Keep in sync with the Rust side.
-const RECORD_DEFAULT_MODEL = { openai: "gpt-4o-mini-transcribe", groq: "whisper-large-v3-turbo" };
+const RECORD_DEFAULT_MODEL = { openai: "gpt-transcribe", groq: "whisper-large-v3-turbo" };
 const TRANSLATE_MODEL = { openai: "whisper-1", groq: "whisper-large-v3" };
 const QWEN_LOCAL_MODEL_ID = "qwen3-asr-0.6b-q8_0";
 const NEMOTRON_LOCAL_MODEL_ID = "nemotron-3.5-asr-streaming-0.6b-q8_0";
@@ -28,6 +28,8 @@ const AUDIO_STAGE_TIMEOUT_MS = 30000;
 const TRANSCRIPTION_STAGE_TIMEOUT_MS = 450000;
 const HISTORY_STAGE_TIMEOUT_MS = 5000;
 const MODEL_LABEL = {
+  "gpt-transcribe": "OpenAI GPT Transcribe",
+  // Retired from the picker 2026-09; kept so old history rows still render a name.
   "gpt-4o-transcribe": "OpenAI GPT-4o",
   "gpt-4o-mini-transcribe": "OpenAI GPT-4o mini",
   "whisper-1": "OpenAI Whisper",

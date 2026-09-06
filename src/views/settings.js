@@ -22,19 +22,34 @@ let currentThemePref = "elegant";
 // (the rebuilt <select> lands on it) — keep it in sync with the backend
 // default (settings.rs default_model / save_onboarding_api_key /
 // perform_transcription_request's empty-model fallback). `recommended` adds a
-// localized "★ 推荐" tag to the label. Turbo over lv3 and 4o-mini over
-// whisper-1 are evidence-backed: the 2026-07-03 punctuation sweep (CLAUDE.md)
-// showed lv3/whisper-1 collapse to zero punctuation on run-on Chinese speech
-// while turbo+seed and gpt-4o-mini-transcribe punctuate.
+// localized "★ 推荐" tag to the label. Turbo over lv3 is evidence-backed: the
+// 2026-07-03 punctuation sweep (CLAUDE.md) showed lv3 collapse to zero
+// punctuation on run-on Chinese speech while turbo+seed punctuates.
+//
+// OpenAI is deliberately ONE row. `gpt-transcribe` ($0.0045/min, 2026-07-28)
+// dominates the three models dropped on 2026-09-06:
+//   - gpt-4o-transcribe ($0.006/min) — dearer, and measured WORST of the family
+//     on Chinese punctuation (0/1/0 marks vs mini's 6/8/7, 2026-07-07).
+//   - whisper-1 ($0.006/min) — dearer, oldest, collapses the same way, worst
+//     prompt-leak offender.
+//   - gpt-4o-mini-transcribe ($0.003/min) — the only real trade-off, and it
+//     lost on quality: measured head-to-head 2026-09-07 (same 20 s run-on zh
+//     clip, 3 reps each, both deterministic, both 92/92 words correct), it
+//     emits HALF-WIDTH ASCII commas into Chinese text and runs the whole
+//     utterance together as one sentence, where gpt-transcribe emits proper
+//     full-width ，。 and segments it into two. scrub.rs does no width
+//     normalization, so that lands in the user's document verbatim. The 33%
+//     saving is ~$0.68/month at 15 min/day of real audio — not worth it.
+// whisper-1 is NOT gone from the code: OpenAI's /audio/translations endpoint
+// accepts only whisper-1, so it stays hardcoded for translate mode
+// (commands.rs) and keeps its MODEL_LABEL entry for history rendering.
 const modelOptions = {
   groq: [
     { value: "whisper-large-v3-turbo", labelKey: "settings.model.options.whisperLargeV3Turbo", recommended: true },
     { value: "whisper-large-v3", labelKey: "settings.model.options.whisperLargeV3" },
   ],
   openai: [
-    { value: "gpt-4o-mini-transcribe", labelKey: "settings.model.options.gpt4oMiniTranscribe", recommended: true },
-    { value: "gpt-4o-transcribe", labelKey: "settings.model.options.gpt4oTranscribe" },
-    { value: "whisper-1", labelKey: "settings.model.options.whisper1" },
+    { value: "gpt-transcribe", labelKey: "settings.model.options.gptTranscribe", recommended: true },
   ],
 };
 

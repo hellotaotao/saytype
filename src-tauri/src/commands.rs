@@ -655,7 +655,7 @@ fn default_model_for(provider: &str) -> &'static str {
   match provider {
     "groq" => "whisper-large-v3-turbo",
     crate::local_asr::LOCAL_PROVIDER => crate::local_asr::QWEN_MODEL_ID,
-    _ => "gpt-4o-mini-transcribe",
+    _ => "gpt-transcribe",
   }
 }
 
@@ -1783,7 +1783,12 @@ pub async fn retranscribe_pending(app: AppHandle, id: String) -> Result<String, 
 // trait; high-resource languages punctuate acceptably on their own, and
 // gpt-4o-transcribe punctuates everywhere by default. Injecting an unverified,
 // possibly wrong-script seed into another language could only hurt — so every
-// non-Chinese language (and every gpt-4o model) gets no seed at all.
+// non-Chinese language (and every GPT-family model) gets no seed at all.
+//
+// "GPT-family" is matched as the `gpt-` prefix, not the literal `gpt-4o`: the
+// seed exists to patch a Whisper decoding trait, so a newer OpenAI model must
+// default to *no* seed rather than inherit an unverified prompt. That is how
+// `gpt-transcribe` (added 2026-09) is covered without re-measuring it.
 //
 // NOTE: this literal is mirrored in `src/views/main.html` (`#punctuation-seed`,
 // in the Dictionary page) for the read-only display — keep the two in sync.
@@ -1800,12 +1805,12 @@ fn is_chinese(language: &str) -> bool {
 /// A punctuation seed is added only for **Whisper + Chinese**: it's appended
 /// LAST, closest to the audio, where Whisper weights style most heavily
 /// (verified: seed-last beats seed-first), and is injected even with an empty
-/// dictionary. Every other case — a gpt-4o model (already punctuates) or any
-/// non-Chinese language — passes the dictionary through unchanged, or sends no
-/// prompt at all when the dictionary is empty.
+/// dictionary. Every other case — a GPT-family model (already punctuates) or
+/// any non-Chinese language — passes the dictionary through unchanged, or sends
+/// no prompt at all when the dictionary is empty.
 fn build_transcription_prompt(model: &str, language: &str, dictionary: &str) -> Option<String> {
   let dict = dictionary.trim();
-  let seed_chinese = !model.to_lowercase().contains("gpt-4o") && is_chinese(language);
+  let seed_chinese = !model.to_lowercase().starts_with("gpt-") && is_chinese(language);
   if seed_chinese {
     if dict.is_empty() {
       Some(SEED_ZH.to_string())
@@ -1944,7 +1949,7 @@ async fn perform_transcription_request(
     if provider == "groq" {
       "whisper-large-v3-turbo".to_string()
     } else {
-      "gpt-4o-mini-transcribe".to_string()
+      "gpt-transcribe".to_string()
     }
   } else {
     config.model.clone()
@@ -2252,14 +2257,14 @@ mod tests {
 
   #[test]
   fn switch_provider_resets_model_to_the_new_providers_default() {
-    let mut config = AppConfig::default(); // openai / gpt-4o-mini-transcribe
+    let mut config = AppConfig::default(); // openai / gpt-transcribe
     switch_provider(&mut config, "groq");
     assert_eq!(config.provider, "groq");
     assert_eq!(config.model, "whisper-large-v3-turbo");
     switch_provider(&mut config, "local");
     assert_eq!(config.model, "qwen3-asr-0.6b-q8_0");
     switch_provider(&mut config, "openai");
-    assert_eq!(config.model, "gpt-4o-mini-transcribe");
+    assert_eq!(config.model, "gpt-transcribe");
   }
 
   #[test]
@@ -2435,16 +2440,29 @@ mod tests {
     }
   }
 
-  // --- gpt-4o family: never seeded, even for Chinese (it already punctuates) ---
+  // --- GPT family: never seeded, even for Chinese (it already punctuates) ---
 
   #[test]
-  fn gpt4o_is_never_seeded_even_for_chinese() {
-    for model in ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"] {
+  fn gpt_family_is_never_seeded_even_for_chinese() {
+    for model in ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-transcribe"] {
       assert_eq!(build_transcription_prompt(model, "zh", ""), None);
       assert_eq!(build_transcription_prompt(model, "zh", "   "), None);
       let p = build_transcription_prompt(model, "zh", "Claude\nAzure").unwrap();
       assert_eq!(p, "Claude\nAzure");
       assert!(!p.contains(SEED_ZH) && !p.contains('。'));
+    }
+  }
+
+  // The rule is the `gpt-` prefix, so the Whisper models — the ones the seed was
+  // actually measured on — must keep getting it.
+  #[test]
+  fn whisper_models_are_still_seeded_for_chinese() {
+    for model in ["whisper-1", "whisper-large-v3", "whisper-large-v3-turbo"] {
+      assert_eq!(
+        build_transcription_prompt(model, "zh", "").unwrap(),
+        SEED_ZH,
+        "{model} lost the Chinese punctuation seed"
+      );
     }
   }
 

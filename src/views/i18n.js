@@ -120,7 +120,7 @@
           cloudToggleHide: "Hide cloud options ▾",
           groqTag: "Recommended · free",
           groqDesc: "The free tier is so generous that for most people daily dictation is simply free",
-          openaiDesc: "gpt-4o-transcribe / whisper-1, pay as you go",
+          openaiDesc: "gpt-transcribe, pay as you go",
           placeholderGroq: "Paste your Groq API key (gsk_…)",
           placeholderOpenai: "Paste your OpenAI API key (sk-…)",
           save: "Save",
@@ -169,7 +169,7 @@
           "This content will be sent as a prompt to improve transcription accuracy",
         punctuationTitle: "Automatic punctuation for Chinese",
         punctuationDesc:
-          "When transcribing Chinese with a Whisper model, SayType automatically appends the fixed example below after your dictionary so punctuation comes out reliably. It contains no personal data, and is not added for gpt-4o models or other languages.",
+          "When transcribing Chinese with a Whisper model, SayType automatically appends the fixed example below after your dictionary so punctuation comes out reliably. It contains no personal data, and is not added for GPT models or other languages.",
         saveError: "Error saving dictionary: {message}",
       },
       activity: {
@@ -305,13 +305,7 @@
           selectTitle: "Select transcription model",
           recommendedTag: "★ Recommended",
           options: {
-            whisper1: "Whisper-1 (Classic) — $0.006/min ($0.36/hr)",
-            gpt4oTranscribe:
-              "GPT-4o Transcribe (High Quality) — $0.006/min ($0.36/hr)",
-            gpt4oMiniTranscribe:
-              "GPT-4o Mini Transcribe (Fast) — $0.003/min ($0.18/hr)",
-            gpt4oTranscribeDiarize:
-              "GPT-4o Transcribe (Diarize) — $0.006/min ($0.36/hr)",
+            gptTranscribe: "GPT Transcribe — $0.0045/min ($0.27/hr)",
             whisperLargeV3:
               "Whisper Large V3 (Standard) — $0.00185/min ($0.111/hr)",
             whisperLargeV3Turbo:
@@ -521,7 +515,7 @@
           cloudToggleHide: "收起云端选项 ▾",
           groqTag: "推荐 · 免费",
           groqDesc: "免费额度非常宽松，日常听写对绝大多数人来说等于免费随便用",
-          openaiDesc: "gpt-4o-transcribe / whisper-1，按量付费",
+          openaiDesc: "gpt-transcribe，按量付费",
           placeholderGroq: "粘贴你的 Groq API key（gsk_…）",
           placeholderOpenai: "粘贴你的 OpenAI API key（sk-…）",
           save: "保存",
@@ -569,7 +563,7 @@
         helpItem4: "此内容将作为提示发送，以提升转录准确率",
         punctuationTitle: "中文标点自动优化",
         punctuationDesc:
-          "使用 Whisper 模型转录中文时，SayType 会在你的词典之后自动追加下面这句固定示例，让标点稳定输出。它不含任何隐私内容；gpt-4o 模型和其它语言不会追加。",
+          "使用 Whisper 模型转录中文时，SayType 会在你的词典之后自动追加下面这句固定示例，让标点稳定输出。它不含任何隐私内容；GPT 系列模型和其它语言不会追加。",
         saveError: "保存词典出错：{message}",
       },
       activity: {
@@ -704,13 +698,7 @@
           selectTitle: "选择转录模型",
           recommendedTag: "★ 推荐",
           options: {
-            whisper1: "Whisper-1（经典） — $0.006/分钟 ($0.36/小时)",
-            gpt4oTranscribe:
-              "GPT-4o 转录（高质量） — $0.006/分钟 ($0.36/小时)",
-            gpt4oMiniTranscribe:
-              "GPT-4o Mini 转录（快速） — $0.003/分钟 ($0.18/小时)",
-            gpt4oTranscribeDiarize:
-              "GPT-4o 转录（说话人分离） — $0.006/分钟 ($0.36/小时)",
+            gptTranscribe: "GPT Transcribe — $0.0045/分钟 ($0.27/小时)",
             whisperLargeV3:
               "Whisper Large V3（标准） — $0.00185/分钟 ($0.111/小时)",
             whisperLargeV3Turbo:

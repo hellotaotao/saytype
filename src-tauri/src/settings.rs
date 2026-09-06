@@ -32,7 +32,7 @@ fn default_ui_theme() -> String {
 }
 
 fn default_model() -> String {
-  "gpt-4o-mini-transcribe".into()
+  "gpt-transcribe".into()
 }
 
 fn default_microphone() -> String {
@@ -395,7 +395,7 @@ mod tests {
   fn defaults_match_current_app_behavior() {
     let config = AppConfig::default();
     assert_eq!(config.provider, "openai");
-    assert_eq!(config.model, "gpt-4o-mini-transcribe");
+    assert_eq!(config.model, "gpt-transcribe");
     assert_eq!(config.shortcut, DEFAULT_RECORD_SHORTCUT);
     assert_eq!(config.translate_shortcut, TRANSLATE_SHORTCUT);
     assert_eq!(config.nemotron_latency_ms, DEFAULT_NEMOTRON_LATENCY_MS);
