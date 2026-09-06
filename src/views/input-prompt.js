@@ -22,6 +22,8 @@ const NEMOTRON_LOCAL_MODEL_ID = "nemotron-3.5-asr-streaming-0.6b-q8_0";
 const QWEN_PREWARM_PROBATION_MS = 500;
 const RECORDER_STOP_TIMEOUT_MS = 2000;
 const BATCH_RECORDER_STOP_TIMEOUT_MS = 15000;
+// Allow IPC round-trip and channel drainage beyond the backend's 5 s stop deadline.
+const NATIVE_CAPTURE_STOP_TIMEOUT_MS = 8000;
 const AUDIO_STAGE_TIMEOUT_MS = 30000;
 // Native transcription has its own 420 s whole-request deadline. Leave time
 // for IPC delivery without imposing one deadline on a multi-chunk recording.
@@ -1155,6 +1157,7 @@ class VoiceInputPrompt {
   cancelRecordingSession(recordingSession) {
     const lifecycle = this.ensureRecordingSession(recordingSession);
     if (["completed", "cancelled", "failed"].includes(lifecycle.state)) return;
+    recordingSession.captureRecoveryWav = null;
     this.cancelledTranscriptionSessionIds.add(recordingSession.id);
     this.completeRecordingSession(recordingSession, "cancelled");
     for (const cancelWaiter of lifecycle.cancelWaiters) cancelWaiter();
@@ -1733,7 +1736,8 @@ class VoiceInputPrompt {
     if (live.uploadError) {
       throw live.uploadError;
     }
-    return ipc.invoke("finish-live-transcription", live.sessionId);
+    return ipc.invoke("finish-live-transcription", live.sessionId,
+      ...(recordingSession.captureIncomplete ? [true] : []));
   }
 
   cancelNemotronLive(recordingSession) {
@@ -2166,72 +2170,77 @@ class VoiceInputPrompt {
     if (!capture) return;
     if (capture.stopPromise) return capture.stopPromise;
     capture.stopPromise = (async () => {
-      let commandStats = null;
+      let timeoutId;
       try {
-        commandStats = await ipc.invoke("stop-native-capture", capture.sessionId);
-      } catch (error) {
-        capture.error ||= error instanceof Error ? error : new Error(errorMessage(error));
-      }
-
-      if (!capture.stopped) {
-        let timeoutId;
-        await Promise.race([
-          capture.done,
-          new Promise((resolve) => {
-            timeoutId = setTimeout(resolve, 5000);
+        // Bound both IPC completion and channel drainage. A missing IPC reply
+        // must not prevent finalization or block every subsequent recording.
+        const stopped = Promise.resolve()
+          .then(() => ipc.invoke("stop-native-capture", capture.sessionId))
+          .then(async (stats) => {
+            await capture.done;
+            return stats;
+          });
+        const stats = await Promise.race([
+          stopped,
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error("Native capture stop timed out")),
+              NATIVE_CAPTURE_STOP_TIMEOUT_MS);
           }),
         ]);
+        if (stats?.channelSendFailures > 0 ||
+          (Number.isFinite(stats?.outputSamples) && stats.outputSamples !== capture.sampleCount)) {
+          capture.error ||= new Error("Native audio delivery was incomplete");
+        }
+      } catch (error) {
+        capture.stopError = error instanceof Error ? error : new Error(errorMessage(error));
+        capture.error ||= capture.stopError;
+      } finally {
         clearTimeout(timeoutId);
       }
-      if (!capture.stopped) capture.resolveDone(commandStats);
+      // Closing acceptance before finalization also rejects PCM arriving after
+      // a timeout. Do not label that local deadline as a native stopped ACK.
+      recordingSession.captureIncomplete = !!capture.error;
       capture.accepting = false;
 
-      this.stopNemotronCapture(recordingSession);
-      this.stopChunkedCapture(recordingSession, { flush });
-      this.reportAudioOnset(recordingSession);
+      try {
+        this.stopNemotronCapture(recordingSession);
+        this.stopChunkedCapture(recordingSession, { flush });
+        this.reportAudioOnset(recordingSession);
 
-      if (flush && capture.sampleCount > 0) {
-        const wav = encodePcm16LeWav(
-          capture.pcmBlocks,
-          capture.sampleCount,
-          capture.sampleRate
-        );
-        recordingSession.chunks.push(new Blob([wav], { type: "audio/wav" }));
-        recordingSession.mimeType = "audio/wav";
-        this.reportLifecycle(recordingSession, "capture", "complete");
-      } else if (flush) {
-        recordingSession.finalizationError = capture.error || new Error("No native audio captured");
-        this.reportLifecycle(recordingSession, "capture", "error");
+        if (flush && capture.sampleCount > 0) {
+          const wav = encodePcm16LeWav(
+            capture.pcmBlocks,
+            capture.sampleCount,
+            capture.sampleRate
+          );
+          recordingSession.chunks.push(new Blob([wav], { type: "audio/wav" }));
+          recordingSession.mimeType = "audio/wav";
+          this.reportLifecycle(recordingSession, "capture", capture.error ? "error" : "complete");
+          if (capture.error && !this.isSessionCancelled(recordingSession)) {
+            recordingSession.captureRecoveryWav = wav;
+          }
+        } else if (flush) {
+          recordingSession.finalizationError = capture.error || new Error("No native audio captured");
+          this.reportLifecycle(recordingSession, "capture", "error");
+        }
+      } finally {
+        capture.pcmBlocks = [];
+        if (this.nativeCapture === capture) this.nativeCapture = null;
       }
-      capture.pcmBlocks = [];
-      if (this.nativeCapture === capture) this.nativeCapture = null;
     })();
     return capture.stopPromise;
   }
 
   async startNativeRecording(startupTiming, startupStartedAt, preflightReadyAt) {
-    // A native stream stays live in Rust until stop-native-capture returns, and
-    // start_capture refuses a second one during that window. hotkey.rs's
-    // STOP_DEBOUNCE does NOT rule this out: releasing only arms a deadline, and
-    // the stop is dispatched ~250 ms later, so a re-press just past the debounce
-    // races the very stop it triggered. The window is a few milliseconds — Rust
-    // frees the slot before joining its threads — but nothing in the code
-    // ordered these, so it was luck rather than a guarantee.
-    //
-    // Falling back to WebKit is not an acceptable outcome here either: macOS no
-    // longer primes a WebKit stream, so that fallback opens a cold one and pays
-    // the full 3.0 s attenuation — on a short utterance, most of the dictation.
-    // The fallback is the last-resort net for a device that cannot open at all.
-    //
-    // Waiting costs nothing in normal use: nativeCapture is already null unless
-    // a stop is genuinely in flight.
+    // Serialize normal release/start transitions. The preceding stop has a
+    // bounded wait; Rust retains ownership if the device is still stopping.
     const previous = this.nativeCapture;
     if (previous?.stopPromise) {
       try {
         await previous.stopPromise;
       } catch {
-        // Its own path reports the failure; all that matters here is that the
-        // device has been released before this recording claims it.
+        // Its own path preserves audio and reports the failure. Rust will
+        // reject the next start if device release is still outstanding.
       }
     }
     this.statusText.textContent = "";
@@ -2273,6 +2282,9 @@ class VoiceInputPrompt {
       );
       capture.started = true;
       capture.info = info;
+      if (capture.error || capture.stopped) {
+        throw capture.error || new Error("Native capture stopped during startup");
+      }
     } catch (error) {
       // Native capture is macOS's better path, not its only one — the WebKit
       // path is still compiled in for Windows/Linux. A Mac where CoreAudio
@@ -2291,6 +2303,13 @@ class VoiceInputPrompt {
         await this.finishNativeCapture(recordingSession, { flush: false });
       } catch {
         // Teardown is best-effort; the fallback matters more than its tidiness.
+      }
+      // A timed-out native operation may still own CoreAudio. Do not open a
+      // competing WebKit stream until release is known; the next native start
+      // can reap the old handle once its thread actually exits.
+      if (/native capture (?:session .*active|.*timed out)/i.test(errorMessage(error)) ||
+        /timed out/i.test(errorMessage(capture.stopError))) {
+        throw capture.stopError || error;
       }
       this.reportAudioProbe(recordingSession, "capture", [
         "path=native",
@@ -2666,7 +2685,8 @@ class VoiceInputPrompt {
       this.statusText.textContent = "";
       this.clearTranscriptionPreview();
     } else {
-      this.promptText.textContent = t("inputPrompt.processing");
+      this.promptText.textContent = t(recordingSession?.nativeCapture?.error
+        ? "inputPrompt.recordingInterrupted" : "inputPrompt.processing");
       this.statusText.textContent = t("inputPrompt.transcribing");
     }
 
@@ -2885,7 +2905,8 @@ class VoiceInputPrompt {
           uploadBuffer,
           translateMode,
           uploadMime,
-          sessionId
+          sessionId,
+          ...(session?.captureIncomplete ? [undefined, true] : [])
         );
         return session ? await this.waitForSessionStage(session, "chunk-ipc",
           transcribe, TRANSCRIPTION_STAGE_TIMEOUT_MS) : await transcribe();
@@ -2942,7 +2963,8 @@ class VoiceInputPrompt {
     this.activeTranscriptionSessionIds.add(sessionId);
     this.updateStatusText();
     try {
-      if (recordingSession.finalizationError && !useChunkedLocal && !useNemotronLive) {
+      if (recordingSession.finalizationError &&
+        (recordingSession.nativeCapture || (!useChunkedLocal && !useNemotronLive))) {
         throw recordingSession.finalizationError;
       }
       if (
@@ -2997,6 +3019,15 @@ class VoiceInputPrompt {
         type: mimeType || "audio/webm", // Use actual recording format
       }) : null;
 
+      // Take the decoder's stable Blob before a recovery ACK can release the
+      // session-owned chunks. Preserve the original WAV, not a VAD-trimmed copy.
+      if (recordingSession.captureIncomplete && audioBlob) {
+        this.preserveRecoveryAudio(recordingSession, {
+          blob: audioBlob, wav: recordingSession.captureRecoveryWav || null,
+        });
+        recordingSession.captureRecoveryWav = null;
+      }
+
       let transcription;
       if (useNemotronLive) {
         if (this.cancelledTranscriptionSessionIds.has(sessionId)) {
@@ -3017,7 +3048,9 @@ class VoiceInputPrompt {
         transcription = await this.finishChunkedLocal(recordingSession);
         this.assertSessionActive(recordingSession);
         recordingSession.finalText = transcription;
-        transcription = await this.recordAssembledTranscription(transcription, recordingSession);
+        if (!recordingSession.captureIncomplete) {
+          transcription = await this.recordAssembledTranscription(transcription, recordingSession);
+        }
       } else {
         // Batch engines run the neural VAD after release. Nemotron has already
         // processed the live PCM stream and returns an empty final for silence.
@@ -3081,6 +3114,12 @@ class VoiceInputPrompt {
       this.assertSessionActive(recordingSession);
       if (transcription && transcription.trim()) {
         recordingSession.finalText = transcription;
+        if (recordingSession.captureIncomplete) {
+          terminalState = "failed";
+          this.removePendingInsertion(sessionId);
+          this.preserveRecoveryText(sessionId, transcription, "incomplete");
+          return;
+        }
         recordingSession.lifecycle.state = "ready";
         this.storeTranscriptionResult(sessionId, transcription);
         this.updateStatusText();
@@ -3204,7 +3243,9 @@ class VoiceInputPrompt {
       errorMessageKey = "inputPrompt.permissionDenied";
     } else if (error.name === "NotFoundError") {
       errorMessageKey = "inputPrompt.noMicrophone";
-    } else if (error.name === "NotReadableError") {
+    } else if (error.name === "NotReadableError" ||
+      /^native capture session \d+ is (?:still active|active, not \d+)$/.test(errorMessage(error)) ||
+      errorMessage(error) === "native capture stop timed out; device is still stopping") {
       errorMessageKey = "inputPrompt.microphoneBusy";
     } else if (error.name === "OverconstrainedError") {
       errorMessageKey = "inputPrompt.microphoneUnsupported";

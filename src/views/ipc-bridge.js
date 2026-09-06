@@ -96,7 +96,10 @@
     ],
     "record-assembled-transcription": [["text"]],
     "save-recovered-transcription": [["recovery"]],
-    "finish-live-transcription": [["sessionId", "session_id"]],
+    "finish-live-transcription": [
+      ["sessionId", "session_id"],
+      ["captureIncomplete", "capture_incomplete"],
+    ],
     "cancel-live-transcription": [["sessionId", "session_id"]],
     "save-settings": [["settings", "settingsInput", "settings_input"]],
     "delete-history-item": [["id"]],
@@ -134,6 +137,7 @@
         "mime-type": 2,
         "session-id": 3,
         "chunk-index": 4, // chunked local path only; omitted for whole-clip decodes
+        "capture-incomplete": 5, // partial capture is persisted through recovery
       },
     },
     "save-pending-transcription": {

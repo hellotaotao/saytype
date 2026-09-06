@@ -2779,3 +2779,206 @@ test("idle Escape keeps unsaved current text until its durable ACK without reviv
   assert.equal(h.prompt.statusText.textContent, "");
   assert.deepEqual(h.recovered, ["completed words to preserve"]);
 });
+
+test("native startup errors before the start response cannot enter Listening", async () => {
+  let handler;
+  const V = loadVoiceInputPrompt({
+    createChannel(h) { handler = h; return {}; },
+    invoke(command) {
+      if (command === "start-native-capture") {
+        handler({ event: "error", message: "device disconnected" });
+        handler({ event: "stopped", stats: { outputSamples: 0 } });
+        return Promise.resolve({ inputRate: 48000 });
+      }
+      return Promise.resolve(null);
+    },
+  });
+  const prompt = createBarePrompt(V, {
+    osName: "macos", translateMode: false, stopRequested: false,
+    promptElement: { classList: { add() {} } },
+    clearTranscriptionPreview() {}, startWaveAnimation() {}, startRecordingTimer() {},
+  });
+  assert.equal(await prompt.startNativeRecording({}, 0, 0), false);
+  assert.equal(prompt.isRecording, false);
+  assert.equal(prompt.pendingInsertionOrder.length, 0);
+});
+
+test("native stop deadline covers an unresolved IPC and ignores late PCM", async () => {
+  const timers = createFakeTimers();
+  const stop = createDeferred();
+  const V = loadVoiceInputPrompt({
+    invoke(command) { return command === "stop-native-capture" ? stop.promise : Promise.resolve(null); },
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+  });
+  const prompt = createBarePrompt(V);
+  const session = { id: 1, chunks: [] };
+  const capture = prompt.createNativeCapture(session);
+  prompt.nativeCapture = capture;
+  prompt.consumeNativeCaptureMessage(session, new Uint8Array([0, 64]).buffer);
+  const finishing = prompt.finishNativeCapture(session);
+  await settlePromises();
+  timers.fire(8000);
+  await finishing;
+  assert.equal(prompt.nativeCapture, null);
+  assert.equal(session.captureIncomplete, true);
+  assert.equal(session.chunks.length, 1);
+  prompt.consumeNativeCaptureMessage(session, new Uint8Array([1, 64]).buffer);
+  assert.equal(capture.sampleCount, 1);
+  stop.resolve({ outputSamples: 2 });
+  await settlePromises();
+  assert.equal(session.chunks.length, 1);
+});
+
+for (const mode of ["batch", "chunked", "live"]) {
+  test(`interrupted native ${mode} audio is transcribed and recovered without insertion`, async () => {
+    const h = await createLifecycleHarness({ batch: mode !== "chunked", invoke(command, ...args) {
+      if (command === "transcribe-audio" || command === "finish-live-transcription") return Promise.resolve("kept words");
+      if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
+      return Promise.resolve(null);
+    } });
+    h.session.captureIncomplete = true;
+    if (mode === "batch") h.session.provider = "openai";
+    h.session.chunks.push(new Blob([new Uint8Array([1, 2])], { type: "audio/wav" }));
+    if (mode === "live") {
+      h.session.live = { sessionId: h.session.id, pendingPcm: [], pendingPcmBytes: 0, uploadTail: Promise.resolve() };
+    }
+    h.prompt.stopRecording();
+    h.recorder.onstop();
+    await h.session.lifecycle.processPromise;
+    await settlePromises();
+    assert.deepEqual(h.inserted, []);
+    assert.deepEqual(h.recovered, ["kept words"]);
+    assert.equal(h.calls.some(([command]) => command === "record-assembled-transcription"), false);
+    const saved = h.calls.find(([command]) => command === "save-recovered-transcription");
+    assert.equal(saved[1].kind, "incomplete");
+    if (mode === "batch") assert.equal(h.calls.find(([command]) => command === "transcribe-audio")[6], true);
+    if (mode === "live") assert.equal(h.calls.find(([command]) => command === "finish-live-transcription")[2], true);
+    assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  });
+}
+
+test("native stop waits for channel drainage and detects missing samples", async () => {
+  const timers = createFakeTimers();
+  const V = loadVoiceInputPrompt({
+    invoke: () => Promise.resolve({ outputSamples: 2, channelSendFailures: 1 }),
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+  });
+  const prompt = createBarePrompt(V);
+  const session = { id: 1, chunks: [] };
+  const capture = prompt.createNativeCapture(session);
+  prompt.consumeNativeCaptureMessage(session, new Uint8Array([0, 64]).buffer);
+  let finished = false;
+  const finishing = prompt.finishNativeCapture(session).then(() => { finished = true; });
+  await settlePromises();
+  assert.equal(finished, false);
+  prompt.consumeNativeCaptureMessage(session, { event: "stopped" });
+  await finishing;
+  assert.equal(session.captureIncomplete, true);
+  assert.equal(session.chunks.length, 1);
+  assert.equal(timers.pending.size, 0);
+  assert.equal(capture.accepting, false);
+});
+
+test("native stop timeout after Escape cannot recover or insert the cancelled clip", async () => {
+  const h = await createLifecycleHarness({ invoke(command) {
+    if (command === "stop-native-capture") return new Promise(() => {});
+    return Promise.resolve(null);
+  } });
+  h.session.audioContext = null;
+  h.prompt.createNativeCapture(h.session);
+  h.prompt.nativeCapture = h.session.nativeCapture;
+  h.prompt.consumeNativeCaptureMessage(h.session, new Uint8Array([0, 64]).buffer);
+  h.prompt.stopRecording();
+  h.prompt.cancelRecording();
+  h.timers.fire(8000);
+  await h.session.nativeCapture.stopPromise;
+  await settlePromises();
+  assert.deepEqual(h.inserted, []);
+  assert.deepEqual(h.recovered, []);
+  assert.equal(h.calls.some(([command]) => command === "save-pending-transcription"), false);
+  assert.equal(h.calls.some(([command]) => command === "save-recovered-transcription"), false);
+  assert.equal(h.prompt.pendingInsertionOrder.length, 0);
+  assert.equal(h.prompt.nativeCapture, null);
+});
+
+test("native startup cannot fall back while the previous device is still owned", async () => {
+  const V = loadVoiceInputPrompt({ invoke(command) {
+    if (command === "start-native-capture") return Promise.reject(new Error("native capture session 99 is still active"));
+    return Promise.resolve(null);
+  } });
+  const prompt = createBarePrompt(V, {
+    osName: "macos", translateMode: false, stopRequested: false,
+    clearTranscriptionPreview() {},
+  });
+  await assert.rejects(prompt.startNativeRecording({}, 0, 0), /still active/);
+  assert.equal(prompt.isRecording, false);
+  assert.equal(prompt.pendingInsertionOrder.length, 0);
+});
+
+test("fast native audio recovery ACK cannot erase a local batch before transcription", async () => {
+  let h;
+  h = await createLifecycleHarness({ batch: true, invoke(command, ...args) {
+    if (command === "save-pending-transcription") return Promise.resolve("saved-audio");
+    if (command === "stop-native-capture") {
+      h.prompt.consumeNativeCaptureMessage(h.session, { event: "stopped" });
+      return Promise.resolve({ outputSamples: 1 });
+    }
+    if (command === "transcribe-audio") return Promise.resolve("kept local words");
+    return Promise.resolve(null);
+  } });
+  h.session.audioContext = null;
+  h.prompt.createNativeCapture(h.session);
+  h.prompt.nativeCapture = h.session.nativeCapture;
+  h.prompt.consumeNativeCaptureMessage(h.session, new Uint8Array([0, 64]).buffer);
+  h.session.nativeCapture.error = new Error("device disconnected");
+  const finalize = h.prompt.finalizeRecordingSession.bind(h.prompt);
+  const releaseFinalize = createDeferred();
+  h.prompt.finalizeRecordingSession = (...args) => releaseFinalize.promise.then(() => finalize(...args));
+  h.prompt.stopRecording();
+  await h.session.nativeCapture.stopPromise;
+  await settlePromises();
+  assert.equal(h.calls.some(([command]) => command === "save-pending-transcription"), false,
+    "defer custody transfer until the decoder has its own audio snapshot");
+  releaseFinalize.resolve();
+  await settlePromises();
+  await h.session.lifecycle.processPromise;
+  assert.deepEqual(h.inserted, []);
+  assert.deepEqual(h.recovered, ["kept local words"]);
+});
+
+test("native stop deadline also covers a missing stopped channel event", async () => {
+  const timers = createFakeTimers();
+  const V = loadVoiceInputPrompt({
+    invoke: () => Promise.resolve({ outputSamples: 1 }),
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+  });
+  const prompt = createBarePrompt(V);
+  const session = { id: 1, chunks: [] };
+  prompt.createNativeCapture(session);
+  prompt.consumeNativeCaptureMessage(session, new Uint8Array([0, 64]).buffer);
+  const finishing = prompt.finishNativeCapture(session);
+  await settlePromises();
+  timers.fire(8000);
+  await finishing;
+  assert.equal(session.captureIncomplete, true);
+  assert.equal(session.chunks.length, 1);
+});
+
+for (const [error, expected] of [
+  [new Error("native capture session 99 is still active"), "microphoneBusy"],
+  ["native capture session 99 is active, not 100", "microphoneBusy"],
+  [new Error("native capture stop timed out; device is still stopping"), "microphoneBusy"],
+  [Object.assign(new Error("device busy"), { name: "NotReadableError" }), "microphoneBusy"],
+  [new Error("native capture startup timed out"), "recordingFailed"],
+  [new Error("failed to build native input stream"), "recordingFailed"],
+]) {
+  test(`recording error maps ${String(error)} to ${expected}`, async () => {
+    const V = loadVoiceInputPrompt();
+    const prompt = createBarePrompt(V, {
+      stopRecordingTimer() {}, cleanup() {}, scheduleHidePrompt() {},
+      promptElement: { classList: { add() {} } },
+    });
+    await prompt.handleRecordingError(error);
+    assert.equal(prompt.promptText.textContent, `inputPrompt.${expected}`);
+  });
+}

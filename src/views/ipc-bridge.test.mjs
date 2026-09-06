@@ -71,3 +71,28 @@ test("native capture passes a Tauri binary channel and session-scoped stop", asy
   assert.equal(calls[1][0], "stop_native_capture");
   assert.equal(calls[1][1].sessionId, 7);
 });
+
+test("live completion carries the optional capture integrity flag", async () => {
+  const { bridge, calls } = loadBridge();
+  await bridge.invoke("finish-live-transcription", 42, true);
+  await bridge.invoke("finish-live-transcription", 43);
+  assert.equal(calls[0][0], "finish_live_transcription");
+  assert.equal(calls[0][1].sessionId, 42);
+  assert.equal(calls[0][1].captureIncomplete, true);
+  assert.equal(calls[0][1].capture_incomplete, true);
+  assert.equal(calls[1][1].captureIncomplete, undefined);
+});
+
+test("whole-clip transcription sends capture integrity independently of chunk index", async () => {
+  const { bridge, calls } = loadBridge();
+  const audio = new Uint8Array([1, 2]);
+  await bridge.invoke("transcribe-audio", audio, false, "audio/wav", 42, undefined, true);
+  await bridge.invoke("transcribe-audio", audio, false, "audio/wav", 43);
+  await bridge.invoke("transcribe-audio", audio, false, "audio/wav", 44, 0, false);
+  assert.equal(calls[0][1], audio);
+  assert.equal(calls[0][2].headers["capture-incomplete"], "true");
+  assert.equal(Object.hasOwn(calls[0][2].headers, "chunk-index"), false);
+  assert.equal(Object.hasOwn(calls[1][2].headers, "capture-incomplete"), false);
+  assert.equal(calls[2][2].headers["chunk-index"], "0");
+  assert.equal(calls[2][2].headers["capture-incomplete"], "false");
+});

@@ -53,7 +53,8 @@ enum CaptureControl {
 struct CaptureHandle {
   session_id: u64,
   control: mpsc::Sender<CaptureControl>,
-  thread: JoinHandle<Result<NativeCaptureStats>>,
+  thread: Option<JoinHandle<Result<NativeCaptureStats>>>,
+  completed: Option<Result<NativeCaptureStats, String>>,
 }
 
 /// One native input stream at a time. Transcription may overlap, but the UI
@@ -415,6 +416,12 @@ pub fn start_capture(
   channel: Channel<InvokeResponseBody>,
 ) -> Result<NativeCaptureInfo> {
   let mut active = state.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  // A timed-out stop still owns the device. Only reap a thread after it exits.
+  if active.as_ref().map(|handle| handle.is_finished()).unwrap_or(false) {
+    if let Some(mut finished) = active.take() {
+      let _ = finished.completed_result();
+    }
+  }
   if let Some(existing) = active.as_ref() {
     return Err(anyhow!(
       "native capture session {} is still active",
@@ -439,22 +446,33 @@ pub fn start_capture(
     })
     .context("failed to start native capture thread")?;
 
-  match ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-    Ok(Ok(info)) => {
-      *active = Some(CaptureHandle {
-        session_id,
-        control: control_tx,
-        thread,
-      });
-      Ok(info)
-    }
+  *active = Some(CaptureHandle {
+    session_id,
+    control: control_tx.clone(),
+    thread: Some(thread),
+    completed: None,
+  });
+  // Stop requests must remain available while device setup is pending.
+  drop(active);
+
+  await_capture_ready(ready_rx, &control_tx, std::time::Duration::from_secs(10))
+}
+
+fn await_capture_ready(
+  ready_rx: mpsc::Receiver<Result<NativeCaptureInfo, String>>,
+  control_tx: &mpsc::Sender<CaptureControl>,
+  timeout: std::time::Duration,
+) -> Result<NativeCaptureInfo> {
+  match ready_rx.recv_timeout(timeout) {
+    Ok(Ok(info)) => Ok(info),
     Ok(Err(message)) => {
-      let _ = thread.join();
+      let _ = control_tx.send(CaptureControl::Stop);
       Err(anyhow!(message))
     }
     Err(_) => {
       let _ = control_tx.send(CaptureControl::Stop);
-      let _ = thread.join();
+      // CoreAudio teardown may never return. Keep ownership until it does,
+      // rather than joining here and defeating the startup deadline.
       Err(anyhow!("native capture startup timed out"))
     }
   }
@@ -470,26 +488,64 @@ pub fn start_capture(
   Err(anyhow!("native capture is macOS-only"))
 }
 
-pub fn stop_capture(state: &NativeCaptureState, session_id: u64) -> Result<NativeCaptureStats> {
-  let handle = {
-    let mut active = state.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(current) = active.as_ref() else {
-      return Err(anyhow!("no native capture session is active"));
-    };
-    if current.session_id != session_id {
-      return Err(anyhow!(
-        "native capture session {} is active, not {session_id}",
-        current.session_id
-      ));
-    }
-    active.take().expect("active capture disappeared while locked")
-  };
+impl CaptureHandle {
+  fn is_finished(&self) -> bool {
+    self.thread.as_ref().map(JoinHandle::is_finished).unwrap_or(true)
+  }
 
-  let _ = handle.control.send(CaptureControl::Stop);
-  handle
-    .thread
-    .join()
-    .map_err(|_| anyhow!("native capture thread panicked"))?
+  fn completed_result(&mut self) -> Option<Result<NativeCaptureStats, String>> {
+    if !self.is_finished() {
+      return None;
+    }
+    if let Some(thread) = self.thread.take() {
+      self.completed = Some(match thread.join() {
+        Ok(result) => result.map_err(|error| format!("{error:#}")),
+        Err(_) => Err("native capture thread panicked".into()),
+      });
+    }
+    self.completed.clone()
+  }
+}
+
+pub fn stop_capture(state: &NativeCaptureState, session_id: u64) -> Result<NativeCaptureStats> {
+  stop_capture_with_timeout(state, session_id, std::time::Duration::from_secs(5))
+}
+
+fn stop_capture_with_timeout(
+  state: &NativeCaptureState,
+  session_id: u64,
+  timeout: std::time::Duration,
+) -> Result<NativeCaptureStats> {
+  let deadline = std::time::Instant::now() + timeout;
+  let mut requested_stop = false;
+  loop {
+    {
+      let mut active = state.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let Some(current) = active.as_mut() else {
+        return Err(anyhow!("no native capture session is active"));
+      };
+      if current.session_id != session_id {
+        return Err(anyhow!(
+          "native capture session {} is active, not {session_id}",
+          current.session_id
+        ));
+      }
+      if !requested_stop {
+        let _ = current.control.send(CaptureControl::Stop);
+        requested_stop = true;
+      }
+      if let Some(result) = current.completed_result() {
+        // Retain the result for concurrent/repeated stops. The next start reaps
+        // this finished handle; stale stops cannot remove the replacement.
+        return result.map_err(|message| anyhow!(message));
+      }
+    }
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+      return Err(anyhow!("native capture stop timed out; device is still stopping"));
+    }
+    std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+  }
 }
 
 /// Windowed-sinc resample to `TARGET_RATE`.
@@ -597,6 +653,74 @@ pub fn probe_capture(_seconds: f64) -> Result<(String, f64, Vec<f32>)> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn install_blocked_capture(state: &NativeCaptureState, session_id: u64) -> mpsc::Sender<()> {
+    let (control, _) = mpsc::channel();
+    let (release, blocked) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+      blocked.recv().unwrap();
+      Ok(NativeCaptureStats { session_id, ..NativeCaptureStats::default() })
+    });
+    *state.active.lock().unwrap() = Some(CaptureHandle {
+      session_id,
+      control,
+      thread: Some(thread),
+      completed: None,
+    });
+    release
+  }
+
+  #[test]
+  fn stopping_timeout_keeps_device_reserved_until_thread_exits() {
+    let state = NativeCaptureState::default();
+    let release = install_blocked_capture(&state, 7);
+    let error = stop_capture_with_timeout(&state, 7, std::time::Duration::from_millis(5))
+      .unwrap_err();
+    assert!(error.to_string().contains("timed out"));
+    let active = state.active.lock().unwrap();
+    assert_eq!(active.as_ref().unwrap().session_id, 7);
+    assert!(!active.as_ref().unwrap().thread.as_ref().unwrap().is_finished());
+    drop(active);
+    release.send(()).unwrap();
+    assert_eq!(stop_capture(&state, 7).unwrap().session_id, 7);
+    assert_eq!(stop_capture(&state, 7).unwrap().session_id, 7);
+  }
+
+  #[test]
+  fn startup_timeout_returns_without_joining_and_requests_stop() {
+    let state = NativeCaptureState::default();
+    let release = install_blocked_capture(&state, 10);
+    let (control, requests) = mpsc::channel();
+    let (_ready, ready_rx) = mpsc::sync_channel(1);
+    let error = await_capture_ready(ready_rx, &control, std::time::Duration::from_millis(5))
+      .unwrap_err();
+    assert!(error.to_string().contains("startup timed out"));
+    assert!(matches!(requests.try_recv(), Ok(CaptureControl::Stop)));
+    assert!(!state.active.lock().unwrap().as_ref().unwrap().is_finished());
+    release.send(()).unwrap();
+    stop_capture(&state, 10).unwrap();
+  }
+
+  #[test]
+  fn concurrent_stops_share_the_completed_result() {
+    let state = NativeCaptureState::default();
+    let release = install_blocked_capture(&state, 11);
+    let other_state = state.clone();
+    let stop = std::thread::spawn(move || stop_capture(&other_state, 11));
+    release.send(()).unwrap();
+    assert_eq!(stop_capture(&state, 11).unwrap().session_id, 11);
+    assert_eq!(stop.join().unwrap().unwrap().session_id, 11);
+  }
+
+  #[test]
+  fn stale_stop_does_not_remove_a_newer_capture() {
+    let state = NativeCaptureState::default();
+    let release = install_blocked_capture(&state, 9);
+    assert!(stop_capture(&state, 8).unwrap_err().to_string().contains("not 8"));
+    assert_eq!(state.active.lock().unwrap().as_ref().unwrap().session_id, 9);
+    release.send(()).unwrap();
+    stop_capture(&state, 9).unwrap();
+  }
 
   #[test]
   fn resampling_preserves_a_440hz_tone() {

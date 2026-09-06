@@ -984,8 +984,16 @@ pub async fn push_live_audio(request: tauri::ipc::Request<'_>) -> Result<bool, S
 }
 
 #[tauri::command]
-pub async fn finish_live_transcription(app: AppHandle, session_id: u64) -> Result<String, String> {
+pub async fn finish_live_transcription(
+  app: AppHandle,
+  session_id: u64,
+  capture_incomplete: Option<bool>,
+) -> Result<String, String> {
   let raw = crate::nemotron_asr::finish_live_session(session_id).await?;
+  if capture_incomplete.unwrap_or(false) {
+    // The frontend persists partial text through the acknowledged recovery path.
+    return Ok(crate::scrub::scrub_transcription(&raw));
+  }
   Ok(record_successful_transcription(&app, &raw, None))
 }
 
@@ -1015,6 +1023,11 @@ pub async fn transcribe_audio(
   let headers = request.headers();
   let translate_mode = headers
     .get("translate-mode")
+    .and_then(|value| value.to_str().ok())
+    .map(|value| value == "true")
+    .unwrap_or(false);
+  let capture_incomplete = headers
+    .get("capture-incomplete")
     .and_then(|value| value.to_str().ok())
     .map(|value| value == "true")
     .unwrap_or(false);
@@ -1103,7 +1116,10 @@ pub async fn transcribe_audio(
     // frontend joins the chunks -- otherwise a five-minute dictation would leave
     // a row (and, in dev, a debug-audio copy) per chunk. Scrubbing still runs
     // per chunk so the streamed preview matches the recorded text.
-    Ok(raw) if chunk_index.is_some() => Ok(crate::scrub::scrub_transcription(&raw)),
+    // Partial whole clips are also saved through the frontend recovery path.
+    Ok(raw) if chunk_index.is_some() || capture_incomplete => {
+      Ok(crate::scrub::scrub_transcription(&raw))
+    }
     Ok(raw) => Ok(record_successful_transcription(&app, &raw, audio_for_debug)),
     Err(error) => {
       if is_cancellation_error(&error) {
