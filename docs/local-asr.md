@@ -5,7 +5,7 @@ Reference for SayType's on-device transcription, checked against `a183354` (1.15
 design (2026-07-12), the long-audio chunking design (2026-07-22), the `--no-warmup` macOS TODO
 and the MLX evaluation (2026-07-30).
 
-`CLAUDE.md` lists the rules an edit to `local_asr.rs` must not break; this file keeps the reasons
+`AGENTS.md` lists the rules an edit to `local_asr.rs` must not break; this file keeps the reasons
 and the measurements. The upstream worker-reuse bug is written up in
 [`vendor/llama.cpp/README.md`](../vendor/llama.cpp/README.md).
 
@@ -21,9 +21,24 @@ Local engineering effort goes into Qwen. In the maintainer's own use Nemotron's 
 acceptable as a main engine, so it stays available but is not treated as the answer to Qwen's
 latency.
 
-The 1.7B option has only been through a smoke test: the pinned `b9960` runtime transcribed the
-same 6.13 s clip in one-shot and resident mode for both sizes. Whether 1.7B is more accurate on
-real dictation has not been measured.
+### 0.6B vs 1.7B speed and memory
+
+Measured 2026-09-10 on an M4 / 24 GB with the production resident-worker arguments
+(`--no-warmup --fit off -c 2048`). Each trial started a fresh worker, then sent `/clear`, the audio
+and `a`; five repeats per model per clip, alternating model order. The long clip is five
+recordings joined together, not one continuous utterance.
+
+| Clip | Model | Load (median) | Transcribe (median) | Peak RSS |
+|---|---|---|---|---|
+| 6.13 s | 0.6B | 0.68 s | 0.30 s | 1.39 GB |
+| 6.13 s | 1.7B | 0.99 s | 0.71 s | 2.89 GB |
+| 30.55 s | 0.6B | 0.71 s | 0.96 s | 1.38 GB |
+| 30.55 s | 1.7B | 1.11 s | 2.07 s | 2.89 GB |
+
+1.7B takes a little over twice as long to transcribe and 0.3–0.4 s longer to load. Transcribe time
+excludes the load, neither figure includes capture, VAD, IPC or insertion, and in the app the
+prewarm overlaps the load with speech. RSS counts the file-backed model pages. Whether 1.7B is
+more accurate on real dictation has not been measured.
 
 ## Why a llama.cpp subprocess
 
@@ -50,8 +65,8 @@ was clean at every duration, but 2 s or less of pure digital silence hallucinate
 gate drops no-speech clips on the whole-clip path; the chunked path skips the gate and relies on
 Qwen's empty output.
 
-The spike and benchmark reports from that period (`.superpowers/sdd/task-1-report.md`,
-`llamacpp-benchmark-report.md`) are local files and were never committed.
+The spike and benchmark reports from that period were local working files, never committed, and
+have since been discarded. The figures in this section are what was kept from them.
 
 ## Assets and runtime
 
@@ -231,10 +246,14 @@ pre-1.12 manual `bin/b9960-vulkan` extraction (unstamped) is reinstalled rather 
 
 ## Limits
 
-- No language parameter (auto-detect) and no dictionary channel; both settings apply to cloud
-  providers only.
-- Translation never runs locally. It goes to the cloud provider in `translate_provider` and requires
-  `translate_consented`; see [cloud-transcription.md](cloud-transcription.md).
+- Qwen takes no language parameter (it auto-detects) and has no dictionary channel. Nemotron's batch
+  and live requests carry the saved `language` (empty means `auto`). Settings enables language
+  selection for Nemotron and cloud engines, and disables it only for Qwen; whether Nemotron
+  follows the parameter hasn't been checked.
+  The dictionary applies to cloud providers only.
+- Translation never runs locally. With a local engine selected it goes to the cloud provider in
+  `translate_provider` and requires `translate_consented`; see
+  [cloud-transcription.md](cloud-transcription.md).
 - The CPU paths on Windows and Linux are not verified end to end on real machines.
 
 ## Open measurements
@@ -249,4 +268,5 @@ pre-1.12 manual `bin/b9960-vulkan` extraction (unstamped) is reinstalled rather 
   5% or 100 ms with no regression; otherwise gate it to Windows with `#[cfg(target_os = "windows")]`.
 - M1 fresh-process load with the current implementation.
 - Discrete-GPU numbers before `auto` could ever mean GPU.
-- 1.7B accuracy and speed on real dictation.
+- 1.7B accuracy on real dictation, and its end-to-end latency (the benchmark above covers only the
+  engine).

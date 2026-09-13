@@ -73,8 +73,8 @@ pub fn open_microphone_settings() {
     .status();
 }
 
-/// 上溯三级找 `.app` bundle(exe = SayType.app/Contents/MacOS/x)。
-/// 裸二进制(dev 构建)返回 None。
+/// The `.app` bundle three levels above the executable (exe = SayType.app/Contents/MacOS/x).
+/// A bare binary (dev build) returns None.
 fn app_bundle_of(exe: &std::path::Path) -> Option<&std::path::Path> {
   exe
     .ancestors()
@@ -88,8 +88,9 @@ fn finder_reveal_target(exe: &std::path::Path) -> &std::path::Path {
   app_bundle_of(exe).unwrap_or(exe)
 }
 
-/// 拖拽云朵的负载路径。**只有真正的 bundle 才有意义**——裸二进制拖进辅助功能
-/// 列表不会让 SayType 获得权限,所以此时返回 None,调用方据此不显示云朵。
+/// Payload path for the drag cloud. **Only a real bundle is useful**: dragging a bare binary into
+/// the Accessibility list doesn't grant SayType the permission, so this returns None and the
+/// caller hides the cloud.
 pub fn app_bundle_path() -> Option<std::path::PathBuf> {
   let exe = std::env::current_exe().ok()?;
   app_bundle_of(&exe).map(std::path::Path::to_path_buf)
@@ -538,17 +539,17 @@ mod tests {
   #[test]
   fn app_bundle_is_some_only_inside_a_real_bundle() {
     use std::path::Path;
-    // 安装态:exe = SayType.app/Contents/MacOS/saytype,上溯三级即 bundle。
+    // Installed: exe = SayType.app/Contents/MacOS/saytype, and three levels up is the bundle.
     assert_eq!(
       app_bundle_of(Path::new("/Applications/SayType.app/Contents/MacOS/saytype")),
       Some(Path::new("/Applications/SayType.app"))
     );
-    // dev 裸二进制:没有 .app 祖先 → None(云朵据此不显示)。
+    // Dev bare binary: no .app ancestor → None (so the cloud stays hidden).
     assert_eq!(
       app_bundle_of(Path::new("/Users/tao/code/SayType/target/debug/saytype")),
       None
     );
-    // 上溯三级存在但不是 .app,同样不算。
+    // Three levels up exists but isn't a .app, so it doesn't count either.
     assert_eq!(
       app_bundle_of(Path::new("/a/b/c/d/saytype")),
       None

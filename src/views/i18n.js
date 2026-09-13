@@ -286,7 +286,7 @@
           auto: "Auto-detect",
           selectTitle: "Select default language for transcription",
           localNote:
-            "The local engine works out the language itself — this setting is not passed to it. Switch to Groq or OpenAI and it applies again.",
+            "Qwen detects the language automatically and does not use this setting.",
           groupCommon: "Common",
           groupAll: "All languages",
         },
@@ -805,7 +805,7 @@
           auto: "自动检测",
           selectTitle: "选择转录默认语言",
           localNote:
-            "本地引擎自己判断语言，这一项不会传给它。换成 Groq 或 OpenAI 后立即生效。",
+            "千问自动识别语言，不使用此设置。",
           groupCommon: "常用",
           groupAll: "全部语言",
         },

@@ -42,7 +42,7 @@ fn available_engines() -> Vec<(&'static str, &'static str, &'static str, Option<
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
   let menu = build_menu(app, None)?;
 
-  // 菜单栏托盘用单色模板图标（随明暗自动反色），而非彩色 app 图标。
+  // The tray uses a monochrome template icon (macOS recolors it for light/dark), not the app icon.
   let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
 
   TrayIconBuilder::with_id("main-tray")

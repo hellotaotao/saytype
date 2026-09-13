@@ -2111,10 +2111,11 @@ pub enum TranscriptionRoute {
 /// exact string to show the notice instead of a generic failure.
 pub const TRANSLATE_NEEDS_CONSENT: &str = "TRANSLATE_NEEDS_CONSENT";
 
-/// Decide where this transcription goes. Local provider transcribes locally;
-/// translate mode is the exception — Qwen3-ASR only transcribes, so translation
-/// falls back to whichever cloud key is configured (Groq preferred: cheaper,
-/// and its whisper-large-v3 is the existing translate default).
+/// Decide where this transcription goes. A cloud provider handles both
+/// transcription and translation with its own key. A local provider transcribes
+/// locally; translate mode is the exception, since the local engines only
+/// transcribe: it needs `translate_consented` and uses the cloud provider picked
+/// by `normalize_translate_provider` (Groq first when none was ever chosen).
 pub fn resolve_transcription_route(
   config: &AppConfig,
   translate_mode: bool,

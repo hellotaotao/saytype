@@ -1,8 +1,9 @@
 name: Release
 
-# 推送形如 v1.0.90 的 tag 时触发:三平台矩阵构建(macOS 通用二进制 DMG 签名+公证,
-# Windows NSIS/MSI,Linux AppImage/deb/rpm),生成 minisign 签名的更新产物与合并的
-# latest.json,直接发布正式 GitHub Release，自动更新端点可见新版。
+# Runs on a tag like v1.0.90: a three-platform matrix (macOS universal DMG, signed and
+# notarized; Windows NSIS/MSI; Linux AppImage/deb/rpm) that produces minisign-signed updater
+# artifacts and a merged latest.json, then publishes the GitHub Release directly, which makes
+# the new version visible to the auto-update endpoint.
 on:
   push:
     tags:
@@ -29,7 +30,7 @@ jobs:
     name: Release (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: write # 允许 tauri-action 创建 Release 并上传产物
+      contents: write # lets tauri-action create the Release and upload assets
 
     steps:
       - name: Checkout
@@ -117,16 +118,16 @@ jobs:
           # badge). Local builds never set it, so they always show as "dev".
           SAYTYPE_OFFICIAL_BUILD: "1"
         with:
-          # 版本号由提交中的 Cargo.toml / tauri.conf.json 决定
+          # The version comes from Cargo.toml / tauri.conf.json in the tagged commit
           args: ${{ matrix.build-args }}
-          # 用触发的 tag 作为 Release 的 tag 与标题
+          # Use the triggering tag as the Release tag and title
           tagName: ${{ github.ref_name }}
           releaseName: "SayType ${{ github.ref_name }}"
           releaseBody: "下载对应平台的安装包。"
-          # 直接发布正式版:发布即自动更新放量(见 RELEASING.md)。
+          # Publish directly: publishing is the auto-update rollout (see RELEASING.md).
           releaseDraft: false
           prerelease: false
-          # 生成并合并 latest.json(自动更新清单);Windows 以 NSIS .exe 为准。
+          # Generate and merge latest.json (the auto-update manifest); Windows uses the NSIS .exe.
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
 

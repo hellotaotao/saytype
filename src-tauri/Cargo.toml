@@ -43,7 +43,7 @@ core-foundation = "0.10"
 objc = "0.2"
 # Native audio capture. WKWebView's getUserMedia attenuates the first 3.0 s of
 # every fresh stream by ~32 dB; CoreAudio does not. Measured side by side on the
-# same device — see the audio section of CLAUDE.md.
+# same device — see docs/audio-capture.md.
 cpal = "0.15"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]

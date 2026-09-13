@@ -120,13 +120,12 @@ test("the engine is chosen from cards that show what a label cannot", () => {
 });
 
 test("a local engine states what it cannot use instead of hiding it", () => {
-  // Language and dictionary reach the cloud APIs as request parameters; the
-  // local CLI invocation carries neither. Both said nothing before, so a
-  // selection looked applied when it was inert.
+  // Qwen ignores language; Nemotron and cloud requests carry it.
+  // Neither local engine uses the dictionary.
   assert.match(mainHtml, /id="languageLocalNote"/);
   assert.match(mainHtml, /id="dictionaryLocalNote"/);
-  assert.match(settingsJs, /languageSelect\.disabled = isLocal/);
-  assert.match(settingsJs, /getElementById\("languageLocalNote"\)\?\.classList\.toggle\("hidden", !isLocal\)/);
+  assert.match(settingsJs, /languageSelect\.disabled = isQwen/);
+  assert.match(settingsJs, /getElementById\("languageLocalNote"\)\?\.classList\.toggle\("hidden", !isQwen\)/);
   assert.match(mainJs, /getElementById\("dictionaryLocalNote"\)/);
   for (const locale of ["settings", "dictionary"]) {
     assert.ok(i18nJs.includes("localNote"), `${locale} localNote copy is missing`);
@@ -338,7 +337,7 @@ test("default settings prioritizes engines and collapses local maintenance", () 
   const panel = sectionSource("settings-panel-dictation");
   assert.ok(panel.indexOf('id="engineCards"') < panel.indexOf('id="shortcutSelect"'));
   assert.match(panel, /<details[^>]*id="engineAdvanced"/);
-  assert.match(panel, /id="cloudDictationOptions"/);
+  assert.match(panel, /id="dictationOptions"/);
   assert.doesNotMatch(mainHtml, /data-settings-tab="engines"/);
 });
 

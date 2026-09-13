@@ -511,7 +511,7 @@ function applyNemotronAvailability() {
 function toggleProviderFields(providerChoice) {
   const provider = localModelForProvider(providerChoice) ? "local" : providerChoice;
   const isLocal = provider === "local";
-  document.getElementById("cloudDictationOptions")?.classList.toggle("hidden", isLocal);
+  document.getElementById("dictionarySettingItem")?.classList.toggle("hidden", currentSettings.provider === "local");
   const advanced = document.getElementById("engineAdvanced");
   advanced?.classList.toggle("hidden", !isLocal && !inspectedLocalModel);
 
@@ -542,13 +542,15 @@ function toggleProviderFields(providerChoice) {
   uploadNote?.classList.toggle("hidden", !isLocal);
   translateSelect?.classList.toggle("hidden", !isLocal);
 
-  // Language never reaches the local engine: the CLI invocation carries no
-  // language argument. Show that rather than letting the choice look applied.
+  // Language is a shared setting for the active engine, not the inspected card.
+  // Qwen ignores it; Nemotron and cloud requests carry the saved value.
+  const activeProvider = providerForSettings(currentSettings);
+  const isQwen = [LOCAL_QWEN_PROVIDER, LOCAL_QWEN_LARGE_PROVIDER].includes(activeProvider);
   const languageSelect = document.getElementById("languageSelect");
   if (languageSelect) {
-    languageSelect.disabled = isLocal;
+    languageSelect.disabled = isQwen;
   }
-  document.getElementById("languageLocalNote")?.classList.toggle("hidden", !isLocal);
+  document.getElementById("languageLocalNote")?.classList.toggle("hidden", !isQwen);
 
   apiKeyItem?.classList.remove("hidden");
   modelItem?.classList.toggle("hidden", isLocal);
@@ -1973,6 +1975,7 @@ async function persistSettings(intent = null) {
     const saved = await ipc.invoke("save-settings", settings);
     if (saved === false) throw new Error(translate("settings.saveError"));
     currentSettings = { ...currentSettings, ...settings };
+    toggleProviderFields(document.getElementById("providerSelect")?.value || providerForSettings(currentSettings));
     if (intent) {
       engineActivationMessage = "";
     }

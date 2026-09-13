@@ -16,6 +16,7 @@ function harness() {
     initializeDependencies: async () => {},
     document: { getElementById: id => id === "themeSelect" ? { value: "midnight" } : null },
     normalizeThemePref: value => value, translate: key => key,
+    toggleProviderFields() {}, providerForSettings: settings => settings.provider,
     renderEngineCards() {}, renderEngineActivation() {}, showSaveStatus() {}, console: { error() {} },
     engineActivationMessage: "", engineTargetLabel: target => target.model,
     ipc: { invoke: async (command, payload) => {

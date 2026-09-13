@@ -4,6 +4,8 @@
 build/CI matrix, Windows/Linux text insertion (enigo), and frontend OS-awareness.
 Windows autostart is **deliberately deferred** (see Phase 2). Remaining Windows
 work (hotkey + insertion behavior, autostart) needs a real machine/VM to verify.
+Design record; later changes are not reflected here. Since then `release.yml` also
+publishes the Windows and Linux installers, and auto-update has shipped (see `RELEASING.md`).
 **Date:** 2026-07-01
 **Scope:** Make SayType — today a macOS-only Tauri 2 + Rust app — run on Windows
 and Linux, starting with a behavior-preserving abstraction layer, then filling

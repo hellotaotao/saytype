@@ -5,16 +5,20 @@ them, checked against `a183354` (1.15.1) on 2026-09-11.
 
 ## Current setup
 
-- OpenAI has a single model row, `gpt-transcribe`, which is the default in `settings.rs`
-  (`default_model`, `default_model_for`, the empty-model fallback) and `RECORD_DEFAULT_MODEL`. Groq
-  offers Whisper large-v3-turbo (recommended) and large-v3.
+- OpenAI has a single model row, `gpt-transcribe`. It is the default in `settings.rs`
+  (`default_model`), in `commands.rs` (`default_model_for` and the empty-model fallback in
+  `perform_transcription_request`) and in `input-prompt.js` (`RECORD_DEFAULT_MODEL`). Groq offers
+  Whisper large-v3-turbo (its default, marked recommended) and large-v3.
 - Chinese Whisper requests carry a punctuation seed, `SEED_ZH` in `commands.rs`. The local engines
   never receive it.
-- Translation (hold Shift+Alt; the result is English) never runs locally. It uses the provider in
-  `translate_provider` (`groq` or `openai`; an install that never chose one falls back to Groq, then
-  OpenAI, if the key exists) and requires `translate_consented`. OpenAI's `/audio/translations`
-  accepts only `whisper-1`, so translation is hardcoded to it even though `whisper-1` is gone from the
-  picker. Retired model ids keep their `MODEL_LABEL` entries so old History rows still show a name.
+- Translation (hold Shift+Alt; the result is English) always goes to a cloud provider
+  (`resolve_transcription_route`). With a cloud engine selected, it uses that provider and its key,
+  with no separate consent. With a local engine selected, it uses `translate_provider` (`groq` or
+  `openai`; an install that never chose one falls back to Groq, then OpenAI, if the key exists) and
+  requires `translate_consented`, because that is the one path where a local user's audio leaves
+  the device. Settings shows the translation provider picker only for local engines. OpenAI's
+  `/audio/translations` accepts only `whisper-1`, so translation is hardcoded to it even though
+  `whisper-1` is gone from the picker. Retired model ids keep their `MODEL_LABEL` entries so old History rows still show a name.
 - Audio is uploaded without noise suppression or AGC; see the decision in
   [audio-capture.md](audio-capture.md).
 

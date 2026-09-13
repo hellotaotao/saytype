@@ -1,27 +1,257 @@
-# Repository Guidelines
+# AGENTS.md
 
-`CLAUDE.md` is the maintained guide to this repository: architecture, the invariants to respect, and
-where each topic is documented. Read it before changing code. This file is a short summary for agents
-that don't load `CLAUDE.md`.
+Guidance for coding agents working in this repository. Codex reads this file directly; Claude Code
+reads it through `CLAUDE.md`, which only imports it. Keep shared rules here so both tools follow
+the same instructions.
 
-## Project structure
-SayType is a **Tauri 2 + Rust** app (Electron was removed; don't reintroduce it). The Rust backend lives in `src-tauri/src/`; the frontend is plain HTML/CSS/JS with no bundler, in `src/views/`. App config: `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`; macOS entitlements in `build/`; icons in `src-tauri/icons/` and `assets/`.
+> **Note:** SayType is a **Tauri 2 + Rust** desktop app (migrated from Electron, which has been fully removed). Don't reintroduce Electron dependencies.
 
-## Build, test, and development commands
-- `npm install` installs JS tooling (only `@tauri-apps/cli`). Building also needs a Rust toolchain (`rustup`).
-- `npm run dev` (or `npm start`) launches `tauri dev`.
-- `npm test` runs every `src/views/*.test.mjs` and `scripts/*.test.mjs`, the same entry point CI uses.
-- `cargo test --manifest-path src-tauri/Cargo.toml` runs the Rust unit tests.
-- `npm run build` builds for the host; `npm run build:mac`, `build:win` and `build:linux` target a platform.
+This file holds the rules and invariants to respect when changing code. The reasons, measurements
+and history behind them live in the documents below; read the relevant one before re-deriving or
+overturning a rule.
 
-## Coding style
-Match the surrounding code: 2-space indentation in Rust and JS, semicolons in JS, descriptive names. Keep UI strings in `src/views/i18n.js`. Renderer↔backend communication goes through `src/views/ipc-bridge.js` (`window.__SAYTYPE_IPC__`); don't call Tauri APIs directly from window scripts. A new IPC command is wired in three places (`commands.rs`, the `invoke_handler!` list in `lib.rs`, the `ipc-bridge.js` maps), and `scripts/ipc-contract.test.mjs` enforces it.
+## Where things are documented
 
-## Platforms
-Platform-specific code lives behind `src-tauri/src/platform/` with `#[cfg(target_os)]` gates. Text insertion and the global hotkey are implemented for macOS, Windows and Linux, but only macOS is verified on real machines. Note platform-specific behavior in commits and PRs.
+| Topic | Document |
+|---|---|
+| Product direction, current priorities, what not to build | `docs/PRODUCT_PATHWAY.md` |
+| Real-device acceptance cases, offline log report | `docs/RELIABILITY_ACCEPTANCE.md` |
+| Releasing, signing, notarization, updater e2e, distribution | `RELEASING.md` |
+| Local engines: Qwen/Nemotron, llama.cpp worker, chunking, GPU | `docs/local-asr.md` |
+| Audio capture per platform, WebKit findings, no NS/AGC | `docs/audio-capture.md` |
+| Failure, retry and recovery rules | `docs/dictation-recovery.md` |
+| Cloud models, punctuation research, translation | `docs/cloud-transcription.md` |
+| Third-party components and their licenses | `THIRD_PARTY_NOTICES.md` |
+| Upstream llama.cpp worker-reuse bug | `vendor/llama.cpp/README.md` |
+| Past feature designs (each starts with a status line) | `docs/superpowers/specs/` |
+| Parked ideas (local file, gitignored — never commit) | `TODO.md` |
 
-## Commits and pull requests
-Use short imperative messages with conventional prefixes (`feat:`, `fix(settings):`, `docs:`). Include testing notes, and screenshots for UI changes. Call out macOS Accessibility/Microphone permission changes explicitly.
+## Development Commands
 
-## Security and configuration
-API keys are entered in the app and stored in its JSON config via `settings.rs`; never commit secrets. `TODO.md` is a local, gitignored planning file; don't commit it. If you change permissions or entitlements, update `build/entitlements.mac.plist` and document new OS prompts in `README.md`.
+```bash
+npm install            # Install JS tooling (only @tauri-apps/cli)
+npm run dev            # Run the app in dev mode (tauri dev)
+npm start              # Alias for tauri dev
+npm test               # All src/views/*.test.mjs and scripts/*.test.mjs (CI uses the same entry)
+cargo test --manifest-path src-tauri/Cargo.toml   # Rust unit tests
+
+npm run build          # Build for the current host (on macOS also archives the dmg to dist/)
+npm run build:mac      # Build for macOS (aarch64-apple-darwin) → archives dmg to dist/
+npm run build:mac:install  # Same as build:mac, then install the app into /Applications
+npm run build:win      # Build for Windows (x86_64-pc-windows-msvc)
+npm run build:linux    # Build for Linux (x86_64-unknown-linux-gnu)
+```
+
+Building requires a **Rust toolchain** (`rustup`) in addition to Node + `@tauri-apps/cli`.
+`npm run version:tauri:patch` bumps the patch version, or pass an explicit version —
+`node scripts/bump-tauri-version.js 1.2.0` — across `package.json`, `src-tauri/tauri.conf.json`,
+`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Run it **manually** when cutting a release;
+builds never auto-bump.
+
+`build`, `build:mac` and `build:mac:install` set `CI=true` (tauri's Finder-prettifying AppleScript
+fails in non-interactive shells) and run `scripts/collect-artifacts.js`, which **always copies the
+built `.dmg` into `dist/`**, the kept archive of every version's installer, so don't skip it.
+`build:mac:install` also mounts that dmg, copies `SayType.app` over the one in `/Applications` and
+relaunches it.
+
+**Dev vs official build identity:** `src-tauri/build.rs` embeds a channel at compile time. CI's
+release workflow sets `SAYTYPE_OFFICIAL_BUILD=1` → channel `official` → the UI shows `v1.6.1`. Any
+local build (dev mode or packaged) defaults to `dev` (fail-safe) and shows `v1.6.1 · dev.42` in the
+main-window sidebar and the settings updates panel, with git hash/dirty/build time in the tooltip.
+The counter lives in `.dev-build-number` (repo root, gitignored) and is bumped by
+`scripts/bump-dev-build.js` before every packaged `build*` script; `tauri dev` doesn't bump it. The
+semver is never suffixed, so updater version comparison is unaffected. Wire: `get_build_info` →
+`BuildInfo` (camelCase).
+
+**Local code signing:** `build:mac` and `build:mac:install` source an untracked `scripts/sign.env`
+(copy from `scripts/sign.env.example`) exporting `APPLE_SIGNING_IDENTITY`. A stable identity keeps
+macOS's Accessibility/Microphone grants across rebuilds. Ad-hoc signing (the default without the
+file) changes the cdhash every build, which silently drops the Accessibility grant and with it the
+global hotkey. Local builds are not notarized.
+
+## Releasing
+
+Push a `vX.Y.Z` tag. `.github/workflows/release.yml` builds macOS (universal; signed and notarized
+when the Apple secrets are set, otherwise it warns and builds unsigned), Windows and Linux, emits
+minisign-signed updater artifacts plus `latest.json`, and **publishes the release directly**
+(`releaseDraft: false`). Publishing is the auto-update rollout: installed clients poll
+`releases/latest/download/latest.json`. The workflow builds the version in the tagged commit, so
+bump and commit first:
+
+```bash
+npm run version:tauri:patch
+git commit -am "chore(release): bump version to X.Y.Z"
+git tag vX.Y.Z && git push origin main --tags
+```
+
+Secrets, AI release notes, verification, rollback and the localhost updater e2e harness are in
+`RELEASING.md`.
+
+## Architecture Overview
+
+SayType is a Tauri 2 voice-input app: a **Rust backend** (`src-tauri/src/`) hosting a **web
+frontend** (`src/views/`). It runs in the system tray with a global hold-to-record hotkey,
+transcribes locally by default (Qwen3-ASR through llama.cpp, or Nemotron) or through an optional
+cloud provider (Groq/OpenAI), and inserts the text into the focused app.
+
+### Rust backend (`src-tauri/src/`)
+
+- `main.rs` — thin entry, calls `saytype_lib::run()`.
+- `lib.rs` — builds the app: manages `AppState`; on `setup` creates the tray, reads config, checks
+  Accessibility and starts the hotkey listener; hides `main` on close instead of quitting;
+  **injects each window's entry script** (`main.js` / `input-prompt.js` / `ax-cloud.js`, guarded by
+  a marker attribute so it doesn't run twice) on page load; registers all `#[tauri::command]`
+  handlers; configures logging.
+- `commands.rs` — all Tauri commands: settings, window control, `transcribe_audio` (routes to local
+  or cloud), `cancel_transcription`, `type_text`, permissions, history, dictionary and recovery.
+  - `type_text` delegates to `platform::insert_text`. **There is no clipboard fallback, by design.**
+    A failed insert points the user to History, where every transcription is already saved, and the
+    prompt offers a manual Copy (`copy_to_clipboard`).
+  - **Recovery invariants** (reasons and the complete rules: `docs/dictation-recovery.md`):
+    - A failed transcription writes **one** History row carrying both reason and clip
+      (`record_failed_transcription`, `pending: true`), in release builds too. Three cases belong to
+      the frontend instead, and the backend must not write them: chunked dictation, a local
+      non-translation `capture_incomplete` session, and a hang or timeout in a local-origin,
+      non-translation session (`frontend_owns_hang_recovery`).
+    - Automatic retries of one recording share a `failure-id`; a later success converts that row in
+      place. Never create a second row or clip for the same recording.
+    - `retranscribe_pending` uses the engine configured **now**, not the one that failed. Updates
+      read the row under the History lock and only touch rows that are still pending.
+    - Only a confirmed `NotFound` clears a row's audio fields; any other read error keeps retry
+      available. Filesystem paths stay in logs, never in History or toasts.
+    - `RETRY_*` codes (`retry_error.rs`) are persisted in users' History: keep old translations when
+      retiring a code, and migrate stored rows before renaming or reusing one.
+- `local_asr.rs` — local Qwen3-ASR (0.6B default, 1.7B experimental) through upstream llama.cpp
+  `b9960`'s `llama-mtmd-cli`: assets and downloader, resident worker, stdout parser. **Invariants**
+  (reasons and measurements: `docs/local-asr.md`):
+  - Always pass an explicit `-c` sized by `ctx_size_for_wav` (otherwise ~7 GiB of KV cache) and
+    `-p "a"` (an empty prompt hangs). Input is 16 kHz mono PCM16 WAV only.
+  - A worker's lease is one hotkey hold (`session_id`); never hand it to another dictation.
+    `repeats_previous` must keep rejecting a verbatim repeat (upstream reuse bug).
+  - Chunks stay ≤ 75 s so every chunk maps to ctx 2048 and one worker serves the whole session.
+  - Drain stdout and stderr concurrently. Partial text is visible progress, not streaming ASR.
+  - Trust an extracted runtime only when its `.saytype-runtime-sha256` stamp matches.
+  - Qwen gets neither the language setting nor the dictionary, and translation never runs locally.
+  - GPU (Windows) is a separate Vulkan pack and `auto` resolves to CPU. A failing GPU worker
+    disables GPU for the process and the same recording retries on CPU.
+- `nemotron_asr.rs` — Nemotron 3.5 streaming engine (NVIDIA `nemo-speech` sidecar), available only
+  on macOS arm64 and Windows x64 (`supported()`). Its batch and live requests carry the saved
+  `language` (empty means `auto`). Settings enables the language picker for Nemotron and cloud
+  engines, and disables it only for Qwen. The dictionary doesn't reach Nemotron.
+- `native_capture.rs` — macOS-only CoreAudio capture (cpal) that streams 16 kHz PCM16 to the
+  frontend over a binary Channel; see `docs/audio-capture.md`.
+- `updater.rs` — auto-update: background check of `latest.json` at startup and every 24 h (skipped
+  in debug builds), silent download, a single `update-status` event channel
+  (idle | checking | downloading | ready | upToDate | error); install + restart only on user action
+  (tray entry / settings button). Updates are minisign-verified against the pubkey in
+  `tauri.conf.json`. `createUpdaterArtifacts` lives only in `tauri.release.conf.json` (CI) and
+  `tauri.updater-e2e.conf.json` (localhost harness), so local builds never need the key. Design:
+  `docs/superpowers/specs/2026-07-13-auto-update-design.md`.
+- `hotkey.rs` — global hold-to-record: a CGEventTap on macOS (only when Accessibility is trusted),
+  `rdev::listen` elsewhere. Parses the modifier-only shortcuts (default `Ctrl+Shift`, translate
+  `Shift+Alt`) and emits start/stop/cancel events. `STOP_DEBOUNCE` (250 ms) absorbs an accidental
+  release; keep it.
+- `settings.rs` — JSON config in the app data dir, shortcut normalization, auto-launch, model
+  defaults, API keys and translate-provider selection.
+- `history.rs` — the History store (`{ "activities": [...] }`, 100-entry cap, atomic writes),
+  including pending audio.
+- `retry_error.rs` — typed registry of the persisted `RETRY_*` codes.
+- `scrub.rs` — strips known ASR boilerplate and prompt leaks from transcripts.
+- `ax_cloud.rs` — window lifecycle for the Accessibility drag cloud.
+- `tray.rs`, `state.rs` — system tray and shared app state.
+- `platform/` — the platform abstraction (`mod.rs` contract + `macos.rs` / `fallback.rs`, plus the
+  macOS-only `activation.rs` and `drag_cloud.rs`). It owns text insertion, permission checks,
+  clipboard write and autostart. Non-macOS (`fallback.rs`, shared by Windows/Linux): insertion via
+  `enigo`, permission checks report "not required", clipboard write and autostart are stubs. Other
+  platform-specific code keeps its own `#[cfg]` gates beside the feature: the hotkey event sources
+  (`hotkey.rs`), native capture (`native_capture.rs`), runtime archives and GPU (`local_asr.rs`),
+  Nemotron runtimes (`nemotron_asr.rs`) and the drag-cloud window (`ax_cloud.rs`). See
+  `docs/superpowers/specs/2026-07-01-cross-platform-support-design.md`.
+
+### Frontend (`src/views/`)
+
+- Plain HTML/CSS/JS, no bundler and no JS runtime dependency. Three windows are declared in
+  `src-tauri/tauri.conf.json` (served from `frontendDist: ../src/views`): `main` (home, History, and
+  the Settings page, which `main.html` loads as `settings.js`), `input-prompt` (the floating
+  recording window) and `ax-cloud` (the Accessibility drag cloud).
+- `input-prompt.js` — the recording session state machine: capture, Qwen chunking
+  (`chunk-decision.mjs`), Nemotron live audio, the VAD gate (`vad-gate.js`), retries, recovery and
+  the insertion FIFO.
+- `ipc-bridge.js` — the IPC abstraction. Exposes `window.__SAYTYPE_IPC__` with
+  `invoke(channel, ...args)` and `on(channel, handler)`, mapping renderer channel names
+  (e.g. `transcribe-audio`) to Tauri commands (`transcribe_audio`) and event listeners.
+- `i18n.js` — all UI strings (add new copy here), including the `RETRY_*` renderer.
+
+### IPC contract
+
+Renderer → Rust: `bridge.invoke("type-text", text)` → Tauri `invoke("type_text", { text })`.
+Rust → Renderer: `app.emit("shortcut-updated", …)` and similar, received via `bridge.on(...)`.
+
+**When adding a new IPC command, update three places:** the `#[tauri::command]` in `commands.rs`,
+its registration in the `generate_handler!` list in `lib.rs`, and the `tauriCommands` map in
+`ipc-bridge.js` (plus `tauriArgs` or `tauriRawBody` when it takes arguments).
+`scripts/ipc-contract.test.mjs` fails CI when one is missed.
+
+Raw audio bytes travel as an octet-stream request body with headers (`tauriRawBody`), not as JSON
+arrays; the input-prompt CSP allows `connect-src 'self' ipc: http://ipc.localhost` for this.
+
+The frontend registers every listener with target `{ kind: "Any" }`, and **an `Any` listener
+receives targeted events too**: Tauri's `match_any_or_filter` short-circuits on `EventTarget::Any`
+before comparing labels (checked against the locked tauri 2.10.3 source on 2026-08-31). So `emit`
+and `emit_to` both work here. An earlier version of these instructions claimed `emit_to` was
+silently dropped; that was wrong, so don't "fix" a working `emit_to` on its authority. `emit` is
+still the natural default for events more than one window may want.
+
+## Platform-Specific Considerations
+
+- **macOS** requires Microphone and Accessibility permissions; entitlements are at
+  `build/entitlements.mac.plist` (referenced by `tauri.conf.json`). It is the only platform verified
+  on real machines.
+- **Windows/Linux**: insertion (`enigo`) and the hotkey (`rdev`) are implemented but not verified end
+  to end; CI builds their installers. Linux recording is blocked on WebKitGTK `getUserMedia`.
+- **macOS-only native APIs must be `#[cfg(target_os = "macos")]`-gated**, or the Windows/Linux CI and
+  release legs fail to compile. Release builds are universal, so macOS-gated code must also cover
+  `x86_64`; `cargo check --target x86_64-apple-darwin` reproduces that leg locally.
+- **Audio capture:** macOS opens a native CoreAudio stream per dictation; Windows/Linux use webview
+  `getUserMedia` with `echoCancellation`/`noiseSuppression`/`autoGainControl` all pinned `false`. Don't
+  add noise suppression, AGC or pre-denoising, and don't re-enable echo cancellation. The WebKit
+  measurements behind this are in `docs/audio-capture.md`.
+- Reset macOS permissions when re-testing:
+  ```
+  tccutil reset Accessibility com.tao.saytype
+  tccutil reset Microphone com.tao.saytype
+  ```
+
+## Coding Style
+
+- Match the surrounding code: 2-space indentation in Rust and JS, semicolons in JS, descriptive
+  names. The Rust is formatted by hand and the repo has no `rustfmt.toml`, so `cargo fmt` would
+  rewrite whole files; leave it out.
+- UI strings go in `src/views/i18n.js`. Window scripts reach the backend only through
+  `ipc-bridge.js` (`window.__SAYTYPE_IPC__`), never through Tauri APIs directly.
+
+## Commits and Pull Requests
+
+Use short imperative messages with conventional prefixes (`feat:`, `fix(settings):`, `docs:`).
+Include testing notes, and screenshots for UI changes. Call out macOS Accessibility/Microphone
+permission changes and platform-specific behavior explicitly.
+
+## Security and Configuration
+
+- API keys are entered in the app and stored in its JSON config via `settings.rs`. Never commit
+  secrets; the signing credentials live in the gitignored `scripts/sign.env`.
+- If you change permissions or entitlements, update `build/entitlements.mac.plist` and document new
+  OS prompts in `README.md`.
+- When you vendor a file, add a downloaded runtime or model, or pull in a crate under an unusual
+  license, update `THIRD_PARTY_NOTICES.md`.
+
+## Development Notes
+
+- Hold `Ctrl+Shift` to record and `Shift+Alt` to translate; Escape cancels. Translation always goes
+  to a cloud provider: a cloud engine translates with its own provider and key, and only a local
+  engine uses `translate_provider` plus `translate_consented` (`resolve_transcription_route`).
+- Rust unit tests sit beside the code. A few tests that need real model assets are `#[ignore]` and
+  run manually.
+- Lifecycle logs (the `saytype_lifecycle` target) never contain transcript text;
+  `node scripts/dictation-report.mjs <log>` summarizes them offline.
+- When judging capture health, measure the signal level over time, not how quickly a call returns.

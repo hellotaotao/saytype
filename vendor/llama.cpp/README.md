@@ -75,8 +75,8 @@ and the worker dies before a third.
 ## If it is ever revisited
 
 `git log -- vendor/llama.cpp scripts/build-patched-llama.mjs` has the whole
-pipeline: the build script, its relocatability and self-contained-import guards,
-and the CI job. Any revival should start from upstream's CMake configuration
+pipeline: the build script with its relocatability and self-contained-import
+guards, the `runtime.json` build manifest, and the CI job. Any revival should start from upstream's CMake configuration
 rather than a hand-picked subset — `GGML_BACKEND_DL=ON`,
 `GGML_CPU_ALL_VARIANTS=ON`, bundled libomp — since every defect above came from
 diverging from it.

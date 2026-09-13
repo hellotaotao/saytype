@@ -11,7 +11,7 @@ Project direction: [Product pathway](docs/PRODUCT_PATHWAY.md) · [Reliability ac
 - **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe
 - **Real-time Audio Visualization**: Waveform animation while recording
 - **Local-first AI Transcription**: Qwen3-ASR runs on-device for batch quality (0.6B by default, 1.7B as an experimental option); Nemotron 3.5 adds live local transcription on Apple Silicon and Windows x64. Groq and OpenAI remain optional cloud choices
-- **Translation**: Hold Shift+Alt to dictate and get English text through the cloud provider you choose (needs an API key and your consent)
+- **Translation**: Hold Shift+Alt to dictate and get English text from a cloud provider: your cloud engine, or, while you use a local engine, the provider you pick for translation (needs its API key and your consent)
 - **Auto-typing**: Inserts transcribed text into the active application (macOS; Windows/Linux experimental, untested)
 - **Background Operation**: Runs silently in the system tray
 - **Automatic Updates**: New releases download in the background; restart from the tray or Settings when you're ready
@@ -67,14 +67,14 @@ Releases are built, signed, and published automatically when a `v*` tag is pushe
 6. Text is inserted into the active application (macOS; Windows/Linux experimental, untested)
 7. Press Escape to cancel recording or an in-progress transcription
 
-To translate into English, hold Shift+Alt instead (choose a translation provider in Settings first).
+To translate into English, hold Shift+Alt instead. With a local engine, choose a translation provider in Settings first.
 
 ## Configuration
 
 Access settings through the tray menu or main window to configure:
 - Transcription engine: Qwen3-ASR (0.6B, or experimental 1.7B) or Nemotron 3.5 local model (no key; Nemotron supports Apple Silicon and Windows x64), or optional Groq / OpenAI with an API key
-- Translation provider (Groq or OpenAI); SayType asks for your consent before uploading anything
-- Transcription language and custom dictionary (cloud providers only)
+- Translation provider (Groq or OpenAI), used while a local engine is selected; SayType asks for your consent before uploading that audio
+- Transcription language (Nemotron and cloud providers); custom dictionary (cloud providers only)
 
 SayType records from the system's default input device; change it in your OS sound settings.
 
@@ -107,7 +107,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 - **按住录音快捷键**:按住 Ctrl+Shift 开始录音,松开即停止并转写
 - **实时音频可视化**:录音时显示波形动画
 - **本地优先 AI 转写**:Qwen3-ASR 在本机提供高质量批量转写(默认 0.6B,1.7B 为实验选项);Nemotron 3.5 在 Apple Silicon 和 Windows x64 上提供本地实时转写。Groq 和 OpenAI 作为可选云端方案
-- **翻译**:按住 Shift+Alt 口述,通过你选择的云端服务得到英文(需要 API key 并经你同意)
+- **翻译**:按住 Shift+Alt 口述,由云端服务得到英文:用云端引擎时就是当前服务;用本地引擎时是你为翻译选的服务(需要它的 API key 并经你同意)
 - **自动输入**:将转写结果插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 - **后台运行**:静默驻留在系统托盘
 - **自动更新**:新版本后台自动下载,你随时从托盘或设置里重启完成升级
@@ -163,15 +163,15 @@ npm run build:linux
 6. 文字会插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 7. 按 Escape 取消录音或正在进行的转写
 
-要翻译成英文,改为按住 Shift+Alt(先在「设置」里选好翻译服务)。
+要翻译成英文,改为按住 Shift+Alt。用本地引擎时,先在「设置」里选好翻译服务。
 
 ## 配置
 
 通过托盘菜单或主窗口进入「设置」,可配置:
 
 - 转写引擎:Qwen3-ASR(0.6B,或实验性的 1.7B)或 Nemotron 3.5 本地模型(无需 key;Nemotron 支持 Apple Silicon 和 Windows x64),或可选的云端服务(Groq / OpenAI)+ API key
-- 翻译服务(Groq 或 OpenAI);上传任何内容前 SayType 会先征得你的同意
-- 转写语言和自定义词典(仅云端服务商)
+- 翻译服务(Groq 或 OpenAI),用本地引擎时生效;上传这段录音前 SayType 会先征得你的同意
+- 转写语言(Nemotron 和云端服务商);自定义词典(仅云端服务商)
 
 SayType 使用系统默认的输入设备录音;要换麦克风,请在系统的声音设置里修改。
 

@@ -1,6 +1,49 @@
 # Third-party notices
 
-## Nemotron local transcription
+SayType itself is licensed under PolyForm Noncommercial 1.0.0 (see `README.md`). The components
+below keep their own licenses.
+
+## Shipped inside the app
+
+| Component | Version | License | Files |
+|---|---|---|---|
+| [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) | 1.27.0 | MIT | `src/views/vendor/vad/ort.wasm.min.js`, `ort-wasm-simd-threaded.mjs`, `ort-wasm-simd-threaded.wasm` |
+| [@ricky0123/vad-web](https://github.com/ricky0123/vad) | 0.0.30 | ISC | `src/views/vendor/vad/bundle.min.js` |
+| [Silero VAD](https://github.com/snakers4/silero-vad) legacy model, as packaged by vad-web | — | MIT | `src/views/vendor/vad/silero_vad_legacy.onnx` |
+| [Material Icons](https://github.com/google/material-design-icons) font | — | Apache-2.0 | `src/views/fonts/MaterialIcons-Regular.woff2` |
+
+`src/views/vendor/vad/PROVENANCE.md` records how the VAD files were obtained and how to update them.
+
+The executable is built from the Rust crates pinned in `src-tauri/Cargo.lock`. Nearly all of them
+are MIT and/or Apache-2.0. As of 1.15.1 the exceptions are the ICU4X crates (`icu_*`, `zerovec`
+and related; Unicode-3.0), `rustls-webpki` and `untrusted` (ISC), `subtle`, `alloc-stdlib` and
+`alloc-no-stdlib` (BSD-3-Clause), `zlib-rs` (Zlib), `webpki-roots` (CDLA-Permissive-2.0), and
+`cssparser`, `cssparser-macros`, `selectors`, `dtoa-short` and `option-ext` (MPL-2.0). MPL-2.0
+applies file by file; SayType uses those crates unmodified, and their source is on crates.io. To
+list every crate with its license:
+
+```bash
+cargo metadata --format-version 1 --manifest-path src-tauri/Cargo.toml \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const p of JSON.parse(s).packages)console.log(p.license,p.name,p.version)})' \
+  | sort
+```
+
+## Downloaded on demand
+
+Nothing in this section is in the installer. SayType downloads it from the upstream publisher when
+the user sets up the engine that needs it.
+
+### Qwen3-ASR (default local engine)
+
+- **llama.cpp** `b9960` release archives from
+  [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases/tag/b9960), under the MIT
+  License. On Windows, choosing GPU also downloads upstream's Vulkan archive.
+- **Qwen3-ASR 0.6B and 1.7B**, as the GGUF conversions in `ggml-org/Qwen3-ASR-0.6B-GGUF` and
+  `ggml-org/Qwen3-ASR-1.7B-GGUF` on Hugging Face. The original models,
+  [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) and
+  [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), are Apache-2.0.
+
+### Nemotron
 
 SayType does not ship the Nemotron runtime. When the user enables the engine it
 downloads NVIDIA's own **NeMo-Speech.cpp v0.1.0** release archive (macOS arm64

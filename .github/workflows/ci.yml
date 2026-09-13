@@ -4,7 +4,7 @@
 # Windows, and Linux and uploads the resulting installers as downloadable
 # workflow artifacts. It lets a Mac-only developer get + smoke-test Windows and
 # Linux builds without owning those machines. It does NOT publish GitHub
-# Releases — that stays in release.yml (macOS, signed + notarized) for now.
+# Releases — release.yml does that for all three platforms on a v* tag.
 name: CI
 
 on:
@@ -54,7 +54,8 @@ jobs:
       # enigo's default xdo insertion backend; libxkbcommon backs enigo's keymap
       # crate; libx11/libxtst back rdev's X11/XRecord global hotkey listener.
       # NOTE: stock WebKitGTK may lack getUserMedia/MediaStream — recording on
-      # Linux is a separate, known blocker tracked in the cross-platform plan.
+      # Linux is a separate, known blocker (see the cross-platform design in
+      # docs/superpowers/specs/2026-07-01-cross-platform-support-design.md).
       - name: Install Linux system dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |

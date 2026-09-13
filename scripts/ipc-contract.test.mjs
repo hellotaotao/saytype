@@ -1,4 +1,4 @@
-// Guards the three-place IPC contract documented in CLAUDE.md: every renderer
+// Guards the three-place IPC contract documented in AGENTS.md: every renderer
 // channel in ipc-bridge.js must map to a #[tauri::command] fn that is also
 // registered in lib.rs's generate_handler! list — and vice versa. A missing
 // mapping fails silently at runtime (the frontend swallows invoke errors), so

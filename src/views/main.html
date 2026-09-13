@@ -392,7 +392,7 @@
             </div>
           </div>
 
-          <div class="setting-group" id="cloudDictationOptions">
+          <div class="setting-group" id="dictationOptions">
             <div class="setting-item">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.transcriptionLanguage.title">Set default language</div>
@@ -400,7 +400,7 @@
                   Choose the default language for voice transcription.
                 </div>
                 <div class="setting-note hidden" id="languageLocalNote" data-i18n="settings.transcriptionLanguage.localNote">
-                  The local engine detects the language itself — this setting is not passed to it. Switch to Groq or OpenAI and it applies again.
+                  Qwen detects the language automatically and does not use this setting.
                 </div>
               </div>
               <div class="setting-control">
@@ -495,7 +495,7 @@
               </div>
             </div>
 
-            <div class="setting-item">
+            <div class="setting-item" id="dictionarySettingItem">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.dictionaryLink.title">Dictionary</div>
                 <div class="setting-description" data-i18n="settings.dictionaryLink.description">
