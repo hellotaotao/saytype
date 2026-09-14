@@ -149,8 +149,12 @@ test("cloud translation stays reachable while a local engine is selected", () =>
 });
 
 test("onboarding, Home, and tray expose Qwen and Nemotron as separate local engines", () => {
-  assert.match(mainHtml, /id="obLocalNemotronCard"[^>]*data-local-model="nemotron-3\.5-asr-streaming-0\.6b-q8_0"/);
-  assert.match(mainHtml, /id="obLocalQwenCard"[^>]*data-local-model="qwen3-asr-0\.6b-q8_0"/);
+  // Onboarding cards are built from the hardware/support policy, not static HTML.
+  assert.match(mainHtml, /id="obEngineMain"/);
+  assert.match(mainHtml, /id="obEngineMore"/);
+  assert.match(mainJs, /"local-nemotron": "obLocalNemotronCard"/);
+  assert.match(mainJs, /"local-qwen": "obLocalQwenCard"/);
+  assert.match(mainJs, /card\.setAttribute\("data-local-model", option\.model\)/);
   assert.match(mainJs, /value: "local-nemotron"/);
   assert.match(mainJs, /value: "local-qwen"/);
   assert.match(mainJs, /settingsTarget: `engine:\$\{providerChoice\}`/);

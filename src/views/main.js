@@ -7,6 +7,7 @@ const THEME_PREFS = new Set(["auto", "midnight", "elegant"]);
 const RECENT_LIMIT = 12;
 let currentThemePref = "elegant";
 
+let onboardingPolicy;
 let cachedSettings = null;
 let cachedActivities = [];
 let historyQuery = "";
@@ -59,9 +60,9 @@ function shortcutKeycaps(shortcut) {
     .map((part) => map[part.toLowerCase()] || part);
 }
 
-function hasApiKey(settings) {
+function engineReady(settings) {
   // The backend computes this (get_settings no longer ships the raw keys here).
-  return !!settings?.hasApiKey;
+  return !!settings?.engineReady;
 }
 
 async function initializeMainPage() {
@@ -71,6 +72,7 @@ async function initializeMainPage() {
     return;
   }
   window.__sayTypeMainStarted = true;
+  onboardingPolicy = await import("./onboarding-layout.mjs");
 
   try {
     cachedSettings = await ipc.invoke("get-settings");
@@ -160,66 +162,44 @@ function bindEvents() {
       void obSaveKey();
     }
   });
-  document.querySelectorAll(".ob-provider").forEach((card) => {
-    card.addEventListener("click", () => {
-      obKeyProvider = card.getAttribute("data-provider") || "groq";
-      obKeyStatus = "idle";
-      renderObKey();
-    });
-  });
-  document.querySelectorAll("[data-local-model]").forEach((card) => {
-    card.addEventListener("click", () => {
-      const model = card.getAttribute("data-local-model") || QWEN_LOCAL_MODEL;
-      const state = obLocalStatuses[model]?.state || "absent";
-      if (state === "downloading") {
-        return;
-      }
-      if (state === "ready") {
-        if (!localEngineSelected(model)) {
-          void obSelectLocal(model);
-        }
-        return;
-      }
-      void obStartLocalDownload(model);
-    });
-  });
-  document.getElementById("obCloudToggle")?.addEventListener("click", () => {
-    obCloudExpanded = !obCloudExpanded;
+  document.getElementById("obMoreToggle")?.addEventListener("click", () => {
+    obMoreExpanded = !obMoreExpanded;
     renderObLocal();
   });
+  document.getElementById("obResumeBtn")?.addEventListener("click", resumeOnboarding);
+  document.getElementById("obTryInput")?.addEventListener("input", renderObPracticeFeedback);
+  document.getElementById("obHistoryHint")?.addEventListener("click", () => {
+    pauseOnboarding();
+    void showPage("history");
+  });
 
-  // Wizard-page-5 download progress. The Settings page renders the same
-  // event on its own panel; here it only matters while the wizard is up.
+  // Download completion updates readiness only; user intent was saved on click.
   ipc.on("local-model-download-progress", (_event, payload) => {
-    if (!payload) {
-      return;
-    }
+    if (!payload) return;
     const model = normalizeLocalModel(payload.model);
+    obLocalVersions[model] = (obLocalVersions[model] || 0) + 1;
     applyEngineDownloadProgress(payload);
-    if (payload.state === "downloading") {
-      obLocalStatuses[model] = {
-        state: "downloading",
-        downloadedBytes: payload.downloadedBytes || 0,
-        totalBytes: payload.totalBytes || 0,
-      };
-      if (onboardingVisible()) {
-        renderObLocal();
-      }
-      return;
+    obLocalStatuses[model] = {
+      state: payload.state === "cancelled" ? "partial" : payload.state,
+      downloadedBytes: payload.downloadedBytes || 0,
+      totalBytes: payload.totalBytes || 0,
+    };
+    obLocalErrors[model] = payload.state === "error" ? (payload.message || t("onboarding.key.downloadFailed")) : "";
+    renderHomeLocalReadiness();
+    renderObLocal();
+    renderObFooter();
+    renderObFinal();
+    if (payload.state !== "downloading") {
+      void refreshReadiness();
+      void obRefreshLocalStatus();
     }
-    if (payload.state === "error") {
-      obLocalErrors[model] = payload.message || "";
-    }
-    if (payload.state === "ready" && obLocalStartedHere === model) {
-      // Clicking Download in the wizard already chose the local engine —
-      // completing the download selects it without a second confirmation.
-      obLocalStartedHere = "";
-      void obSelectLocal(model);
-    }
-    void obRefreshLocalStatus();
   });
 
   ipc.on("activity-updated", async () => {
+    if (onboardingVisible() && obCurrent === "practice") {
+      obPracticeActivity = true;
+      renderObPracticeFeedback();
+    }
     await loadActivities();
   });
 
@@ -318,7 +298,7 @@ async function refreshReadiness() {
   const axWasGranted = obAxGranted;
   obAxGranted = axOk;
   if (!axWasGranted && axOk) {
-    obScheduleAdvance(4);
+    obScheduleAdvance("accessibility");
   }
   if (onboardingVisible()) {
     renderObAx();
@@ -327,7 +307,7 @@ async function refreshReadiness() {
     renderObFinal();
   }
   renderReadiness({
-    hasKey: hasApiKey(cachedSettings),
+    hasKey: engineReady(cachedSettings),
     micOk,
     axOk,
     recordShortcut: cachedSettings?.shortcut || "Ctrl+Shift",
@@ -484,10 +464,10 @@ function keycapRow(shortcut) {
   return group;
 }
 
-function buildPill({ label, ok, onFix }) {
-  const pill = document.createElement(ok ? "span" : "button");
+function buildPill({ label, ok, onFix, alwaysAction = false, labelId = null }) {
+  const pill = document.createElement(ok && !alwaysAction ? "span" : "button");
   pill.className = `pill ${ok ? "ok" : "warn"}`;
-  if (!ok) {
+  if (!ok || alwaysAction) {
     pill.type = "button";
     if (onFix) {
       pill.addEventListener("click", onFix);
@@ -496,8 +476,15 @@ function buildPill({ label, ok, onFix }) {
   pill.appendChild(makeIcon(ok ? "check" : "priority_high"));
   const text = document.createElement("span");
   text.textContent = label;
+  if (labelId) text.id = labelId;
   pill.appendChild(text);
   return pill;
+}
+
+function renderHomeLocalReadiness() {
+  const label = document.getElementById("homeLocalModelStatus");
+  if (!label || cachedSettings?.provider !== "local") return;
+  label.textContent = `${t("readiness.localModel")} · ${obDownloadLabel(cachedSettings.model, engineAvailability.get(selectedEngineValue()))}`;
 }
 
 function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcut }) {
@@ -564,12 +551,14 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
   pills.appendChild(
     buildPill({
       label: isLocal
-        ? t("readiness.localModel")
+        ? `${t("readiness.localModel")} · ${obDownloadLabel(cachedSettings.model, engineAvailability.get(selectedEngineValue()))}`
         : hasKey
           ? t("readiness.apiKey")
           : t("readiness.addApiKey"),
       ok: hasKey,
-      onFix: openSettings,
+      alwaysAction: isLocal,
+      labelId: isLocal ? "homeLocalModelStatus" : null,
+      onFix: () => openSettings(isLocal ? `local-model:${cachedSettings.model}` : `engine:${cachedSettings?.provider}`),
     })
   );
   pills.appendChild(buildPill({ label: t("readiness.microphone"), ok: micOk, onFix: openSettings }));
@@ -889,31 +878,29 @@ let engineSwitchPending = false;
 async function selectEngine(providerChoice) {
   if (engineSwitchPending) return;
   const option = ENGINE_OPTIONS.find((entry) => entry.value === providerChoice);
-  if (!option) return;
+  if (!option || (option.model === NEMOTRON_LOCAL_MODEL && !nemotronOffered())) return;
   engineSwitchPending = true;
   renderEngineCard();
   try {
     const ready = await window.SayTypeSettings.runEngineChange(async (actualSettings) => {
-      if (option.model) {
-        const status = await ipc.invoke("get-local-model-status", option.model);
-        if (status?.state !== "ready") return false;
-      } else {
-        const keys = await ipc.invoke("get-api-keys");
-        const key = providerChoice === "openai" ? keys.apiKeyOpenAI : keys.apiKeyGroq;
-        if (!String(key || "").trim()) return false;
-      }
       const active = option.model
         ? actualSettings.provider === "local" && actualSettings.model === option.model
         : actualSettings.provider === providerChoice;
-      if (active) return true;
-      const saved = option.model
-        ? await ipc.invoke("set-local-model", option.model)
-        : await ipc.invoke("set-provider", providerChoice);
-      if (saved === false) throw new Error("Engine switch was not saved");
-      return true;
+      if (!active) {
+        const saved = option.model
+          ? await ipc.invoke("set-local-model", option.model)
+          : await ipc.invoke("set-provider", providerChoice);
+        if (saved === false) throw new Error("Engine switch was not saved");
+      }
+      if (option.model) {
+        return (await ipc.invoke("get-local-model-status", option.model))?.state === "ready";
+      }
+      const keys = await ipc.invoke("get-api-keys");
+      return !!String(providerChoice === "openai" ? keys.apiKeyOpenAI || "" : keys.apiKeyGroq || "").trim();
     });
     if (!ready) {
-      await showPage("settings", { settingsTarget: `engine:${providerChoice}` });
+      await refreshReadiness();
+      await showPage("settings", { settingsTarget: option.model ? `local-model:${option.model}` : `engine:${providerChoice}` });
       return;
     }
     try {
@@ -1018,72 +1005,94 @@ function buildAxGuide() {
 
 /* ---------- Onboarding wizard ---------- */
 
-// A first-launch takeover of the main window (6 pages, one idea per page).
-// Static copy lives in main.html via data-i18n; everything stateful — keycaps,
-// permission statuses, the provider/key form — renders here. Completing OR
-// skipping sets settings.onboardingCompleted; the readiness card remains the
-// everyday fallback for anything left unfinished. Help reopens the wizard.
-
-const OB_TOTAL = 6;
-let obCurrent = 1;
-let obMicState = "unknown"; // "unknown" | "prompt" | "granted" | "denied"
+// A first-launch takeover with named, platform-specific steps. Persisted engine
+// intent is independent of downloads, so background completion never changes it.
+let obCurrent = "welcome";
+let obMicState = "unknown";
 let obMicBusy = false;
 let obAxGranted = false;
-let obKeyProvider = "groq";
-let obKeyStatus = "idle"; // "idle" | "saving" | "saved" | "error"
+let obKeyProvider = "openai";
+let obKeyStatus = "idle";
 let obKeyError = "";
 let obAdvanceTimer = null;
-// Page 5 tracks each local model independently. obLocalStartedHere records the
-// model whose download was started from this wizard so only that model is
-// selected when its download completes.
 let obLocalStatuses = {};
-let obLocalStartedHere = "";
 let obLocalErrors = {};
-let obCloudExpanded = false;
+let obLocalVersions = {};
+let obMoreExpanded = false;
+let obPaused = false;
+let obSelectionPending = false;
+let obLayoutSignature = "";
+let obPracticeActivity = false;
+let obTryFocused = false;
+
+function obSteps() {
+  const os = cachedSettings?.os || (/Mac/i.test(navigator.platform || "") ? "macos" : "windows");
+  return onboardingPolicy.onboardingSteps(os);
+}
 
 function onboardingVisible() {
   const overlay = document.getElementById("onboarding");
   return !!overlay && !overlay.hidden;
 }
 
-function showOnboarding(page = 1) {
+function showOnboarding(step = "welcome") {
   const overlay = document.getElementById("onboarding");
-  if (!overlay) {
-    return;
-  }
-  obCurrent = page;
+  if (!overlay) return;
+  obCurrent = obSteps().includes(step) ? step : "welcome";
   obKeyStatus = "idle";
   obKeyError = "";
-  // Recommend Groq (free tier) unless the user already runs on OpenAI.
-  obKeyProvider =
-    cachedSettings?.hasApiKey && cachedSettings.provider === "openai" ? "openai" : "groq";
-  obLocalErrors = {};
-  obLocalStartedHere = "";
-  // Local-first: the cloud section starts folded on capable hardware, unless
-  // the user is already set up on a cloud engine (re-opened wizard from Help).
-  obCloudExpanded =
-    !cachedSettings?.localCapable ||
-    (!!cachedSettings?.hasApiKey && cachedSettings.provider !== "local");
+  obKeyProvider = cachedSettings?.provider === "groq" ? "groq" : "openai";
+  obMoreExpanded = cachedSettings?.provider === "groq" ||
+    (cachedSettings?.provider === "local" && cachedSettings.model === NEMOTRON_LOCAL_MODEL);
+  obPaused = false;
+  obPracticeActivity = false;
+  obTryFocused = false;
+  const input = document.getElementById("obTryInput");
+  if (input) input.value = "";
   overlay.hidden = false;
+  renderObResume();
   renderOnboarding();
   void obRefreshMicState();
   void obRefreshLocalStatus();
 }
 
+function pauseOnboarding() {
+  if (!onboardingVisible()) return;
+  document.getElementById("onboarding").hidden = true;
+  obPaused = true;
+  if (obAdvanceTimer) window.clearTimeout(obAdvanceTimer);
+  obAdvanceTimer = null;
+  renderObResume();
+}
+
+function resumeOnboarding() {
+  if (!obPaused) return;
+  const overlay = document.getElementById("onboarding");
+  if (!overlay) return;
+  obPaused = false;
+  overlay.hidden = false;
+  renderObResume();
+  renderOnboarding();
+  void refreshReadiness();
+  void obRefreshMicState();
+  void obRefreshLocalStatus();
+}
+
+function renderObResume() {
+  const banner = document.getElementById("onboardingResume");
+  if (banner) banner.hidden = !obPaused;
+}
+
 async function finishOnboarding() {
   const overlay = document.getElementById("onboarding");
-  if (overlay) {
-    overlay.hidden = true;
-  }
-  if (obAdvanceTimer) {
-    window.clearTimeout(obAdvanceTimer);
-    obAdvanceTimer = null;
-  }
+  if (overlay) overlay.hidden = true;
+  obPaused = false;
+  renderObResume();
+  if (obAdvanceTimer) window.clearTimeout(obAdvanceTimer);
+  obAdvanceTimer = null;
   try {
     await ipc.invoke("set-onboarding-completed");
-    if (cachedSettings) {
-      cachedSettings.onboardingCompleted = true;
-    }
+    if (cachedSettings) cachedSettings.onboardingCompleted = true;
   } catch (error) {
     console.error("Failed to persist onboarding completion:", error);
   }
@@ -1091,57 +1100,39 @@ async function finishOnboarding() {
 }
 
 function obMove(delta) {
-  if (obAdvanceTimer) {
-    window.clearTimeout(obAdvanceTimer);
-    obAdvanceTimer = null;
-  }
-  if (obCurrent === OB_TOTAL && delta > 0) {
+  if (obAdvanceTimer) window.clearTimeout(obAdvanceTimer);
+  obAdvanceTimer = null;
+  if (obCurrent === "practice" && delta > 0) {
     void finishOnboarding();
     return;
   }
-  obCurrent = Math.min(OB_TOTAL, Math.max(1, obCurrent + delta));
+  const steps = obSteps();
+  obCurrent = steps[Math.min(steps.length - 1, Math.max(0, steps.indexOf(obCurrent) + delta))];
   renderOnboarding();
-  if (obCurrent === 3) {
-    void obRefreshMicState();
-  }
+  if (obCurrent === "microphone") void obRefreshMicState();
 }
 
-// Advance shortly after a step completes, so the user sees the ✓ land first.
-// Only fires while the user is actually looking at the page that completed.
-function obScheduleAdvance(fromPage) {
-  if (!onboardingVisible() || obCurrent !== fromPage || obAdvanceTimer) {
-    return;
-  }
+function obScheduleAdvance(fromStep) {
+  if (!onboardingVisible() || obCurrent !== fromStep || obAdvanceTimer) return;
   obAdvanceTimer = window.setTimeout(() => {
     obAdvanceTimer = null;
-    if (onboardingVisible() && obCurrent === fromPage) {
-      obMove(1);
-    }
+    if (onboardingVisible() && obCurrent === fromStep && obStepSatisfied(fromStep)) obMove(1);
   }, 900);
 }
 
 function renderOnboarding() {
-  if (!onboardingVisible()) {
-    return;
-  }
+  if (!onboardingVisible()) return;
   document.querySelectorAll(".onboard-page").forEach((page) => {
-    page.classList.toggle(
-      "active",
-      Number(page.getAttribute("data-ob-page")) === obCurrent
-    );
+    page.classList.toggle("active", page.getAttribute("data-ob-step") === obCurrent);
   });
-
   const dots = document.getElementById("obDots");
   if (dots) {
-    dots.replaceChildren(
-      ...Array.from({ length: OB_TOTAL }, (_, index) => {
-        const dot = document.createElement("div");
-        dot.className = `ob-dot${index + 1 === obCurrent ? " active" : ""}`;
-        return dot;
-      })
-    );
+    dots.replaceChildren(...obSteps().map((step) => {
+      const dot = document.createElement("div");
+      dot.className = `ob-dot${step === obCurrent ? " active" : ""}`;
+      return dot;
+    }));
   }
-
   renderObKeycaps();
   renderObMic();
   renderObAx();
@@ -1149,282 +1140,415 @@ function renderOnboarding() {
   renderObKey();
   renderObFooter();
   renderObFinal();
+  renderObPracticeFeedback();
 }
-
-/* ---- Page 5: local-first engine path ---- */
 
 function obFormatGB(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 async function obRefreshLocalStatus() {
-  if (!cachedSettings?.localCapable) {
-    return;
-  }
-  try {
-    const [nemotron, qwen] = await Promise.all([
-      ipc.invoke("get-local-model-status", NEMOTRON_LOCAL_MODEL),
-      ipc.invoke("get-local-model-status", QWEN_LOCAL_MODEL),
-    ]);
-    obLocalStatuses = {
-      [NEMOTRON_LOCAL_MODEL]: nemotron,
-      [QWEN_LOCAL_MODEL]: qwen,
-    };
-  } catch (error) {
-    console.error("Failed to fetch local model status:", error);
-  }
-  if (onboardingVisible()) {
-    renderObLocal();
-  }
+  if (!cachedSettings?.localCapable) return;
+  const models = [QWEN_LOCAL_MODEL, QWEN_LARGE_LOCAL_MODEL, ...(nemotronOffered() ? [NEMOTRON_LOCAL_MODEL] : [])];
+  await Promise.all(models.map(async (model) => {
+    const version = (obLocalVersions[model] || 0) + 1;
+    obLocalVersions[model] = version;
+    try {
+      const status = await ipc.invoke("get-local-model-status", model);
+      if (obLocalVersions[model] === version) {
+        obLocalStatuses[model] = status;
+        if (status?.state === "ready") obLocalErrors[model] = "";
+      }
+    } catch (error) {
+      console.error("Failed to fetch local model status:", error);
+    }
+  }));
+  renderObLocal();
+  renderObFooter();
+  renderObFinal();
 }
 
-// Pick the local engine (assets are ready). The backend save broadcasts
-// shortcut-updated → refreshReadiness updates cachedSettings/hasApiKey, which
-// is what satisfies page 5's gate.
 async function obSelectLocal(model) {
+  if (!cachedSettings?.localCapable || (model === NEMOTRON_LOCAL_MODEL && !nemotronOffered()) || obSelectionPending) return false;
+  obSelectionPending = true;
   try {
-    await ipc.invoke("set-local-model", model);
+    await window.SayTypeSettings.runEngineChange(async () => {
+      const saved = await ipc.invoke("set-local-model", model);
+      if (saved === false) throw new Error("Engine switch was not saved");
+    });
+    obKeyStatus = "idle";
     await refreshReadiness();
-    if (onboardingVisible()) {
-      renderOnboarding();
-      obScheduleAdvance(5);
-    }
+    if (obEngineState().selected) obScheduleAdvance("engine");
+    return true;
   } catch (error) {
     obLocalErrors[model] = String(error?.message || error);
+    return false;
+  } finally {
+    obSelectionPending = false;
     renderObLocal();
+    renderObKey();
+    renderObFooter();
   }
 }
 
 async function obStartLocalDownload(model) {
+  if (!await obSelectLocal(model)) return;
   obLocalErrors[model] = "";
-  obLocalStartedHere = model;
   const currentStatus = obLocalStatuses[model];
+  obLocalVersions[model] = (obLocalVersions[model] || 0) + 1;
   obLocalStatuses[model] = {
     state: "downloading",
     downloadedBytes: currentStatus?.downloadedBytes || 0,
     totalBytes: currentStatus?.totalBytes || 0,
   };
   renderObLocal();
+  renderObFooter();
   try {
-    await ipc.invoke("download-local-model", model);
+    // The command resolves when the download finishes. Advance while it runs.
+    const download = ipc.invoke("download-local-model", model);
+    obScheduleAdvance("engine");
+    await download;
   } catch (error) {
-    obLocalStartedHere = "";
     obLocalErrors[model] = String(error?.message || error);
+    obLocalStatuses[model] = { ...obLocalStatuses[model], state: "error" };
+    renderObLocal();
+    renderObFooter();
+    renderObFinal();
     void obRefreshLocalStatus();
   }
 }
 
+async function obChooseCloud(provider) {
+  if (obSelectionPending || obKeyStatus === "saving") return;
+  obSelectionPending = true;
+  if (obKeyProvider !== provider) {
+    const input = document.getElementById("obKeyInput");
+    if (input) input.value = "";
+  }
+  obKeyProvider = provider;
+  obKeyStatus = "idle";
+  obKeyError = "";
+  renderObKey();
+  try {
+    await window.SayTypeSettings.runEngineChange(async () => {
+      const saved = await ipc.invoke("set-provider", provider);
+      if (saved === false) throw new Error("Engine switch was not saved");
+    });
+    await refreshReadiness();
+    if (obEngineState().ready) obScheduleAdvance("engine");
+  } catch (error) {
+    obKeyStatus = "error";
+    obKeyError = String(error?.message || error);
+  } finally {
+    obSelectionPending = false;
+    renderObLocal();
+    renderObKey();
+    renderObFooter();
+  }
+}
+
+function obEngineCard(entry) {
+  const option = ENGINE_OPTIONS.find((item) => item.value === entry.value);
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = option.model ? "ob-local-card" : "ob-provider";
+  card.classList.toggle("prominent", !!entry.prominent || !!entry.recommended);
+  card.setAttribute("data-ob-engine", entry.value);
+  const ids = { "local-qwen": "obLocalQwenCard", "local-qwen-large": "obLocalQwenLargeCard", "local-nemotron": "obLocalNemotronCard", openai: "obProviderOpenai", groq: "obProviderGroq" };
+  card.id = ids[entry.value];
+  if (option.model) card.setAttribute("data-local-model", option.model);
+  else card.setAttribute("data-provider", entry.value);
+  const body = document.createElement("span");
+  body.className = "ob-local-body";
+  const kind = document.createElement("span");
+  kind.className = "ob-engine-kind";
+  const icon = makeIcon(option.model ? "computer" : "cloud");
+  icon.setAttribute("aria-hidden", "true");
+  kind.appendChild(icon);
+  const kindLabel = document.createElement("span");
+  kindLabel.textContent = t(option.model ? "onboarding.key.localKind" : "onboarding.key.cloudKind");
+  kind.appendChild(kindLabel);
+  body.appendChild(kind);
+  const name = document.createElement("span");
+  name.className = "ob-provider-name";
+  name.textContent = option.model ? t(`settings.engine.${entry.value === "local-qwen" ? "localQwen" : entry.value === "local-qwen-large" ? "localQwenLarge" : "localNemotron"}.name`) : option.label;
+  if (option.model) {
+    const tag = document.createElement("span");
+    tag.className = "ob-provider-tag";
+    tag.textContent = t(entry.recommended ? "onboarding.key.localRecommendedTag" : "onboarding.key.localOfflineTag");
+    name.appendChild(tag);
+  }
+  body.appendChild(name);
+  const detail = document.createElement("span");
+  detail.className = "ob-engine-detail";
+  detail.textContent = t(entry.value === "local-nemotron" ? "settings.engine.localNemotron.description" :
+    option.model ? "onboarding.key.localDescription" : `onboarding.key.${entry.value}Desc`);
+  body.appendChild(detail);
+  if (entry.note) {
+    const note = document.createElement("span");
+    note.className = "ob-engine-note";
+    note.textContent = t(`onboarding.key.${entry.note}`);
+    body.appendChild(note);
+  }
+  const desc = document.createElement("span");
+  desc.className = "ob-provider-desc";
+  body.appendChild(desc);
+  if (option.model) {
+    const progress = document.createElement("progress");
+    progress.className = "ob-local-progress";
+    progress.max = 1000;
+    progress.value = 0;
+    progress.hidden = true;
+    body.appendChild(progress);
+  }
+  card.appendChild(body);
+  card.addEventListener("click", () => {
+    if (card.disabled || card.hidden || obSelectionPending || obKeyStatus === "saving") return;
+    if (!option.model) {
+      void obChooseCloud(entry.value);
+      return;
+    }
+    const state = obLocalStatuses[option.model]?.state;
+    if (state === "ready" || state === "downloading") void obSelectLocal(option.model);
+    else void obStartLocalDownload(option.model);
+  });
+  return card;
+}
+
 function renderObLocalCard(card, model) {
-  const state = obLocalStatuses[model]?.state || "absent";
   const status = obLocalStatuses[model];
-  const selected = state === "ready" && localEngineSelected(model);
+  const state = status?.state || "absent";
+  const selected = localEngineSelected(model);
   card.classList.toggle("selected", selected);
   card.classList.toggle("downloading", state === "downloading");
-
-  const icon = card.querySelector(".ob-local-icon");
-  if (icon) {
-    icon.textContent = selected ? "check_circle" : "memory";
-  }
+  card.setAttribute("aria-pressed", String(selected));
   const progress = card.querySelector(".ob-local-progress");
   if (progress) {
     progress.hidden = state !== "downloading";
-    const pct = status?.totalBytes
-      ? (status.downloadedBytes || 0) / status.totalBytes
-      : 0;
-    progress.value = Math.round(pct * 1000);
+    progress.value = obDownloadPercent(status) * 10;
   }
   const desc = card.querySelector(".ob-provider-desc");
-  if (!desc) {
-    return;
-  }
-  const error = obLocalErrors[model];
-  if (error) {
-    desc.textContent = t("onboarding.key.localError", { reason: error });
-  } else if (selected) {
-    desc.textContent = t("onboarding.key.localSelected");
-  } else if (state === "ready") {
-    desc.textContent = t("onboarding.key.localReady");
-  } else if (state === "downloading") {
-    desc.textContent = t("onboarding.key.localDownloading", {
-      done: obFormatGB(status?.downloadedBytes || 0),
-      total: obFormatGB(status?.totalBytes || 0),
+  if (!desc) return;
+  if (obLocalErrors[model]) desc.textContent = t("onboarding.key.localError", { reason: obLocalErrors[model] });
+  else if (state === "downloading") desc.textContent = obDownloadLabel(model);
+  else if (state === "ready") desc.textContent = t(selected ? "onboarding.key.localSelected" : "onboarding.key.localReady");
+  else if (state === "partial") desc.textContent = t("onboarding.key.localResume");
+  else desc.textContent = t("onboarding.key.localAbsent", { total: status?.totalBytes ? obFormatGB(status.totalBytes) : model === QWEN_LARGE_LOCAL_MODEL ? "~2.5 GB" : "~1.0 GB" });
+}
+
+function renderObComparison(show) {
+  const container = document.getElementById("obModelComparison");
+  if (!container) return;
+  container.hidden = !show;
+  if (!show) return;
+  const table = document.createElement("table");
+  const rows = [
+    ["", "Qwen 0.6B", "Qwen 1.7B"],
+    [t("onboarding.key.comparisonDownload"), "~1.0 GB", "~2.5 GB"],
+    [t("onboarding.key.comparisonMemory"), "~1.4 GB", "~2.9 GB"],
+    [t("onboarding.key.comparisonTime"), "0.96 s", "2.07 s"],
+  ];
+  rows.forEach((cells, index) => {
+    const row = document.createElement("tr");
+    cells.forEach((value, column) => {
+      const cell = document.createElement(index === 0 || column === 0 ? "th" : "td");
+      if (index === 0) cell.scope = "col";
+      else if (column === 0) cell.scope = "row";
+      cell.textContent = value;
+      row.appendChild(cell);
     });
-  } else if (state === "partial") {
-    desc.textContent = t("onboarding.key.localResume");
-  } else {
-    desc.textContent = t("onboarding.key.localAbsent", {
-      total: status?.totalBytes ? obFormatGB(status.totalBytes) : "~1 GB",
-    });
-  }
+    table.appendChild(row);
+  });
+  const note = document.createElement("p");
+  note.textContent = t("onboarding.key.comparisonNote");
+  container.replaceChildren(table, note);
 }
 
 function renderObLocal() {
-  const cards = Array.from(document.querySelectorAll("[data-local-model]"));
-  const toggle = document.getElementById("obCloudToggle");
-  const cloud = document.getElementById("obCloudSection");
-  if (!cards.length || !toggle || !cloud) {
-    return;
-  }
+  if (!onboardingVisible()) return;
+  const main = document.getElementById("obEngineMain");
+  const more = document.getElementById("obEngineMore");
+  const toggle = document.getElementById("obMoreToggle");
+  if (!main || !more || !toggle) return;
   const capable = !!cachedSettings?.localCapable;
-
-  // The page leads with local engines; the cloud path remains an explicit option.
+  const tier = cachedSettings?.localTier || "qwen";
+  const layout = onboardingPolicy.onboardingEngineLayout(tier, nemotronOffered());
+  const available = (entries) => entries.filter((entry) => capable || !entry.value.startsWith("local-"));
+  const signature = `${tier}:${capable}:${nemotronOffered()}:${getLocale()}`;
+  if (signature !== obLayoutSignature) {
+    obLayoutSignature = signature;
+    main.replaceChildren(...available(layout.main).map(obEngineCard));
+    more.replaceChildren(...available(layout.more).map(obEngineCard));
+    renderObComparison(capable && ["qwen-large-offered", "qwen-large-prominent"].includes(tier));
+  }
   const title = document.getElementById("obKeyTitle");
-  if (title) {
-    title.textContent = t(capable ? "onboarding.key.titleLocalFirst" : "onboarding.key.title");
-  }
+  if (title) title.textContent = t("onboarding.key.titleLocalFirst");
   const lead = document.getElementById("obKeyLead");
-  if (lead) {
-    lead.textContent = t(capable ? "onboarding.key.leadLocalFirst" : "onboarding.key.lead");
-  }
-
-  cards.forEach((card) => {
-    const model = normalizeLocalModel(card.getAttribute("data-local-model"));
-    card.hidden = !capable || (model === NEMOTRON_LOCAL_MODEL && !nemotronOffered());
+  if (lead) lead.textContent = t(tier === "cloud-default" ? "onboarding.key.leadCloudDefault" : "onboarding.key.leadLocalFirst");
+  more.hidden = !obMoreExpanded;
+  toggle.hidden = !available(layout.more).length;
+  toggle.setAttribute("aria-expanded", String(obMoreExpanded));
+  toggle.textContent = t(obMoreExpanded ? "onboarding.key.moreHide" : "onboarding.key.more");
+  document.querySelectorAll("#onboarding [data-local-model]").forEach((card) => {
+    const model = card.getAttribute("data-local-model");
+    const downloadingOther = Object.entries(obLocalStatuses).some(([id, status]) => id !== model && status?.state === "downloading");
+    const needsDownload = !["ready", "downloading"].includes(obLocalStatuses[model]?.state);
+    card.disabled = obSelectionPending || obKeyStatus === "saving" || (downloadingOther && needsDownload);
+    renderObLocalCard(card, model);
+    if (downloadingOther && needsDownload) card.querySelector(".ob-provider-desc").textContent = t("onboarding.key.otherDownloading");
   });
-  toggle.hidden = !capable;
-  cloud.hidden = capable && !obCloudExpanded;
-  toggle.textContent = t(
-    obCloudExpanded ? "onboarding.key.cloudToggleHide" : "onboarding.key.cloudToggle"
-  );
-  if (!capable) {
-    return;
-  }
-
-  cards.forEach((card) => {
-    renderObLocalCard(card, normalizeLocalModel(card.getAttribute("data-local-model")));
-  });
+  renderObKey();
 }
 
-// Whether a wizard page's job is done. Info pages (1/2/6) are always
-// "done"; the three action pages gate the Next button on real state.
-function obStepSatisfied(page) {
-  if (page === 3) {
-    return obMicState === "granted";
-  }
-  if (page === 4) {
-    return obAxGranted;
-  }
-  if (page === 5) {
-    return obKeyStatus === "saved" || !!cachedSettings?.hasApiKey;
-  }
+function obEngineState() {
+  return onboardingPolicy.onboardingEngineState(cachedSettings, obLocalStatuses);
+}
+
+function obStepSatisfied(step) {
+  if (step === "microphone") return obMicState === "granted" || obMicState === "unknown";
+  if (step === "accessibility") return obAxGranted;
+  if (step === "engine") return obEngineState().selected;
   return true;
 }
 
-// Footer gating: on an unfinished action page, Next is disabled so nobody
-// slides through unawares — but a low-key per-step skip link keeps anyone
-// who genuinely can't grant right now from being held hostage. The global
-// skip (whole wizard) only shows on the info pages before any gate.
-function renderObFooter() {
-  if (!onboardingVisible()) {
-    return;
-  }
-  const satisfied = obStepSatisfied(obCurrent);
-  const gated = obCurrent >= 3 && obCurrent <= 5;
-
-  const back = document.getElementById("obBackBtn");
-  if (back) {
-    back.style.visibility = obCurrent === 1 ? "hidden" : "visible";
-  }
-  const skip = document.getElementById("obSkipBtn");
-  if (skip) {
-    skip.style.display = obCurrent <= 2 ? "" : "none";
-  }
-  const stepSkip = document.getElementById("obStepSkipBtn");
-  if (stepSkip) {
-    stepSkip.style.display = gated && !satisfied ? "" : "none";
-  }
-  const next = document.getElementById("obNextBtn");
-  if (next) {
-    next.textContent =
-      obCurrent === 1
-        ? t("onboarding.start")
-        : obCurrent === OB_TOTAL
-          ? t("onboarding.finish")
-          : t("onboarding.next");
-    next.disabled = gated && !satisfied;
-  }
+function obDownloadPercent(status) {
+  return status?.totalBytes ? Math.min(100, Math.max(0, Math.round((status.downloadedBytes || 0) / status.totalBytes * 100))) : 0;
 }
 
-// Whether the practice field already took focus for the ready state now on
-// screen. It is focused once per showing, so later refreshes (window focus,
-// permission events) never pull focus back from wherever the user moved it.
-let obTryFocused = false;
+function obDownloadLabel(model, suppliedStatus = null) {
+  const status = suppliedStatus || obLocalStatuses[model];
+  if (obLocalErrors[model] || status?.state === "error") return t("onboarding.key.downloadFailed");
+  if (status?.state === "downloading") return t("onboarding.key.downloadProgress", { percent: obDownloadPercent(status) });
+  return t(status?.state === "ready" ? "onboarding.key.downloadReady" : "onboarding.key.downloadMissing");
+}
 
-// Page 6 tells the truth: celebration + practice box only when everything
-// is actually ready; otherwise a checklist of what's missing, each row
-// jumping back to its page — nobody leaves the wizard surprised later.
+function renderObDownloadFooter() {
+  const footer = document.getElementById("obDownloadFooter");
+  if (!footer) return;
+  const active = Object.entries(obLocalStatuses).filter(([model, status]) => status?.state === "downloading" || obLocalErrors[model]);
+  footer.hidden = !["microphone", "accessibility", "practice"].includes(obCurrent) || !active.length;
+  if (footer.hidden) return;
+  footer.replaceChildren(...active.map(([model]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link-btn";
+    const option = ENGINE_OPTIONS.find((entry) => entry.model === model);
+    button.textContent = `${t(option.labelKey)} · ${obDownloadLabel(model)}`;
+    button.addEventListener("click", () => openSettings(`local-model:${model}`));
+    return button;
+  }));
+}
+
+function renderObFooter() {
+  if (!onboardingVisible()) return;
+  const satisfied = obStepSatisfied(obCurrent);
+  const gated = ["engine", "microphone", "accessibility"].includes(obCurrent);
+  const back = document.getElementById("obBackBtn");
+  if (back) back.style.visibility = obCurrent === "welcome" ? "hidden" : "visible";
+  const skip = document.getElementById("obSkipBtn");
+  if (skip) skip.hidden = !["welcome", "privacy"].includes(obCurrent);
+  const stepSkip = document.getElementById("obStepSkipBtn");
+  if (stepSkip) stepSkip.hidden = !gated || satisfied;
+  const next = document.getElementById("obNextBtn");
+  if (next) {
+    next.textContent = t(obCurrent === "welcome" ? "onboarding.start" : obCurrent === "practice" ? "onboarding.finish" : "onboarding.next");
+    next.disabled = gated && !satisfied;
+  }
+  renderObDownloadFooter();
+}
+
 function renderObFinal() {
-  if (!onboardingVisible() || obCurrent !== OB_TOTAL) {
+  if (!onboardingVisible() || obCurrent !== "practice") {
     obTryFocused = false;
     return;
   }
   const steps = [
-    { page: 3, icon: "mic", label: t("readiness.microphone") },
-    { page: 4, icon: "accessibility_new", label: t("readiness.accessibility") },
-    { page: 5, icon: "graphic_eq", label: t("readiness.engine") },
+    { step: "engine", icon: "graphic_eq", label: t("readiness.engine"), ok: obEngineState().ready },
+    { step: "microphone", icon: "mic", label: t("readiness.microphone"), ok: obStepSatisfied("microphone") },
+    ...(obSteps().includes("accessibility") ? [{ step: "accessibility", icon: "accessibility_new", label: t("readiness.accessibility"), ok: obAxGranted }] : []),
   ];
-  const ready = steps.every(({ page }) => obStepSatisfied(page));
-
+  const ready = steps.every(({ ok }) => ok);
+  renderObReadySummary(steps, ready);
   const title = document.getElementById("obTryTitle");
-  if (title) {
-    title.textContent = t(ready ? "onboarding.try.title" : "onboarding.tryPending.title");
-  }
+  if (title) title.textContent = t(ready ? "onboarding.try.title" : "onboarding.tryPending.title");
   const lead = document.getElementById("obTryLead");
-  if (lead) {
-    lead.textContent = t(ready ? "onboarding.try.lead" : "onboarding.tryPending.lead");
-  }
+  if (lead) lead.textContent = t(ready ? "onboarding.try.lead" : "onboarding.tryPending.lead");
   const icon = document.getElementById("obFinalIcon");
-  if (icon) {
-    icon.textContent = ready ? "celebration" : "playlist_add_check";
-  }
+  if (icon) icon.textContent = ready ? "celebration" : "playlist_add_check";
   const tryBox = document.getElementById("obTryBox");
-  if (tryBox) {
-    tryBox.hidden = !ready;
-  }
-  const tip = document.getElementById("obTryTip");
-  if (tip) {
-    tip.hidden = !ready;
-  }
-  // The first dictation needs an editable target (the macOS insert guard
-  // refuses keystrokes when no text field is focused), so the ready state
-  // puts the caret in the practice field.
-  if (!ready) {
-    obTryFocused = false;
-  } else if (!obTryFocused) {
-    obTryFocused = true;
-    document.getElementById("obTryInput")?.focus();
-  }
-
+  if (tryBox) tryBox.hidden = !ready;
   const checklist = document.getElementById("obChecklist");
-  if (!checklist) {
-    return;
-  }
+  if (!checklist) return;
+  const historyHint = document.getElementById("obHistoryHint");
+  if (historyHint) historyHint.hidden = !ready;
   checklist.hidden = ready;
   if (ready) {
     checklist.replaceChildren();
+    if (!obTryFocused) {
+      obTryFocused = true;
+      const page = document.querySelector('[data-ob-step="practice"]');
+      if (page) page.scrollTop = 0;
+      document.getElementById("obTryInput")?.focus({ preventScroll: true });
+    }
     return;
   }
-  checklist.replaceChildren(
-    ...steps.map(({ page, icon: rowIcon, label }) => {
-      const ok = obStepSatisfied(page);
-      const row = document.createElement(ok ? "div" : "button");
-      row.className = `ob-check-row${ok ? " ok" : ""}`;
-      if (!ok) {
-        row.type = "button";
-        row.addEventListener("click", () => {
-          obCurrent = page;
+  obTryFocused = false;
+  checklist.replaceChildren(...steps.map(({ step, icon: rowIcon, label, ok }) => {
+    const local = step === "engine" && cachedSettings?.provider === "local";
+    const actionable = !ok || local;
+    const row = document.createElement(actionable ? "button" : "div");
+    row.className = `ob-check-row${ok ? " ok" : ""}`;
+    if (actionable) {
+      row.type = "button";
+      row.addEventListener("click", () => {
+        if (local) openSettings(`local-model:${cachedSettings.model}`);
+        else {
+          obCurrent = step;
           renderOnboarding();
-        });
-      }
-      row.appendChild(makeIcon(rowIcon));
-      const text = document.createElement("span");
-      text.className = "ob-check-label";
-      text.textContent = label;
-      row.appendChild(text);
-      row.appendChild(makeIcon(ok ? "check" : "chevron_right"));
-      return row;
-    })
-  );
+        }
+      });
+    }
+    row.appendChild(makeIcon(rowIcon));
+    const text = document.createElement("span");
+    text.className = "ob-check-label";
+    text.textContent = local ? `${label} · ${obDownloadLabel(cachedSettings.model)}` :
+      step === "microphone" && obMicState === "unknown" ? `${label} · ${t("onboarding.mic.unknown")}` : label;
+    row.appendChild(text);
+    row.appendChild(makeIcon(ok ? "check" : "chevron_right"));
+    return row;
+  }));
+}
+
+function renderObReadySummary(steps, ready) {
+  const summary = document.getElementById("obReadySummary");
+  if (!summary) return;
+  summary.hidden = !ready;
+  summary.replaceChildren();
+  if (!ready) return;
+  steps.forEach(({ step, label, ok }) => {
+    const confirmed = ok && (step !== "microphone" || obMicState === "granted");
+    const row = document.createElement("li");
+    row.className = confirmed ? "confirmed" : "unchecked";
+    const icon = makeIcon(confirmed ? "check" : "help_outline");
+    icon.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span");
+    text.textContent = step === "engine" ? t("onboarding.try.engineReady") :
+      step === "microphone" && !confirmed ? t("onboarding.try.micUnchecked") : label;
+    row.setAttribute("aria-label", confirmed && step !== "engine" ? `${label} · ${t("onboarding.key.downloadReady")}` : text.textContent);
+    row.appendChild(icon);
+    row.appendChild(text);
+    summary.appendChild(row);
+  });
+}
+
+function renderObPracticeFeedback() {
+  const input = document.getElementById("obTryInput");
+  const feedback = document.getElementById("obTryFeedback");
+  if (!feedback) return;
+  const success = !!input?.value.trim();
+  feedback.hidden = !success && !obPracticeActivity;
+  feedback.classList.toggle("ok", success);
+  feedback.textContent = t(success ? "onboarding.try.success" : "onboarding.try.historyFallback");
 }
 
 // Fill an element from an i18n template containing a {keys} placeholder,
@@ -1446,17 +1570,8 @@ function fillKeycapTemplate(element, key, shortcut) {
 
 function renderObKeycaps() {
   const record = cachedSettings?.shortcut || "Ctrl+Shift";
-  const translate = cachedSettings?.translateShortcut || "Shift+Alt";
   fillKeycapTemplate(document.getElementById("obStepHold"), "onboarding.welcome.holdTitle", record);
   fillKeycapTemplate(document.getElementById("obTryHint"), "onboarding.try.hint", record);
-
-  const tip = document.getElementById("obTryTip");
-  if (tip) {
-    tip.replaceChildren(makeIcon("translate"));
-    const body = document.createElement("span");
-    fillKeycapTemplate(body, "onboarding.try.tip", translate);
-    tip.appendChild(body);
-  }
 
   const tryInput = document.getElementById("obTryInput");
   if (tryInput) {
@@ -1503,7 +1618,9 @@ async function obRefreshMicState() {
         ? "granted"
         : result.status === "not-determined"
           ? "prompt"
-          : "denied";
+          : result.status === "unknown"
+            ? "unknown"
+            : "denied";
   } catch (error) {
     console.error("Failed to check microphone permission:", error);
   }
@@ -1511,7 +1628,7 @@ async function obRefreshMicState() {
   renderObFooter();
   renderObFinal();
   if (previous !== "granted" && obMicState === "granted") {
-    obScheduleAdvance(3);
+    obScheduleAdvance("microphone");
   }
 }
 
@@ -1541,6 +1658,10 @@ function renderObMic() {
   container.replaceChildren();
   if (obMicState === "granted") {
     container.appendChild(obStatusPill(t("onboarding.mic.granted")));
+    return;
+  }
+  if (obMicState === "unknown") {
+    container.appendChild(obActionHint(t("onboarding.mic.unknown")));
     return;
   }
   if (obMicState === "denied") {
@@ -1607,13 +1728,29 @@ function renderObKey() {
   if (!onboardingVisible()) {
     return;
   }
+  if (!obSelectionPending && obKeyStatus !== "saving" &&
+      ["openai", "groq"].includes(cachedSettings?.provider) && obKeyProvider !== cachedSettings.provider) {
+    obKeyProvider = cachedSettings.provider;
+    obKeyStatus = "idle";
+    obKeyError = "";
+    const previousInput = document.getElementById("obKeyInput");
+    if (previousInput) previousInput.value = "";
+  }
   document.querySelectorAll(".ob-provider").forEach((card) => {
-    card.classList.toggle(
-      "selected",
-      card.getAttribute("data-provider") === obKeyProvider
-    );
+    const provider = card.getAttribute("data-provider");
+    const selected = cachedSettings?.provider === provider;
+    card.classList.toggle("selected", selected);
+    card.setAttribute("aria-pressed", String(selected));
+    card.disabled = obSelectionPending || obKeyStatus === "saving";
+    const desc = card.querySelector(".ob-provider-desc");
+    if (desc) desc.textContent = t(selected && cachedSettings?.engineReady ? "onboarding.key.configured" : "onboarding.key.cloudSetup");
   });
-
+  const cloud = document.getElementById("obCloudSection");
+  if (cloud) cloud.hidden = cachedSettings?.provider === "local" && !obSelectionPending;
+  const label = document.getElementById("obKeyLabel");
+  if (label) label.textContent = t("onboarding.key.keyLabel", { provider: obKeyProvider === "groq" ? "Groq" : "OpenAI" });
+  const notice = document.getElementById("obCloudNotice");
+  if (notice) notice.textContent = t("onboarding.key.cloudNotice", { provider: obKeyProvider === "groq" ? "Groq" : "OpenAI" });
   const input = document.getElementById("obKeyInput");
   if (input) {
     input.placeholder = t(
@@ -1631,7 +1768,7 @@ function renderObKey() {
     } else if (obKeyStatus === "saved") {
       help.className = "ob-key-help ok";
       help.textContent = t("onboarding.key.saved");
-    } else if (cachedSettings?.hasApiKey && cachedSettings.provider === obKeyProvider) {
+    } else if (cachedSettings?.engineReady && cachedSettings.provider === obKeyProvider) {
       help.className = "ob-key-help ok";
       help.textContent = t("onboarding.key.configured");
     } else {
@@ -1644,21 +1781,23 @@ function renderObKey() {
 
   const save = document.getElementById("obKeySaveBtn");
   if (save) {
-    save.disabled = obKeyStatus === "saving";
+    save.disabled = obKeyStatus === "saving" || obSelectionPending;
   }
 }
 
 async function obSaveKey() {
   const input = document.getElementById("obKeyInput");
   const key = (input?.value || "").trim();
-  if (!key || obKeyStatus === "saving") {
+  if (!key || obKeyStatus === "saving" || obSelectionPending) {
     input?.focus();
     return;
   }
+  const provider = obKeyProvider;
   obKeyStatus = "saving";
+  renderObLocal();
   renderObKey();
   try {
-    await ipc.invoke("save-onboarding-api-key", obKeyProvider, key);
+    await window.SayTypeSettings.runEngineChange(() => ipc.invoke("save-onboarding-api-key", provider, key));
     obKeyStatus = "saved";
     if (input) {
       input.value = "";
@@ -1668,13 +1807,16 @@ async function obSaveKey() {
     } catch (error) {
       console.error("Failed to reload settings after key save:", error);
     }
+    await refreshReadiness();
+    renderObLocal();
     renderObKey();
     renderObFooter();
     renderObFinal();
-    obScheduleAdvance(5);
+    obScheduleAdvance("engine");
   } catch (error) {
     obKeyStatus = "error";
     obKeyError = error?.message || String(error);
+    renderObLocal();
     renderObKey();
   }
 }
@@ -2048,6 +2190,7 @@ async function saveDictionary() {
 /* ---------- Navigation & misc ---------- */
 
 async function showPage(pageId, options = {}) {
+  if (pageId === "settings") pauseOnboarding();
   document.querySelectorAll(".page").forEach((page) => {
     page.classList.remove("active");
   });
@@ -2075,7 +2218,8 @@ function openSettings(target = null) {
 // toast did (page 1 shows the live shortcuts) plus permissions and setup, and
 // it's freely skippable.
 function showHelp() {
-  showOnboarding();
+  if (obPaused) resumeOnboarding();
+  else showOnboarding();
 }
 
 async function copyToClipboard(text, button) {

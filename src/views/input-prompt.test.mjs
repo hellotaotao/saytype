@@ -420,7 +420,7 @@ test("recording startup reports native, delivery, microphone, and first-paint ti
     clearInsertFailedUi() {},
     clearTranscriptionPreview() {},
     updateModelBadge() {},
-    hasUsableApiKey: async () => true,
+    hasReadyEngine: async () => true,
     startWaveAnimation() {},
     startRecordingTimer() {},
   });
@@ -504,7 +504,7 @@ test("macOS records through native PCM without opening WebKit capture", async ()
     clearInsertFailedUi() {},
     clearTranscriptionPreview() {},
     updateModelBadge() {},
-    hasUsableApiKey: async () => true,
+    hasReadyEngine: async () => true,
     startWaveAnimation() {},
     stopWaveAnimation() {},
     startRecordingTimer() {},
@@ -585,7 +585,7 @@ test("a new native recording waits for the previous capture to release the devic
     clearInsertFailedUi() {},
     clearTranscriptionPreview() {},
     updateModelBadge() {},
-    hasUsableApiKey: async () => true,
+    hasReadyEngine: async () => true,
     startWaveAnimation() {},
     stopWaveAnimation() {},
     startRecordingTimer() {},
@@ -692,7 +692,7 @@ test("a macOS native capture failure falls back to WebKit instead of losing the 
     clearInsertFailedUi() {},
     clearTranscriptionPreview() {},
     updateModelBadge() {},
-    hasUsableApiKey: async () => true,
+    hasReadyEngine: async () => true,
     startWaveAnimation() {},
     stopWaveAnimation() {},
     startRecordingTimer() {},
@@ -937,7 +937,7 @@ test("Qwen prewarm waits for probation after first paint and skips a cancelled r
     clearInsertFailedUi() {},
     clearTranscriptionPreview() {},
     updateModelBadge() {},
-    hasUsableApiKey: async () => true,
+    hasReadyEngine: async () => true,
     startWaveAnimation() {},
     startRecordingTimer() {},
   });
@@ -1879,7 +1879,7 @@ async function createLifecycleHarness(options = {}) {
     clearInsertFailedUi: VoiceInputPrompt.prototype.clearInsertFailedUi,
     clearTranscriptionPreview() {},
     updateModelBadge() {},
-    hasUsableApiKey: async () => true,
+    hasReadyEngine: async () => true,
     startWaveAnimation() {},
     stopWaveAnimation() {},
     startRecordingTimer() {},
@@ -2370,7 +2370,7 @@ test("an old cancel callback cannot clear a newer startup cancellation gate", as
   const h = await createLifecycleHarness();
   h.prompt.cancelRecording();
   const preflight = createDeferred();
-  h.prompt.hasUsableApiKey = () => preflight.promise;
+  h.prompt.hasReadyEngine = () => preflight.promise;
   h.prompt.stopRequested = false;
   const starting = h.prompt.startRecording();
   h.prompt.cancelRecording();

@@ -11,6 +11,7 @@ below keep their own licenses.
 | [@ricky0123/vad-web](https://github.com/ricky0123/vad) | 0.0.30 | ISC | `src/views/vendor/vad/bundle.min.js` |
 | [Silero VAD](https://github.com/snakers4/silero-vad) legacy model, as packaged by vad-web | — | MIT | `src/views/vendor/vad/silero_vad_legacy.onnx` |
 | [Material Icons](https://github.com/google/material-design-icons) font | — | Apache-2.0 | `src/views/fonts/MaterialIcons-Regular.woff2` |
+| [sysinfo](https://github.com/GuillaumeGomez/sysinfo) | 0.33.1 | MIT | Native hardware detection; `system` feature only, pinned in `src-tauri/Cargo.lock` |
 
 `src/views/vendor/vad/PROVENANCE.md` records how the VAD files were obtained and how to update them.
 

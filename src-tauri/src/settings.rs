@@ -167,10 +167,11 @@ impl Default for AppConfig {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPayload {
-  /// Whether the selected provider has a usable key. The raw keys are NOT in
+  /// Whether the selected engine can transcribe now. The raw keys are NOT in
   /// this payload — get_settings is read by every window (main, input-prompt),
   /// and only the Settings editor in the main window needs the actual keys.
-  pub has_api_key: bool,
+  pub engine_ready: bool,
+  pub engine_blocker: &'static str,
   pub shortcut: String,
   pub translate_shortcut: String,
   pub language: String,
@@ -199,10 +200,10 @@ pub struct SettingsPayload {
   /// Whether the first-launch onboarding wizard has been completed (or skipped).
   /// The main window shows the wizard while this is false.
   pub onboarding_completed: bool,
-  /// Whether the product should steer the user toward the local engine
-  /// (wizard top pick, "recommended" tag on switchers). True on every
-  /// supported desktop build and independent of asset download state.
+  /// Whether local engines are offered on this build. This remains independent
+  /// of model download state and the hardware recommendation in local_tier.
   pub local_capable: bool,
+  pub local_tier: crate::hardware::LocalTier,
   /// Whether the Nemotron engine can run here at all (its streaming runtime is
   /// available for Apple Silicon and Windows x64). False means the engine is
   /// not offered — the Settings provider list, the Home engine switcher and the
@@ -220,16 +221,18 @@ impl SettingsPayload {
   }
 
   /// `local_model_ready` injected for tests (assets_ready_for() reads the real
-  /// app data dir). For provider=="local", has_api_key means "the selected
-  /// provider is usable" — assets downloaded — so the readiness UI works
-  /// unchanged.
+  /// app data dir). Readiness never changes the selected provider.
   pub fn from_config_with(config: &AppConfig, local_model_ready: bool) -> Self {
+    let engine_blocker = match config.provider.as_str() {
+      "local" if !local_model_ready => "local-model-missing",
+      "local" => "",
+      "groq" | "openai" if selected_api_key(config).trim().is_empty() => "api-key-missing",
+      "groq" | "openai" => "",
+      _ => "provider-invalid",
+    };
     Self {
-      has_api_key: if config.provider == crate::local_asr::LOCAL_PROVIDER {
-        local_model_ready
-      } else {
-        !selected_api_key(config).trim().is_empty()
-      },
+      engine_ready: engine_blocker.is_empty(),
+      engine_blocker,
       shortcut: config.shortcut.clone(),
       translate_shortcut: config.translate_shortcut.clone(),
       language: config.language.clone(),
@@ -249,6 +252,7 @@ impl SettingsPayload {
       is_dev: cfg!(debug_assertions),
       onboarding_completed: config.onboarding_completed,
       local_capable: crate::platform::supports_local_first(),
+      local_tier: crate::hardware::local_tier(),
       nemotron_supported: crate::nemotron_asr::supported(),
     }
   }
@@ -280,12 +284,24 @@ pub fn read_config() -> Result<AppConfig> {
 }
 
 pub fn read_config_from_path(path: &Path) -> Result<AppConfig> {
-  if !path.exists() {
-    return Ok(AppConfig::default());
-  }
+  read_config_from_path_with_tier(path, crate::hardware::local_tier())
+}
 
-  let text = fs::read_to_string(path)
-    .with_context(|| format!("failed to read {}", path.display()))?;
+pub fn fresh_config_for(tier: crate::hardware::LocalTier) -> AppConfig {
+  let mut config = AppConfig::default();
+  if tier != crate::hardware::LocalTier::CloudDefault {
+    config.provider = crate::local_asr::LOCAL_PROVIDER.into();
+    config.model = crate::local_asr::QWEN_MODEL_ID.into();
+  }
+  config
+}
+
+fn read_config_from_path_with_tier(path: &Path, tier: crate::hardware::LocalTier) -> Result<AppConfig> {
+  let text = match fs::read_to_string(path) {
+    Ok(text) => text,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fresh_config_for(tier)),
+    Err(error) => return Err(error).with_context(|| format!("failed to read {}", path.display())),
+  };
   let config = serde_json::from_str::<AppConfig>(&text)
     .with_context(|| format!("failed to parse {}", path.display()))?;
   Ok(config)
@@ -343,30 +359,16 @@ pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
 }
 
 pub fn selected_api_key(config: &AppConfig) -> String {
-  if config.provider == crate::local_asr::LOCAL_PROVIDER {
-    // The local backend needs no key; never surface a cloud key as "selected"
-    // (translate-mode fallback reads api_key_groq/api_key_openai directly).
-    return String::new();
-  }
-  if config.provider == "openai" {
-    if !config.api_key_openai.trim().is_empty() {
-      return config.api_key_openai.clone();
-    }
-  } else if !config.api_key_groq.trim().is_empty() {
-    return config.api_key_groq.clone();
+  let key = match config.provider.as_str() {
+    "openai" => &config.api_key_openai,
+    "groq" => &config.api_key_groq,
+    _ => return String::new(),
+  };
+  if !key.trim().is_empty() {
+    return key.clone();
   }
 
   config.api_key.clone()
-}
-
-/// Server-side guard behind the settings UI: provider "local" may only be
-/// saved once the assets are fully downloaded (the UI also enforces this, but
-/// a stale window must not be able to persist an unusable config).
-pub fn local_provider_selectable(provider: &str, model_ready: bool) -> Result<(), String> {
-  if provider == crate::local_asr::LOCAL_PROVIDER && !model_ready {
-    return Err("Local model is not downloaded yet — download it in Settings → Models first.".into());
-  }
-  Ok(())
 }
 
 pub fn normalize_record_shortcut(value: &str) -> String {
@@ -502,6 +504,51 @@ mod tests {
   }
 
   #[test]
+  fn missing_config_uses_hardware_defaults_without_changing_legacy_defaults() {
+    use crate::hardware::LocalTier;
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("missing.json");
+    for tier in [LocalTier::Qwen, LocalTier::QwenLargeOffered, LocalTier::QwenLargeProminent] {
+      let config = read_config_from_path_with_tier(&path, tier).unwrap();
+      assert_eq!(config.provider, "local");
+      assert_eq!(config.model, crate::local_asr::QWEN_MODEL_ID);
+    }
+    let cloud = read_config_from_path_with_tier(&path, LocalTier::CloudDefault).unwrap();
+    assert_eq!(cloud.provider, "openai");
+    assert_eq!(cloud.model, "gpt-transcribe");
+    assert_eq!(AppConfig::default().provider, "openai");
+    assert_eq!(AppConfig::default().model, "gpt-transcribe");
+    assert!(!path.exists());
+  }
+
+  #[test]
+  fn existing_and_legacy_config_ignore_hardware_defaults() {
+    use crate::hardware::LocalTier;
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("config.json");
+    for tier in [LocalTier::CloudDefault, LocalTier::QwenLargeProminent] {
+      fs::write(&path, r#"{"provider":"groq","model":"whisper-large-v3","apiKeyGroq":"gsk"}"#).unwrap();
+      let config = read_config_from_path_with_tier(&path, tier).unwrap();
+      assert_eq!(config.provider, "groq");
+      assert_eq!(config.model, "whisper-large-v3");
+      assert_eq!(config.api_key_groq, "gsk");
+      fs::write(&path, "{}").unwrap();
+      let legacy = read_config_from_path_with_tier(&path, tier).unwrap();
+      assert_eq!(legacy.provider, "openai");
+      assert_eq!(legacy.model, "gpt-transcribe");
+    }
+  }
+
+  #[test]
+  fn unreadable_or_invalid_config_does_not_become_a_fresh_install() {
+    let temp = tempfile::TempDir::new().unwrap();
+    assert!(read_config_from_path_with_tier(temp.path(), crate::hardware::LocalTier::Qwen).is_err());
+    let path = temp.path().join("config.json");
+    fs::write(&path, "not json").unwrap();
+    assert!(read_config_from_path_with_tier(&path, crate::hardware::LocalTier::Qwen).is_err());
+  }
+
+  #[test]
   fn auto_launch_reapplies_only_when_value_changes() {
     // Unchanged → must NOT re-register: re-registering runs `launchctl load`
     // on a RunAtLoad agent, spawning a duplicate instance on every save.
@@ -599,16 +646,16 @@ mod tests {
     let mut config = AppConfig::default();
     config.provider = "openai".into();
     // No key for the selected provider yet.
-    assert!(!SettingsPayload::from_config(&config).has_api_key);
+    assert!(!SettingsPayload::from_config(&config).engine_ready);
     // OpenAI key present → selected provider has a usable key.
     config.api_key_openai = "sk-x".into();
-    assert!(SettingsPayload::from_config(&config).has_api_key);
+    assert!(SettingsPayload::from_config(&config).engine_ready);
     // Switch to groq with no groq key and no legacy key → none usable.
     config.provider = "groq".into();
-    assert!(!SettingsPayload::from_config(&config).has_api_key);
+    assert!(!SettingsPayload::from_config(&config).engine_ready);
     // Legacy shared key acts as the fallback for the selected provider.
     config.api_key = "legacy".into();
-    assert!(SettingsPayload::from_config(&config).has_api_key);
+    assert!(SettingsPayload::from_config(&config).engine_ready);
   }
 
   #[test]
@@ -621,14 +668,65 @@ mod tests {
   }
 
   #[test]
-  fn settings_payload_local_provider_reports_model_readiness_as_has_api_key() {
+  fn unknown_provider_never_exposes_a_stored_key() {
+    let mut config = AppConfig::default();
+    config.api_key = "legacy".into();
+    config.api_key_groq = "gsk".into();
+    config.api_key_openai = "osk".into();
+    for provider in ["", "unexpected", "OPENAI", " openai"] {
+      config.provider = provider.into();
+      assert_eq!(selected_api_key(&config), "", "{provider}");
+    }
+  }
+
+  #[test]
+  fn settings_payload_separates_engine_readiness_from_selection() {
     let mut config = AppConfig::default();
     config.provider = "local".into();
-    assert!(SettingsPayload::from_config_with(&config, true).has_api_key);
-    assert!(!SettingsPayload::from_config_with(&config, false).has_api_key);
+    let payload = serde_json::to_value(SettingsPayload::from_config_with(&config, false)).unwrap();
+    assert_eq!(payload["provider"], "local");
+    assert_eq!(payload["engineReady"], false);
+    assert_eq!(payload["engineBlocker"], "local-model-missing");
+    assert!(payload.get("hasApiKey").is_none());
+  }
+
+  #[test]
+  fn settings_payload_identifies_each_engine_blocker_without_exposing_keys() {
+    for (provider, ready, key, blocker) in [
+      ("local", false, "", "local-model-missing"),
+      ("local", true, "", ""),
+      ("openai", true, "", "api-key-missing"),
+      ("groq", true, " ", "api-key-missing"),
+      ("openai", false, "sk-test", ""),
+      ("groq", false, "gsk-test", ""),
+      ("invalid", true, "secret", "provider-invalid"),
+    ] {
+      let mut config = AppConfig::default();
+      config.provider = provider.into();
+      config.api_key_openai = key.into();
+      config.api_key_groq = key.into();
+      config.api_key = key.into();
+      let payload = SettingsPayload::from_config_with(&config, ready);
+      assert_eq!(payload.engine_blocker, blocker, "{provider}");
+      assert_eq!(payload.engine_ready, blocker.is_empty(), "{provider}");
+      let payload = serde_json::to_value(payload).unwrap();
+      for secret_field in ["apiKey", "apiKeyGroq", "apiKeyOpenAI", "hasApiKey"] {
+        assert!(payload.get(secret_field).is_none());
+      }
+      assert!(payload["localTier"].is_string());
+      assert_eq!(payload["localCapable"], crate::platform::supports_local_first());
+    }
+  }
+
+  #[test]
+  fn settings_payload_local_provider_reports_model_readiness() {
+    let mut config = AppConfig::default();
+    config.provider = "local".into();
+    assert!(SettingsPayload::from_config_with(&config, true).engine_ready);
+    assert!(!SettingsPayload::from_config_with(&config, false).engine_ready);
     config.provider = "groq".into();
     config.api_key_groq = "gsk".into();
-    assert!(SettingsPayload::from_config_with(&config, false).has_api_key);
+    assert!(SettingsPayload::from_config_with(&config, false).engine_ready);
   }
 
   #[test]
@@ -653,10 +751,15 @@ mod tests {
   }
 
   #[test]
-  fn local_provider_selectable_requires_downloaded_assets() {
-    assert!(local_provider_selectable("local", true).is_ok());
-    assert!(local_provider_selectable("groq", false).is_ok());
-    let err = local_provider_selectable("local", false).unwrap_err();
-    assert!(err.to_lowercase().contains("download"), "{err}");
+  fn local_provider_selection_does_not_require_downloaded_assets() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("config.json");
+    let config = mutate_config_at(&path, |config| {
+      config.provider = "local".into();
+      config.model = crate::local_asr::QWEN_MODEL_ID.into();
+      Ok(())
+    }).unwrap();
+    assert_eq!(read_config_from_path(&path).unwrap().provider, "local");
+    assert!(!SettingsPayload::from_config_with(&config, false).engine_ready);
   }
 }

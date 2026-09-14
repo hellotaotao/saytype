@@ -1,6 +1,6 @@
 # Local-first 产品收敛与翻译功能移除 — 设计
 
-> **Historical design — status checked 2026-09-09:** Local-first has shipped; translation is retained with explicit provider and consent. The removal plan below is not current work. See [Product pathway](../../PRODUCT_PATHWAY.md).
+> **Historical design — status updated 2026-09-14:** Local-first has shipped; translation is retained with explicit provider and consent. Hardware-aware fresh defaults, selection independent of readiness, and the named-step onboarding now supersede the first-use flow below. The translation-removal plan is not current work. See [Product pathway](../../PRODUCT_PATHWAY.md).
 
 日期：2026-07-19
 

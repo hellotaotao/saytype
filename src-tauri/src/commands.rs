@@ -586,11 +586,6 @@ pub fn save_settings(
     if config.provider == crate::local_asr::LOCAL_PROVIDER {
       config.model = crate::local_asr::normalize_local_model_id(&config.model).into();
     }
-    settings::local_provider_selectable(
-      &config.provider,
-      crate::local_asr::assets_ready_for(&config.model),
-    )
-      .map_err(anyhow::Error::msg)?;
     if config.provider == crate::local_asr::LOCAL_PROVIDER {
       // The form's key fields are hidden for the local provider; keep the stored
       // legacy key instead of clobbering it with the (empty) local selection.
@@ -691,8 +686,8 @@ fn switch_provider(config: &mut AppConfig, provider: &str) {
 }
 
 /// Engine quick-switch core, shared by the tray submenu (direct call) and the
-/// `set_provider` command (home-page switcher / wizard). Guards "local" behind
-/// downloaded assets, persists, and broadcasts so every window's badges — and
+/// `set_provider` command (home-page switcher / wizard). Persists the selection
+/// independently of downloaded assets and broadcasts so every window's badges — and
 /// the tray checkmarks — update live.
 pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), String> {
   if !matches!(
@@ -701,18 +696,6 @@ pub fn apply_provider_change(app: &AppHandle, provider: &str) -> Result<(), Stri
   ) {
     return Err(format!("Unknown provider: {provider}"));
   }
-  let local_ready = if provider == crate::local_asr::LOCAL_PROVIDER {
-    let current = settings::read_config().map_err(stringify_error)?;
-    let model = if current.provider == crate::local_asr::LOCAL_PROVIDER {
-      crate::local_asr::normalize_local_model_id(&current.model)
-    } else {
-      default_model_for(crate::local_asr::LOCAL_PROVIDER)
-    };
-    crate::local_asr::assets_ready_for(model)
-  } else {
-    false
-  };
-  settings::local_provider_selectable(provider, local_ready)?;
   let config = settings::mutate_config(|config| {
     switch_provider(config, provider);
     Ok(())
@@ -782,10 +765,6 @@ pub fn set_local_model(app: AppHandle, model: String) -> Result<bool, String> {
 
 pub fn apply_local_model_change(app: &AppHandle, model: &str) -> Result<(), String> {
   let model = crate::local_asr::normalize_local_model_id(model);
-  settings::local_provider_selectable(
-    crate::local_asr::LOCAL_PROVIDER,
-    crate::local_asr::assets_ready_for(model),
-  )?;
   let config = settings::mutate_config(|config| {
     config.provider = crate::local_asr::LOCAL_PROVIDER.into();
     config.model = model.into();
@@ -1101,7 +1080,7 @@ pub async fn transcribe_audio(
     .and_then(|value| value.to_str().ok())
     .map(|value| value == "true")
     .unwrap_or(false);
-  let recovery_provider = headers.get("recovery-provider")
+  let session_provider = headers.get("session-provider")
     .and_then(|value| value.to_str().ok()).unwrap_or("");
   let mime = headers
     .get("mime-type")
@@ -1149,17 +1128,25 @@ pub async fn transcribe_audio(
     );
   }
 
-  let config = settings::read_config().map_err(stringify_error)?;
   // A missing key is the archetypal recoverable failure — the user adds one and
   // re-transcribes. Route resolution runs before any request is built, so
   // returning straight out of it would drop the clip the retry needs. Guards
   // match the failure arm below: the frontend owns recovery for chunked and
   // local, non-translation capture-incomplete sessions.
   let frontend_owns_recovery = frontend_owns_audio_recovery(
-    recovery_provider, translate_mode, chunk_index, capture_incomplete,
+    session_provider, translate_mode, chunk_index, capture_incomplete,
   );
-  let route = match resolve_transcription_route(&config, translate_mode) {
-    Ok(route) => route,
+  let route_result: Result<_, String> = (|| {
+    let provider = validate_session_provider(session_provider)?;
+    let config = settings::read_config().map_err(|error| {
+      log::warn!("transcription could not read settings: {error:#}");
+      RetryError::SettingsRead.code().to_owned()
+    })?;
+    let route = resolve_transcription_route_for(provider, &config, translate_mode)?;
+    Ok((transcription_config_for_provider(&config, provider), route))
+  })();
+  let (config, route) = match route_result {
+    Ok(resolved) => resolved,
     Err(error) => {
       if !frontend_owns_recovery {
         record_failed_transcription(
@@ -1263,7 +1250,7 @@ pub async fn transcribe_audio(
       }
 
       // Only local, non-translation recovery is persisted by the frontend.
-      if !frontend_owns_hang_recovery(&error, recovery_provider, translate_mode) && !frontend_owns_recovery {
+      if !frontend_owns_hang_recovery(&error, session_provider, translate_mode) && !frontend_owns_recovery {
         if let Some(audio) = audio_for_recovery.as_deref() {
           record_failed_transcription(
             &app, failure_id.as_deref(), &error.to_string(), audio, &mime, translate_mode,
@@ -2111,6 +2098,29 @@ pub enum TranscriptionRoute {
 /// has accepted that the clip will be uploaded. The frontend matches on this
 /// exact string to show the notice instead of a generic failure.
 pub const TRANSLATE_NEEDS_CONSENT: &str = "TRANSLATE_NEEDS_CONSENT";
+pub const SESSION_PROVIDER_INVALID: &str = "SESSION_PROVIDER_INVALID";
+
+fn validate_session_provider(provider: &str) -> Result<&'static str, String> {
+  match provider {
+    "local" => Ok("local"),
+    "groq" => Ok("groq"),
+    "openai" => Ok("openai"),
+    _ => Err(SESSION_PROVIDER_INVALID.into()),
+  }
+}
+
+/// A recording pins the provider, not the model. If Settings has switched to
+/// another provider, its model and legacy key mirror no longer belong to this
+/// recording. Use the pinned provider's default model and provider-specific key.
+fn transcription_config_for_provider(config: &AppConfig, provider: &str) -> AppConfig {
+  let mut session_config = config.clone();
+  if config.provider != provider {
+    session_config.provider = provider.into();
+    session_config.model = default_model_for(provider).into();
+    session_config.api_key.clear();
+  }
+  session_config
+}
 
 /// Decide where this transcription goes. A cloud provider handles both
 /// transcription and translation with its own key. A local provider transcribes
@@ -2121,7 +2131,16 @@ pub fn resolve_transcription_route(
   config: &AppConfig,
   translate_mode: bool,
 ) -> Result<TranscriptionRoute, String> {
-  if config.provider == crate::local_asr::LOCAL_PROVIDER {
+  resolve_transcription_route_for(&config.provider, config, translate_mode)
+}
+
+pub fn resolve_transcription_route_for(
+  provider: &str,
+  config: &AppConfig,
+  translate_mode: bool,
+) -> Result<TranscriptionRoute, String> {
+  let provider = validate_session_provider(provider)?;
+  if provider == crate::local_asr::LOCAL_PROVIDER {
     if !translate_mode {
       return Ok(TranscriptionRoute::Local);
     }
@@ -2147,12 +2166,7 @@ pub fn resolve_transcription_route(
       ),
     };
   }
-  let provider = if config.provider == "groq" {
-    "groq"
-  } else {
-    "openai"
-  };
-  let api_key = settings::selected_api_key(config);
+  let api_key = settings::selected_api_key(&transcription_config_for_provider(config, provider));
   if api_key.trim().is_empty() {
     return Err("API key not configured".into());
   }
@@ -2197,13 +2211,15 @@ async fn perform_local_transcription(
   } else {
     crate::local_asr::transcribe_wav_for(&config.model, Some(app), session_id, chunk_index, &audio_buffer).await
   };
-  result.map_err(|err| {
-    if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
-      anyhow::anyhow!("Local model files are missing — download the model again in Settings.")
-    } else {
-      err
-    }
-  })
+  result.map_err(normalize_local_transcription_error)
+}
+
+fn normalize_local_transcription_error(err: anyhow::Error) -> anyhow::Error {
+  if err.to_string().starts_with("LOCAL_MODEL_MISSING") {
+    anyhow::anyhow!("LOCAL_MODEL_MISSING: Local model files are missing — download the model again in Settings.")
+  } else {
+    err
+  }
 }
 
 async fn perform_transcription_request(
@@ -2858,6 +2874,95 @@ mod tests {
   }
 
   // --- Transcription routing: local vs cloud ---
+
+  #[test]
+  fn unknown_provider_cannot_resolve_a_cloud_route() {
+    let mut config = config_with("unexpected", "gsk", "osk");
+    config.api_key = "legacy".into();
+    for translate in [false, true] {
+      assert_eq!(resolve_transcription_route(&config, translate).unwrap_err(), "SESSION_PROVIDER_INVALID");
+    }
+  }
+
+  #[test]
+  fn session_provider_header_requires_an_exact_known_value() {
+    for provider in ["local", "groq", "openai"] {
+      assert_eq!(validate_session_provider(provider).unwrap(), provider);
+    }
+    // Missing and non-UTF8 headers are decoded as an empty string at the IPC edge.
+    for provider in ["", "unknown", "LOCAL", " openai", "openai "] {
+      assert_eq!(validate_session_provider(provider).unwrap_err(), SESSION_PROVIDER_INVALID);
+    }
+  }
+
+  #[test]
+  fn invalid_session_provider_errors_keep_backend_audio_unless_chunked() {
+    for provider in ["", "invalid"] {
+      for translate in [false, true] {
+        for incomplete in [false, true] {
+          assert!(!frontend_owns_audio_recovery(provider, translate, None, incomplete));
+          assert!(frontend_owns_audio_recovery(provider, translate, Some(0), incomplete));
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn local_session_stays_local_after_settings_switches_to_cloud() {
+    for provider in ["groq", "openai"] {
+      let config = config_with(provider, "gsk", "osk");
+      assert!(matches!(resolve_transcription_route_for("local", &config, false).unwrap(), TranscriptionRoute::Local));
+      let local = transcription_config_for_provider(&config, "local");
+      assert_eq!(local.provider, "local");
+      assert_eq!(local.model, crate::local_asr::QWEN_MODEL_ID);
+    }
+  }
+
+  #[test]
+  fn cloud_session_keeps_its_destination_and_key_after_settings_change() {
+    for selected in ["local", "groq", "openai"] {
+      let mut config = config_with(selected, "gsk", "osk");
+      config.model = default_model_for(selected).into();
+      for (session, expected_key) in [("groq", "gsk"), ("openai", "osk")] {
+        match resolve_transcription_route_for(session, &config, false).unwrap() {
+          TranscriptionRoute::Cloud { provider, api_key } => {
+            assert_eq!(provider, session);
+            assert_eq!(api_key, expected_key);
+          }
+          other => panic!("expected cloud, got {other:?}"),
+        }
+        assert_eq!(transcription_config_for_provider(&config, session).model, default_model_for(session));
+      }
+    }
+  }
+
+  #[test]
+  fn switched_session_cannot_reuse_another_providers_legacy_key() {
+    let mut config = config_with("groq", "gsk", "");
+    config.api_key = "gsk".into();
+    assert!(resolve_transcription_route_for("openai", &config, false).is_err());
+  }
+
+  #[test]
+  fn session_snapshot_keeps_local_translation_consent_after_cloud_switch() {
+    let config = config_with("openai", "gsk", "osk");
+    assert_eq!(resolve_transcription_route_for("local", &config, true).unwrap_err(), TRANSLATE_NEEDS_CONSENT);
+    assert!(matches!(resolve_transcription_route(&config, true).unwrap(), TranscriptionRoute::Cloud { provider: "openai", .. }));
+  }
+
+  #[test]
+  fn session_provider_does_not_pin_the_local_model() {
+    let mut config = config_with("local", "", "");
+    config.model = crate::local_asr::QWEN_LARGE_MODEL_ID.into();
+    assert_eq!(transcription_config_for_provider(&config, "local").model, crate::local_asr::QWEN_LARGE_MODEL_ID);
+  }
+
+  #[test]
+  fn missing_local_model_error_keeps_its_machine_readable_prefix() {
+    let error = normalize_local_transcription_error(anyhow::anyhow!("LOCAL_MODEL_MISSING: /private/model/path"));
+    assert!(error.to_string().starts_with("LOCAL_MODEL_MISSING"));
+    assert!(!error.to_string().contains("/private/model/path"));
+  }
 
   fn config_with(provider: &str, groq: &str, openai: &str) -> AppConfig {
     let mut c = AppConfig::default();

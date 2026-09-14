@@ -182,6 +182,18 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   (e.g. `transcribe-audio`) to Tauri commands (`transcribe_audio`) and event listeners.
 - `i18n.js` — all UI strings (add new copy here), including the `RETRY_*` renderer.
 
+### Engine selection and onboarding invariants
+
+- Dictation requests use the recording-start `session-provider` (`local`, `groq`, or `openai`),
+  including chunks and automatic retries. Missing or unknown providers are rejected; never infer
+  a cloud destination from the latest settings. Explicit History retranscription still uses the
+  current configuration, and translation retains its provider/consent rules.
+- Local engines may be selected before assets are ready. `engineReady` / `engineBlocker` describe
+  readiness independently from provider/model intent; download completion must not switch engines.
+- New-install defaults come from `settings::fresh_config_for` and cached hardware tiers, only when
+  the config file is absent. Do not change `AppConfig::default` or serde defaults to implement this
+  policy; existing installations must retain their selected engine.
+
 ### IPC contract
 
 Renderer → Rust: `bridge.invoke("type-text", text)` → Tauri `invoke("type_text", { text })`.

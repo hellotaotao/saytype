@@ -391,6 +391,7 @@ class VoiceInputPrompt {
     this.modelBadge = document.getElementById("modelBadge");
     this.copyBtn = document.getElementById("copyBtn");
     this.copyBtnLabel = document.getElementById("copyBtnLabel");
+    this.localModelBtn = document.getElementById("localModelBtn");
     this.consentActions = document.getElementById("consentActions");
     this.consentAcceptBtn = document.getElementById("consentAcceptBtn");
     this.consentDeclineBtn = document.getElementById("consentDeclineBtn");
@@ -595,6 +596,15 @@ class VoiceInputPrompt {
     if (this.copyBtn) {
       this.copyBtn.addEventListener("click", () => this.copyFailedText());
     }
+    if (this.localModelBtn) {
+      this.localModelBtn.addEventListener("click", async () => {
+        try {
+          await ipc.invoke("open-local-model-panel", this.localModelSetupModel);
+        } catch (error) {
+          console.error("Failed to open local model settings:", error);
+        }
+      });
+    }
   }
 
   async syncShortcutFromSettings() {
@@ -604,7 +614,7 @@ class VoiceInputPrompt {
         return;
       }
       this.osName = settings.os || this.osName;
-      this.currentProvider = settings.provider || "openai";
+      this.currentProvider = settings.provider || "local";
       this.currentModel = settings.model || "";
       this.currentMicrophone = settings.microphone || "default";
       this.translateConsented = !!settings.translateConsented;
@@ -789,8 +799,10 @@ class VoiceInputPrompt {
     this.recoveryShownId = null;
     this.pendingRecoveryUi = null;
     if (this.copyBtn) this.copyBtn.hidden = true;
+    if (this.localModelBtn) this.localModelBtn.hidden = true;
+    this.localModelSetupModel = null;
     if (this.waveContainer) this.waveContainer.style.display = "";
-    if (this.promptElement) this.promptElement.classList.remove("insert-failed");
+    if (this.promptElement) this.promptElement.classList.remove("insert-failed", "engine-blocked");
   }
 
   formatDuration(ms) {
@@ -1565,17 +1577,21 @@ class VoiceInputPrompt {
     return release;
   }
 
-  async hasUsableApiKey() {
+  async hasReadyEngine() {
+    this.engineBlocker = "";
+    this.engineBlockerModel = null;
     try {
       const settings = await ipc.invoke("get-settings");
       if (!settings) {
         return true;
       }
-      // The backend now reports key presence (get_settings no longer ships the
-      // raw keys to this window). Fail open if the flag is somehow absent.
-      return settings.hasApiKey !== false;
+      // Readiness is independent of the selected engine: a local selection
+      // can still be waiting for its model download. No API keys leave Rust.
+      this.engineBlocker = settings.engineBlocker || "";
+      this.engineBlockerModel = settings.model || null;
+      return settings.engineReady !== false;
     } catch (error) {
-      console.error("Failed to check API key before recording:", error);
+      console.error("Failed to check engine readiness before recording:", error);
       // Don't block recording on a settings-read failure — the backend will
       // still return a clear error if the key really is missing.
       return true;
@@ -1594,10 +1610,24 @@ class VoiceInputPrompt {
     this.scheduleHidePrompt(2800);
   }
 
-  shouldUseNemotronLive(translateMode = this.translateMode) {
+  showLocalModelMissing(model = this.currentModel) {
+    this.localModelSetupModel = model || QWEN_LOCAL_MODEL_ID;
+    this.showApiKeyRequired();
+    this.promptElement.classList.add("engine-blocked");
+    this.promptText.textContent = t("inputPrompt.localModelMissingTitle");
+    this.statusText.textContent = t("inputPrompt.localModelMissing");
+    if (this.waveContainer) this.waveContainer.style.display = "none";
+    if (this.localModelBtn) {
+      this.localModelBtn.textContent = t("inputPrompt.openLocalModel");
+      this.localModelBtn.hidden = false;
+    }
+    this.scheduleHidePrompt(15000);
+  }
+
+  shouldUseNemotronLive(translateMode = this.translateMode, recordingSession) {
     return (
-      this.currentProvider === "local" &&
-      this.currentModel === NEMOTRON_LOCAL_MODEL_ID &&
+      (recordingSession?.provider ?? this.currentProvider) === "local" &&
+      (recordingSession?.captureModel ?? this.currentModel) === NEMOTRON_LOCAL_MODEL_ID &&
       !translateMode
     );
   }
@@ -1623,7 +1653,7 @@ class VoiceInputPrompt {
   }
 
   async setupNemotronLive(recordingSession, source) {
-    if (!this.shouldUseNemotronLive(recordingSession.translateMode)) {
+    if (!this.shouldUseNemotronLive(recordingSession.translateMode, recordingSession)) {
       return;
     }
     if (!this.audioContext?.audioWorklet) {
@@ -1731,10 +1761,10 @@ class VoiceInputPrompt {
   // Fail-open by design: if live capture cannot be set up, `chunked` stays unset
   // and processRecording takes the original whole-clip path.
 
-  shouldUseChunkedLocal(translateMode = this.translateMode) {
+  shouldUseChunkedLocal(translateMode = this.translateMode, recordingSession) {
     return (
-      this.currentProvider === "local" &&
-      this.currentModel !== NEMOTRON_LOCAL_MODEL_ID &&
+      (recordingSession?.provider ?? this.currentProvider) === "local" &&
+      (recordingSession?.captureModel ?? this.currentModel) !== NEMOTRON_LOCAL_MODEL_ID &&
       !translateMode &&
       !!window.SayTypeChunk
     );
@@ -1829,7 +1859,7 @@ class VoiceInputPrompt {
   }
 
   async setupChunkedLocal(recordingSession, source) {
-    if (!this.shouldUseChunkedLocal(recordingSession.translateMode)) {
+    if (!this.shouldUseChunkedLocal(recordingSession.translateMode, recordingSession)) {
       return;
     }
     let chunked = null;
@@ -1956,7 +1986,7 @@ class VoiceInputPrompt {
         chunked.inFlightChunkIndex = chunkIndex;
         const text = await this.waitForSessionStage(recordingSession, "chunk-ipc", () => {
           const request = ipc.invoke("transcribe-audio", wav, false, "audio/wav",
-            chunked.sessionId, chunkIndex);
+            chunked.sessionId, chunkIndex, undefined, undefined, recordingSession.provider);
           accounting.submittedSamples += pcm.length;
           accounting.submittedChunks += 1;
           this.reportChunkProbe(chunked, "request-start", reason, metadata);
@@ -2148,10 +2178,10 @@ class VoiceInputPrompt {
   }
 
   async setupNativeConsumers(recordingSession) {
-    if (this.shouldUseNemotronLive(recordingSession.translateMode)) {
+    if (this.shouldUseNemotronLive(recordingSession.translateMode, recordingSession)) {
       await this.beginNemotronLive(recordingSession, 16000);
     }
-    if (this.shouldUseChunkedLocal(recordingSession.translateMode)) {
+    if (this.shouldUseChunkedLocal(recordingSession.translateMode, recordingSession)) {
       this.createChunkedSession(recordingSession, 16000);
     }
   }
@@ -2351,7 +2381,10 @@ class VoiceInputPrompt {
     return capture.stopPromise;
   }
 
-  async startNativeRecording(startupTiming, startupStartedAt, preflightReadyAt) {
+  async startNativeRecording(startupTiming, startupStartedAt, preflightReadyAt, captureEngine = {
+    provider: this.currentProvider || "local",
+    model: this.currentModel,
+  }) {
     // Serialize normal release/start transitions. The preceding stop has a
     // bounded wait; Rust retains ownership if the device is still stopping.
     // Hotkey release only arms STOP_DEBOUNCE; the stop is dispatched about
@@ -2378,10 +2411,11 @@ class VoiceInputPrompt {
       chunks: [],
       mimeType: "audio/wav",
       translateMode: this.translateMode,
-      qwenSession: this.currentProvider === "local" &&
-        this.currentModel !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
+      qwenSession: captureEngine.provider === "local" &&
+        captureEngine.model !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
       cancelledShortPress: false,
-      provider: this.currentProvider,
+      provider: captureEngine.provider,
+      captureModel: captureEngine.model,
       mediaStream: null,
       audioContext: null,
       onsetProbe,
@@ -2519,10 +2553,10 @@ class VoiceInputPrompt {
     this.retryRecoveryPersistence();
     this.starting = true;
     try {
-      // Pre-flight: without an API key the request can only fail, so tell the
-      // user immediately instead of recording and failing after they speak.
-      if (!(await this.hasUsableApiKey())) {
-        this.showApiKeyRequired();
+      // Tell the user what is missing before opening the microphone.
+      if (!(await this.hasReadyEngine())) {
+        if (this.engineBlocker === "local-model-missing") this.showLocalModelMissing(this.engineBlockerModel);
+        else this.showApiKeyRequired();
         return;
       }
       const preflightReadyAt = performance.now();
@@ -2530,13 +2564,22 @@ class VoiceInputPrompt {
       if (this.settingsReady) {
         await this.settingsReady;
       }
+      // Freeze the route before opening the microphone. Settings may change
+      // while native startup, getUserMedia, or AudioContext.resume is pending.
+      // The model snapshot selects capture consumers only; Rust still selects
+      // the current model within this session's provider at transcription time.
+      const captureEngine = {
+        provider: this.currentProvider || "local",
+        model: this.currentModel,
+      };
       if (this.shouldUseNativeCapture()) {
         // false means native capture could not start; fall through to the
         // WebKit path below rather than failing the dictation.
         const handled = await this.startNativeRecording(
           startupTiming,
           startupStartedAt,
-          preflightReadyAt
+          preflightReadyAt,
+          captureEngine
         );
         if (handled) return;
       }
@@ -2621,10 +2664,11 @@ class VoiceInputPrompt {
         chunks: [],
         mimeType: mimeType,
         translateMode: this.translateMode,
-        qwenSession: this.currentProvider === "local" &&
-          this.currentModel !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
+        qwenSession: captureEngine.provider === "local" &&
+          captureEngine.model !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
         cancelledShortPress: false,
-        provider: this.currentProvider,
+        provider: captureEngine.provider,
+        captureModel: captureEngine.model,
         mediaStream: this.mediaStream,
         audioContext: this.audioContext,
         onsetProbe,
@@ -3023,7 +3067,7 @@ class VoiceInputPrompt {
   // waits its turn rather than jumping ahead — recording order is preserved.
   // Only after the retry also fails does the caller's catch give up (drop the
   // session, surface the failure). Deterministic errors rethrow immediately.
-  async transcribeWithRetry(uploadBuffer, translateMode, uploadMime, sessionId) {
+  async transcribeWithRetry(uploadBuffer, translateMode, uploadMime, sessionId, provider) {
     const MAX_ATTEMPTS = 2; // original + one retry
     const session = this.recordingSessions?.get(sessionId);
     // Both attempts are the SAME recording, so they must share one History row.
@@ -3042,7 +3086,7 @@ class VoiceInputPrompt {
           undefined, // chunk-index: this is the whole-clip path
           session?.captureIncomplete ? true : undefined,
           failureId,
-          session?.provider || "" // recording-start snapshot, independent of current Settings
+          provider // recording-start snapshot, even after the session map is cleared
         );
         return session ? await this.waitForSessionStage(session, "chunk-ipc",
           transcribe, TRANSCRIPTION_STAGE_TIMEOUT_MS) : await transcribe();
@@ -3275,7 +3319,8 @@ class VoiceInputPrompt {
           uploadBuffer,
           translateMode,
           uploadMime,
-          sessionId
+          sessionId,
+          recordingSession.provider
         );
       }
 
@@ -3353,6 +3398,9 @@ class VoiceInputPrompt {
           this.statusText.textContent = t("inputPrompt.cancelled");
           this.statusText.style.color = "var(--status-warning)";
           this.scheduleHidePrompt(300);
+        } else if (message.startsWith("LOCAL_MODEL_MISSING")) {
+          this.showLocalModelMissing(this.currentProvider === "local"
+            ? this.currentModel : recordingSession.captureModel);
         } else if (/api key not configured/i.test(message) || /no api key/i.test(message)) {
           this.statusText.textContent = t("inputPrompt.noApiKey");
           this.statusText.style.color = "var(--status-warning-strong)";

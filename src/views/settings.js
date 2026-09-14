@@ -1942,10 +1942,8 @@ async function persistSettings(intent = null) {
     const previous = { provider: currentSettings.provider, model: currentSettings.model };
     const target = intent || previous;
     if (intent) {
-      if (target.provider === "local") {
-        const status = await ipc.invoke("get-local-model-status", target.model);
-        if (status.state !== "ready") throw new Error(translate("settings.localModel.notReady"));
-      } else {
+      // Selection records intent; model availability is checked before dictation.
+      if (target.provider !== "local") {
         const options = modelOptions[target.provider];
         if (!options?.some((option) => option.value === target.model)) throw new Error(translate("settings.engine.invalidModel"));
         const keyId = target.provider === "openai" ? "apiKeyOpenAI" : "apiKeyGroq";

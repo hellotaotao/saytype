@@ -53,14 +53,16 @@ npm run build:win  # Windows
 npm run build:linux
 ```
 
-Then open Settings and pick a transcription engine: download a local model (no key needed) or enter a Groq/OpenAI API key.
+On first launch, follow Welcome → Privacy → Engine → Microphone → Accessibility (macOS only) → Practice. Choose a local model to start its download while completing permissions, or enter your own cloud API key. You can open Settings and resume the guide from the same step.
+
+New installs default to Qwen3-ASR 0.6B on all platforms, except detected low-end machines (less than 8 GiB RAM or 4 logical cores), which default to OpenAI. Existing settings are preserved. No model downloads or audio uploads start just because an engine is the default.
 
 Releases are built, signed, and published automatically when a `v*` tag is pushed; see [RELEASING.md](RELEASING.md).
 
 ## Usage
 
 1. Launch SayType
-2. Pick a transcription engine in Settings: download the local model, or enter a Groq/OpenAI API key
+2. Complete the first-use guide, or configure an engine and permissions in Settings; wait until the selected engine is ready
 3. Hold down Ctrl+Shift to start recording
 4. Speak while holding the keys
 5. Release to stop recording and transcribe
@@ -149,14 +151,16 @@ npm run build:win  # Windows
 npm run build:linux
 ```
 
-然后打开「设置」选择转写引擎:下载本地模型(不需要 key),或填入 Groq/OpenAI API key。
+首次启动按「欢迎 → 隐私 → 引擎 → 麦克风 → 辅助功能（仅 macOS）→ 练习」完成引导。主动选择本地模型后，下载会在授权期间后台继续；也可以填写自己的云端 API key。进入设置后，可回到向导原来的步骤。
+
+新装默认千问 0.6B；只有检测到内存低于 8 GiB 或逻辑核心少于 4 的机器默认 OpenAI。已有配置不变。默认选中引擎不会自动下载模型或上传录音。
 
 推送 `v*` tag 时会自动构建、签名并发布,见 [RELEASING.md](RELEASING.md)。
 
 ## 使用方法
 
 1. 启动 SayType
-2. 在「设置」中选择转写引擎:下载本地模型,或填入 Groq/OpenAI API key
+2. 完成首次引导，或在设置中配置引擎与权限；等当前引擎就绪后再录音
 3. 按住 Ctrl+Shift 开始录音
 4. 按住按键的同时说话
 5. 松开按键停止录音并转写

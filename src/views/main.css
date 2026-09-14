@@ -1,5 +1,7 @@
 /* SayType Main Page Styles */
 
+[hidden] { display: none !important; }
+
 :root {
   --app-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   --app-text: #ffffff;
@@ -737,9 +739,10 @@ body {
 }
 
 .onboard-card {
-  width: 640px;
+  box-sizing: border-box;
+  width: 744px;
   max-width: calc(100vw - 48px);
-  height: 560px;
+  height: 632px;
   max-height: calc(100vh - 48px);
   background: var(--panel-bg-strong);
   border: 1px solid var(--panel-border);
@@ -769,7 +772,16 @@ body {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  justify-content: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 3px;
+  scrollbar-gutter: stable;
+}
+
+.onboard-page-content {
+  margin-block: auto;
+  flex: none;
+  width: 100%;
 }
 
 .onboard-page.active {
@@ -845,66 +857,12 @@ body {
   line-height: 1.55;
 }
 
-/* Page 2: privacy flow diagram */
-.ob-flow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 36px 0 30px;
-}
-
-.ob-flow-node {
-  flex: 1;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  padding: 20px 14px;
-  text-align: center;
-}
-
-.ob-flow-node.accent {
-  background: var(--accent-soft-bg);
-  border-color: transparent;
-}
-
-.ob-flow-node .material-icons {
-  font-size: 26px;
-  color: var(--accent-text);
-}
-
-.ob-flow-title {
-  font-size: 13.5px;
-  font-weight: 600;
-  margin-top: 9px;
-}
-
-.ob-flow-desc {
-  font-size: 11.5px;
-  color: var(--text-soft);
-  margin-top: 3px;
-}
-
-.ob-flow-arrow {
-  text-align: center;
-  color: var(--accent-text);
-  flex: none;
-}
-
-.ob-flow-arrow .material-icons {
-  font-size: 22px;
-}
-
-.ob-flow-arrow-label {
-  font-size: 10.5px;
-  color: var(--text-soft);
-  margin-top: 3px;
-  white-space: nowrap;
-}
-
+/* Page 2: local dictation privacy */
 .ob-privacy-lines {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  margin-top: 28px;
 }
 
 .ob-privacy-line {
@@ -972,8 +930,31 @@ body {
   min-height: 42px;
 }
 
-.onboard-page[data-ob-page="4"] .ob-actions {
-  margin-top: 0;
+.onboard-page[data-ob-step="accessibility"] .ob-actions {
+  margin-top: 18px;
+  flex: none;
+}
+
+/* Keep the permission action visible while its explanation can scroll. */
+.ob-permission-page {
+  overflow: hidden;
+}
+
+.ob-permission-page .onboard-page-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-block: 0;
+}
+
+.ob-permission-copy {
+  margin-block: auto;
+}
+
+.ob-permission-copy .ob-reassure {
+  margin-bottom: 0;
 }
 
 .ob-action-hint {
@@ -1075,7 +1056,7 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 13px;
-  border: 1.5px solid var(--accent);
+  border: 1.5px solid var(--input-border);
   border-radius: 14px;
   background: var(--input-bg);
   padding: 17px;
@@ -1161,6 +1142,22 @@ body {
 }
 
 /* Page 6: practice box */
+.ob-ready-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.ob-ready-summary li { display: inline-flex; align-items: center; gap: 5px; }
+.ob-ready-summary .material-icons { font-size: 14px; }
+.ob-ready-summary .confirmed .material-icons { color: var(--pill-ok-text); }
+
 .ob-try-box {
   background: var(--accent-soft-bg);
   border: 1.5px dashed var(--input-border-focus);
@@ -1194,20 +1191,6 @@ body {
   gap: 7px;
   flex-wrap: wrap;
   justify-content: center;
-}
-
-.ob-tip {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
-  color: var(--text-soft);
-  flex-wrap: wrap;
-}
-
-.ob-tip > .material-icons {
-  font-size: 16px;
-  color: var(--accent-text);
 }
 
 /* Page 6 incomplete-state checklist */
@@ -1263,8 +1246,7 @@ body {
   font-weight: 500;
 }
 
-.ob-try-box[hidden],
-.ob-tip[hidden] {
+.ob-try-box[hidden] {
   display: none;
 }
 
@@ -1622,4 +1604,88 @@ body {
     transition: opacity 0.3s ease;
     transform: none;
   }
+}
+
+/* Engine cards and long translated content must remain inside the scroll area. */
+.ob-engine-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+.ob-engine-grid .ob-local-card,
+.ob-engine-grid .ob-provider {
+  margin: 0;
+  width: 100%;
+  min-width: 0;
+  padding: 13px;
+}
+.ob-engine-grid .prominent { border-color: var(--accent); }
+.ob-engine-grid .selected { background: var(--accent-soft-bg); border-color: var(--accent); }
+.ob-engine-grid button:disabled { opacity: 0.55; cursor: default; }
+.ob-engine-grid button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ob-engine-detail, .ob-engine-note {
+  display: block;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.ob-engine-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--accent-text);
+}
+.ob-engine-kind .material-icons { font-size: 21px; }
+.ob-engine-note { color: var(--text-muted); }
+.ob-model-comparison {
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0 14px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.ob-model-comparison table { width: 100%; border-collapse: collapse; }
+.ob-model-comparison th, .ob-model-comparison td { text-align: left; padding: 4px 6px; }
+.ob-model-comparison p { margin: 8px 0 0; line-height: 1.5; color: var(--text-soft); }
+.ob-key-label { display: block; font-size: 12px; margin: 12px 0 8px; color: var(--text-muted); }
+.ob-key-input { min-width: 0; }
+.ob-download-footer { flex: none; font-size: 12px; padding-top: 8px; }
+.ob-download-footer .link-btn { font-size: inherit; text-align: left; padding: 3px 0; }
+.ob-try-feedback { font-size: 13px; line-height: 1.5; margin: 10px 0; color: var(--text-muted); }
+.ob-try-feedback.ok { color: var(--pill-ok-text); }
+.ob-history-hint { font-size: 12px; padding: 8px 0; text-align: left; white-space: normal; }
+.onboarding-resume { max-width: 760px; margin: 0 auto 16px; }
+.onboarding-resume .link-btn { color: var(--accent-text); padding: 8px 0; }
+.ob-check-row.ok[type="button"] { cursor: pointer; }
+.onboard-footer { gap: 3px; }
+.onboard-footer .link-btn { white-space: normal; }
+@media (max-width: 740px), (max-height: 600px) {
+  .onboard-card { padding: 20px 24px 16px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+  .onboard-page { padding-block: 16px; }
+  .onboard-page h1 { font-size: 23px; }
+  .ob-lead { font-size: 13px; }
+  .onboard-footer { margin-top: 8px; flex-wrap: wrap; }
+  .onboard-footer .link-btn { padding: 9px; }
+  .onboard-footer .btn { padding: 10px 18px; }
+  .onboard-footer .ob-step-skip { max-width: 140px; font-size: 11px; }
+  .ob-try-box { padding: 16px; margin-top: 16px; }
+  [data-ob-step="practice"] .ob-hero-icon { width: 48px; height: 48px; margin-bottom: 14px; }
+  .ob-ready-summary { margin-top: 10px; }
+  [data-ob-step="practice"] .ob-try-box { margin-top: 8px; margin-bottom: 12px; }
+  .ob-try-feedback { font-size: 12px; margin: 6px 0; }
+  .ob-history-hint { padding-block: 6px; }
+  .ob-checklist { margin-top: 16px; gap: 6px; }
+  .ob-check-row { padding: 10px 12px; font-size: 12px; }
+  .ob-permission-copy .ob-points { margin: 18px 0; gap: 9px; }
+  .ob-permission-copy .ob-reassure { font-size: 12px; padding: 10px 12px; }
+}
+@media (max-width: 520px) {
+  .ob-engine-grid { grid-template-columns: minmax(0, 1fr); }
+  .ob-steps { flex-direction: column; }
 }

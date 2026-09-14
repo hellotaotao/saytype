@@ -290,6 +290,22 @@ body.has-transcription .input-prompt.recording {
   display: none;
 }
 
+/* Keep the model-setup action inside the existing prompt without changing
+   recording or insertion-recovery layouts. */
+.input-prompt.engine-blocked {
+  gap: 12px;
+}
+
+.engine-blocked .left-section {
+  flex: 1;
+  min-width: 0;
+}
+
+.engine-blocked .prompt-text,
+.engine-blocked .status-text {
+  white-space: normal;
+}
+
 .microphone-icon {
   font-size: 24px;
   opacity: 0.9;

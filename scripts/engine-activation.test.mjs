@@ -29,6 +29,7 @@ function harness(options = {}) {
       if (command === "get-local-model-status") return options.status ? options.status(payload) : { state: "ready" };
       if (command === "save-settings") {
         if (options.fail) throw new Error("write failed");
+        if (options.beforeSave) await options.beforeSave(payload);
         saved.push(payload); return options.saveResult ?? true;
       }
     } },
@@ -67,7 +68,7 @@ test("explicit cloud Use captures provider and model before queue runs", async (
   }
 });
 test("failed activation leaves persisted engine unchanged and reports failure", async () => {
-  for (const options of [{ fail: true }, { status: () => ({ state: "absent" }) }, { saveResult: false }]) {
+  for (const options of [{ fail: true }, { saveResult: false }]) {
     const h = harness(options);
     assert.equal(await h.context.activateInspectedEngine(), false);
     assert.equal(h.context.currentSettings.model, small);
@@ -82,19 +83,19 @@ test("cloud Use requires a key but key editing alone never activates", async () 
   assert.equal(h.saved.length, 0);
   assert.equal(h.context.currentSettings.model, small);
 });
-test("explicit switch back revalidates model readiness", async () => {
-  let missing = false;
-  const h = harness({ status: model => ({ state: missing && model === small ? "absent" : "ready" }) });
-  assert.equal(await h.context.activateInspectedEngine(), true);
-  assert.equal(h.context.currentSettings.model, large);
-  missing = true;
-  assert.equal(await h.context.activateEngine({ provider: "local", model: small }), false);
-  assert.equal(h.context.currentSettings.model, large);
-  missing = false;
-  assert.equal(await h.context.activateEngine({ provider: "local", model: small }), true);
-  assert.equal(h.context.currentSettings.model, small);
-  assert.equal(vm.runInContext("engineActivationMessage", h.context), "");
-});
+for (const state of ["absent", "partial", "downloading", "ready"]) {
+  test(`explicit local selection persists intent when model is ${state}`, async () => {
+    const h = harness({ status: () => ({ state }) });
+    assert.equal(await h.context.activateInspectedEngine(), true);
+    assert.equal(h.context.currentSettings.model, large);
+    assert.equal(h.saved[0].provider, "local");
+    assert.equal(h.saved[0].model, large);
+    assert.equal(h.calls.some(([command]) => command === "get-local-model-status"), false);
+    assert.equal(await h.context.activateEngine({ provider: "local", model: small }), true);
+    assert.equal(h.context.currentSettings.model, small);
+    assert.equal(vm.runInContext("engineActivationMessage", h.context), "");
+  });
+}
 test("download completion updates availability without activation or a confirmation", () => {
   const h = harness(); let listener;
   Object.assign(h.context, {
@@ -109,15 +110,21 @@ test("download completion updates availability without activation or a confirmat
   assert.equal(h.context.currentSettings.model, small);
 });
 test("ordinary queued write after pending activation preserves successful active model", async () => {
-  let resolveStatus;
-  const h = harness({ status: () => new Promise(resolve => { resolveStatus = resolve; }) });
+  let resolveSave;
+  let first = true;
+  const h = harness({ beforeSave: () => {
+    if (!first) return;
+    first = false;
+    return new Promise(resolve => { resolveSave = resolve; });
+  } });
   const activate = h.context.activateInspectedEngine();
-  while (!resolveStatus) await Promise.resolve();
+  for (let i = 0; i < 30 && !resolveSave; i++) await Promise.resolve();
+  assert.ok(resolveSave);
   h.context.inspectEngine("groq");
   const save = h.context.saveSettings();
   assert.equal(vm.runInContext("engineSwitchPending", h.context), true);
   assert.equal(await h.context.activateInspectedEngine(), false);
-  resolveStatus({ state: "ready" });
+  resolveSave();
   await activate; await save;
   assert.equal(h.saved.length, 2);
   assert.ok(h.saved.every(settings => settings.model === large && settings.provider === "local"));

@@ -1,6 +1,7 @@
 mod ax_cloud;
 mod commands;
 mod history;
+mod hardware;
 mod retry_error;
 mod hotkey;
 mod local_asr;
@@ -134,6 +135,7 @@ pub fn run() {
           .build()
       };
       app.handle().plugin(log_plugin)?;
+      hardware::local_tier();
 
       if let Err(error) = local_asr::cleanup_legacy_assets() {
         log::warn!("local-asr: legacy asset cleanup failed: {error:#}");

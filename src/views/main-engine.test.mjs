@@ -8,6 +8,7 @@ function harness(fail = false) {
   const calls = [], pages = [], notices = [];
   const context = vm.createContext({
     selectedEngineValue: () => "local-qwen-large",
+    NEMOTRON_LOCAL_MODEL: "nemotron", nemotronOffered: () => false,
     window: { SayTypeSettings: { runEngineChange: async change => change({ provider: "local", model: "qwen3-asr-1.7b-q8_0" }) } },
     ENGINE_OPTIONS: [{ value: "local-qwen", model: "qwen3-asr-0.6b-q8_0" }, { value: "local-qwen-large", model: "qwen3-asr-1.7b-q8_0" }, { value: "openai" }],
     showPage: async (...args) => pages.push(args),
@@ -15,19 +16,19 @@ function harness(fail = false) {
     renderEngineCard() {},
     showNotification: (...args) => notices.push(args),
     console,
-    ipc: { invoke: async (...args) => { calls.push(args); if(args[0] === "get-api-keys") return {apiKeyOpenAI:"test", apiKeyGroq:"test"}; if(args[0] === "get-local-model-status") return { state: fail ? "absent" : "ready" }; if (fail) throw new Error("not ready"); return true; } },
+    ipc: { invoke: async (...args) => { calls.push(args); if(args[0] === "get-api-keys") return {apiKeyOpenAI:"test", apiKeyGroq:"test"}; if(args[0] === "get-local-model-status") return { state: fail ? "absent" : "ready" }; return true; } },
   });
   vm.runInContext(entrypoint, context);
   return { context, calls, pages, notices };
 }
 test("home switches a ready local engine directly without navigating", async () => {
   const h = harness(); await h.context.selectEngine("local-qwen");
-  assert.deepEqual(h.calls, [["get-local-model-status", "qwen3-asr-0.6b-q8_0"], ["set-local-model", "qwen3-asr-0.6b-q8_0"], ["refresh"]]);
+  assert.deepEqual(h.calls, [["set-local-model", "qwen3-asr-0.6b-q8_0"], ["get-local-model-status", "qwen3-asr-0.6b-q8_0"], ["refresh"]]);
   assert.equal(h.pages.length, 0);
 });
 test("home switches a cloud provider directly without navigating", async () => {
   const h = harness(); await h.context.selectEngine("openai");
-  assert.deepEqual(h.calls, [["get-api-keys"], ["set-provider", "openai"], ["refresh"]]);
+  assert.deepEqual(h.calls, [["set-provider", "openai"], ["get-api-keys"], ["refresh"]]);
   assert.equal(h.pages.length, 0);
 });
 test("home current ready engine click does not mutate settings", async () => {
@@ -36,7 +37,7 @@ test("home current ready engine click does not mutate settings", async () => {
 });
 test("unavailable home engine opens its setup details", async () => {
   const h = harness(true); await h.context.selectEngine("local-qwen");
-  assert.equal(h.pages[0][1].settingsTarget, "engine:local-qwen");
+  assert.equal(h.pages[0][1].settingsTarget, "local-model:qwen3-asr-0.6b-q8_0");
 });
 
 test("home keeps switching locked until readiness refresh finishes", async () => {
@@ -50,16 +51,17 @@ test("home keeps switching locked until readiness refresh finishes", async () =>
   finish(); await switching;
 });
 
-test("home sends an unconfigured cloud provider to setup without switching", async () => {
+test("home persists an unconfigured cloud provider before opening setup", async () => {
  const h = harness();
- h.context.ipc.invoke = async (command) => { assert.equal(command, "get-api-keys"); return {}; };
+ h.context.ipc.invoke = async (...args) => { h.calls.push(args); return args[0] === "get-api-keys" ? {} : true; };
  await h.context.selectEngine("openai");
  assert.equal(h.pages[0][1].settingsTarget, "engine:openai");
+ assert.deepEqual(h.calls.slice(0,2), [["set-provider","openai"],["get-api-keys"]]);
 });
 
-test("missing local assets never call the mutation command", async () => {
+test("missing local assets still save selection before showing setup", async () => {
  const h = harness(true); await h.context.selectEngine("local-qwen");
- assert.deepEqual(h.calls, [["get-local-model-status", "qwen3-asr-0.6b-q8_0"]]);
+ assert.deepEqual(h.calls, [["set-local-model", "qwen3-asr-0.6b-q8_0"], ["get-local-model-status", "qwen3-asr-0.6b-q8_0"], ["refresh"]]);
 });
 
 const availabilitySource = source.slice(source.indexOf("const engineAvailability ="), source.indexOf("function renderEngineCard()"));
@@ -110,7 +112,7 @@ test("latest refresh wins and readiness completion does not switch engines", asy
 
 test("current engine with missing assets can open setup", async () => {
  const h=harness(true); await h.context.selectEngine("local-qwen-large");
- assert.equal(h.pages[0][1].settingsTarget,"engine:local-qwen-large");
+ assert.equal(h.pages[0][1].settingsTarget,"local-model:qwen3-asr-1.7b-q8_0");
  assert.equal(h.calls.some(([command])=>command.startsWith("set-")),false);
 });
 

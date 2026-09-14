@@ -40,6 +40,25 @@ excludes the load, neither figure includes capture, VAD, IPC or insertion, and i
 prewarm overlaps the load with speech. RSS counts the file-backed model pages. Whether 1.7B is
 more accurate on real dictation has not been measured.
 
+## Hardware tiers and fresh defaults
+
+The onboarding policy added on 2026-09-14 uses a cached hardware profile, not a runtime benchmark.
+`hardware::tier_for` is pure; `settings::fresh_config_for` applies its result only when the config
+file does not exist. Existing configs and serde defaults retain their compatibility behavior.
+
+| Profile | Tier | Fresh engine / onboarding placement |
+|---|---|---|
+| Known memory below 8 GiB or fewer than 4 logical cores | `cloud-default` | OpenAI `gpt-transcribe`; 0.6B remains available with a speed warning |
+| Apple M5 or newer, macOS arm64, at least 16 GiB | `qwen-large-prominent` | 0.6B default and recommended; 1.7B prominently alongside it |
+| Apple M4, macOS arm64, at least 16 GiB | `qwen-large-offered` | 0.6B default and recommended; 1.7B offered with the measured comparison above |
+| Other hardware, including Intel Mac, Windows and Linux | `qwen` | 0.6B; 1.7B under more options |
+| Hardware detection fails | `qwen` | 0.6B; failure never selects cloud by itself |
+
+These are presentation/default heuristics, not performance guarantees. Windows 1.7B tier rules
+remain pending CPU/Vulkan measurements on target machines. Downloads start only after an explicit
+user action and never activate an engine on completion. Groq and supported Nemotron builds remain
+in onboarding's more options.
+
 ## Why a llama.cpp subprocess
 
 Decided 2026-07-13 after two rounds of measurement on the maintainer's machines.
@@ -80,7 +99,8 @@ have since been discarded. The figures in this section are what was kept from th
   says nothing about which archive produced it.
 - Assets are separated by canonical model id, and model identity is part of worker reuse, so
   switching between 0.6B and 1.7B never reuses the other model's worker.
-- `SettingsPayload.has_api_key` means "assets downloaded" when the provider is local.
+- `SettingsPayload.engine_ready` reports availability independently of selection. For local engines,
+  missing assets produce `engine_blocker = "local-model-missing"`; selecting that engine is still allowed.
 - SayType briefly built its own patched llama.cpp. The private builds shipped link and CPU-variant
   defects that upstream's packs don't have, so it went back to upstream; see
   `vendor/llama.cpp/README.md`.
@@ -178,7 +198,9 @@ audio). Qwen does not segment internally.
 - Each closed chunk becomes a 16 kHz mono WAV. macOS native capture already delivers 16 kHz PCM16;
   on the WebKit path the chunk is resampled from hardware-rate Float32 with `OfflineAudioContext`.
 - Chunks decode one at a time through the session's worker, over the existing `transcribe-audio`
-  raw-body IPC with `session-id` and `chunk-index` headers. The floating window shows finalized
+  raw-body IPC with `session-id`, `chunk-index` and the required `session-provider` headers.
+  The provider is captured at recording start and retained across retries; missing or invalid
+  providers are rejected rather than falling back to a cloud engine. The floating window shows finalized
   chunks plus the live partial of the chunk in flight.
 - On release: flush the remainder as the final chunk, drain the queue, join the texts, insert once,
   save one History row. The joiner adds no space when either side of a seam is CJK/full-width, and
