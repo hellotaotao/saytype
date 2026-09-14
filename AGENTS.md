@@ -156,7 +156,9 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
 - `history.rs` — the History store (`{ "activities": [...] }`, 100-entry cap, atomic writes),
   including pending audio.
 - `retry_error.rs` — typed registry of the persisted `RETRY_*` codes.
-- `scrub.rs` — strips known ASR boilerplate and prompt leaks from transcripts.
+- `scrub.rs` — strips known ASR boilerplate and prompt leaks. `finalize_transcription` also merges
+  space-separated capital letters when `merge_spelled_letters` is enabled (default). Run it only on
+  complete results before History/insertion, never on individual chunks or live partials.
 - `ax_cloud.rs` — window lifecycle for the Accessibility drag cloud.
 - `tray.rs`, `state.rs` — system tray and shared app state.
 - `platform/` — the platform abstraction (`mod.rs` contract + `macos.rs` / `fallback.rs`, plus the

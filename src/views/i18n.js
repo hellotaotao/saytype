@@ -313,6 +313,10 @@
           groupCommon: "Common",
           groupAll: "All languages",
         },
+        mergeSpelledLetters: {
+          title: "Merge spelled-out letters",
+          description: "Join space-separated capital letters, for example A P I → API. Keep punctuation and line breaks.",
+        },
         autoLaunch: {
           title: "Start with system",
           description: "Automatically start SayType when your computer starts up.",
@@ -857,6 +861,10 @@
             "千问自动识别语言，不使用此设置。",
           groupCommon: "常用",
           groupAll: "全部语言",
+        },
+        mergeSpelledLetters: {
+          title: "自动合并拼读字母",
+          description: "将连续、由空格分隔的大写字母合并，例如 A P I → API。保留标点和换行。",
         },
         autoLaunch: {
           title: "开机自启",

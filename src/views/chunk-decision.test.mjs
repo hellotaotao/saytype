@@ -194,6 +194,15 @@ test("chunk text is trimmed before joining", () => {
   assert.equal(joinChunkTexts(["  padded  ", "  words  "]), "padded words");
 });
 
+test("chunk joins preserve non-space separators for final text formatting", () => {
+  for (const separator of ["\n", "\r\n", "\t", "\u00a0", "\u3000"]) {
+    assert.equal(joinChunkTexts([`A P${separator}`, "I B"]), `A P${separator}I B`);
+    assert.equal(joinChunkTexts(["A P", `${separator}I B`]), `A P${separator}I B`);
+    assert.equal(joinChunkTexts(["A P", separator, "I B"]), `A P${separator}I B`);
+  }
+  assert.equal(joinChunkTexts([" A P ", " I "]), "A P I");
+});
+
 test("a single chunk is returned unchanged — short dictation has no seam", () => {
   assert.equal(joinChunkTexts(["just one chunk."]), "just one chunk.");
 });

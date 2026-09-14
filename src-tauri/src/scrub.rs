@@ -20,6 +20,24 @@ use regex::Regex;
 
 use crate::commands::SEED_ZH;
 
+/// Format only a complete result, never an individual chunk or live partial.
+/// History and insertion must share the returned text.
+pub fn finalize_transcription(text: &str, merge_spelled_letters: bool) -> String {
+  let text = scrub_transcription(text);
+  if !merge_spelled_letters {
+    return text;
+  }
+  static SPELLED_LETTERS: OnceLock<Regex> = OnceLock::new();
+  // ASCII word boundaries keep us out of words and identifiers while allowing
+  // adjacent CJK text. Only literal spaces join letters, not tabs or newlines.
+  let pattern = SPELLED_LETTERS.get_or_init(|| {
+    Regex::new(r"(?-u:\b)[A-Z](?: +[A-Z])+(?-u:\b)").expect("spelled letters regex")
+  });
+  pattern.replace_all(&text, |caps: &regex::Captures<'_>| {
+    caps[0].replace(' ', "")
+  }).into_owned()
+}
+
 fn boilerplate_patterns() -> &'static Vec<Regex> {
   static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
   PATTERNS.get_or_init(|| {
@@ -62,7 +80,7 @@ pub fn scrub_transcription(text: &str) -> String {
   if !removed_any {
     return out;
   }
-  collapse_whitespace_runs(&out).trim().to_string()
+  collapse_space_runs(&out).trim().to_string()
 }
 
 // Prompt-leak detector: on degenerate audio Whisper sometimes emits the prompt
@@ -110,12 +128,13 @@ fn without_whitespace(text: &str) -> String {
   text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-// Mid-text removals can leave a doubled space at the seam; collapse runs.
-fn collapse_whitespace_runs(text: &str) -> String {
+// Mid-text removals can leave doubled spaces. Preserve other whitespace so
+// final formatting cannot merge spelled letters across an original separator.
+fn collapse_space_runs(text: &str) -> String {
   let mut out = String::with_capacity(text.len());
   let mut in_run = false;
   for c in text.chars() {
-    if c.is_whitespace() {
+    if c == ' ' {
       if !in_run {
         out.push(' ');
         in_run = true;
@@ -131,6 +150,66 @@ fn collapse_whitespace_runs(text: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn final_text_merges_independent_spelled_letters_without_a_dictionary() {
+    for (input, expected) in [
+      ("A P I", "API"),
+      ("H  T T  P", "HTTP"),
+      ("X Q Z", "XQZ"),
+      ("A B", "AB"),
+      ("调用A P I接口", "调用API接口"),
+      ("Use A P I and H T T P.", "Use API and HTTP."),
+      (" A P I  ", " API  "),
+      ("A P I, H T T P", "API, HTTP"),
+      ("A P, I", "AP, I"),
+      ("A\nP I", "A\nPI"),
+      ("A P\r\nI B", "AP\r\nIB"),
+      ("A P\tI B", "AP\tIB"),
+      ("OpenA P I", "OpenA PI"),
+      ("A P I2", "AP I2"),
+    ] {
+      assert_eq!(finalize_transcription(input, true), expected, "{input:?}");
+    }
+  }
+
+  #[test]
+  fn final_text_preserves_words_and_non_space_separators() {
+    for input in [
+      "", "A", "a p i", "API", "AP I", "OpenA I", "A PIs", "A 2P",
+      "A P_", "A_P I", "1A B", "A-P-I", "A/P/I", "A, P, I", "A、P、I",
+      "A\tP\tI", "A\nP\nI", "A\u{00a0}P\u{00a0}I", "A\u{3000}P\u{3000}I",
+      "I am here. A good day.",
+    ] {
+      assert_eq!(finalize_transcription(input, true), input, "{input:?}");
+    }
+  }
+
+  #[test]
+  fn disabling_letter_merging_keeps_the_existing_hallucination_filter() {
+    assert_eq!(finalize_transcription(" A  P I ", false), " A  P I ");
+    assert_eq!(finalize_transcription("A P I 字幕由Amara.org社区提供", false), "A P I");
+    assert_eq!(finalize_transcription(SEED_ZH, false), "");
+    assert_eq!(finalize_transcription(SEED_ZH, true), "");
+  }
+
+  #[test]
+  fn letter_merging_happens_after_the_complete_text_is_assembled() {
+    let first = scrub_transcription("A P");
+    let second = scrub_transcription("I");
+    assert_eq!(first, "A P");
+    let text = finalize_transcription(&format!("{first} {second}"), true);
+    assert_eq!(text, "API");
+    assert_eq!(finalize_transcription(&text, true), text);
+  }
+
+  #[test]
+  fn boilerplate_cleanup_does_not_turn_other_separators_into_mergeable_spaces() {
+    for separator in ["\n", "\r\n", "\t", "\u{00a0}", "\u{3000}"] {
+      let text = format!("A{separator}P I 字幕由Amara.org社区提供");
+      assert_eq!(finalize_transcription(&text, true), format!("A{separator}PI"));
+    }
+  }
 
   // ---- the 明镜与点点 outro family (all six real 2026-07-04 history tails) ----
 

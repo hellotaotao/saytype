@@ -2149,7 +2149,7 @@ class VoiceInputPrompt {
       const recorded = recordingSession ? await this.waitForSessionStage(recordingSession, "history",
         () => ipc.invoke("record-assembled-transcription", text), HISTORY_STAGE_TIMEOUT_MS) :
         await ipc.invoke("record-assembled-transcription", text);
-      return typeof recorded === "string" && recorded ? recorded : text;
+      return typeof recorded === "string" ? recorded : text;
     } catch (error) {
       if (recordingSession) {
         this.assertSessionActive(recordingSession);

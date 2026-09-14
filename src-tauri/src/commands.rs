@@ -900,16 +900,31 @@ impl Drop for ActiveTranscriptionGuard<'_> {
   }
 }
 
+// Called only when the whole result is ready, including assembled dictations
+// and manual History retries. Formatting is shared by persistence and insertion.
+fn prepare_final_transcription(raw: &str) -> String {
+  let merge_spelled_letters = match settings::read_config() {
+    Ok(config) => config.merge_spelled_letters,
+    Err(error) => {
+      // Optional formatting must not discard a completed transcription or
+      // guess that a user who disabled the setting wants it enabled again.
+      log::warn!("could not read final text settings; skipping letter merging: {error:#}");
+      false
+    }
+  };
+  crate::scrub::finalize_transcription(raw, merge_spelled_letters)
+}
+
 fn record_successful_transcription(
   app: &AppHandle,
   raw: &str,
   failure_id: Option<&str>,
   audio_for_debug: Option<(Vec<u8>, String)>,
 ) -> String {
-  let text = crate::scrub::scrub_transcription(raw);
+  let text = prepare_final_transcription(raw);
   if text != raw {
     log::info!(
-      "transcribe: scrubbed hallucination boilerplate ({} -> {} chars)",
+      "transcribe: postprocessed final text ({} -> {} chars)",
       raw.chars().count(),
       text.chars().count()
     );
@@ -948,7 +963,7 @@ fn record_successful_transcription(
 }
 
 /// History for a chunked local dictation: the frontend concatenates the chunk
-/// transcripts and records the result here, exactly once. Returns the scrubbed
+/// transcripts and records the result here, exactly once. Returns the formatted
 /// text so the inserted string and the history row cannot drift apart, matching
 /// what transcribe_audio returns on the unchunked path.
 #[tauri::command]
@@ -1215,7 +1230,8 @@ pub async fn transcribe_audio(
     // history is written once by record_assembled_transcription after the
     // frontend joins the chunks -- otherwise a five-minute dictation would leave
     // a row (and, in dev, a debug-audio copy) per chunk. Scrubbing still runs
-    // per chunk so the streamed preview matches the recorded text.
+    // per chunk to filter hallucinations. Letter merging waits for the final
+    // assembled result, so a spelling split across chunks remains mergeable.
     // Partial whole clips are also saved through the frontend recovery path.
     Ok(raw) if chunk_index.is_some() || capture_incomplete => {
       let (text, detail) = scrub_transcription_with_chunk_diagnostics(&raw);
@@ -2007,7 +2023,7 @@ pub async fn retranscribe_pending(
       return Err(refresh_failed_row(&app, &id, translate, RetryFailure::Engine(&error.to_string()), true))
     }
   };
-  let text = crate::scrub::scrub_transcription(&raw);
+  let text = prepare_final_transcription(&raw);
 
   if !history::finish_pending_transcription(&id, &text).map_err(|error| {
     log::warn!("failed to save retry result: {error:#}");

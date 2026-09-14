@@ -1773,6 +1773,12 @@ test("the assembled dictation is recorded once, and history never costs the text
   );
 });
 
+test("an empty postprocessed final is not replaced with the unprocessed text", async () => {
+  const VoiceInputPrompt = loadForChunking(async () => "");
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  assert.equal(await prompt.recordAssembledTranscription("discarded boilerplate"), "");
+});
+
 test("cancelling on release does not decode a final chunk that is about to be killed", () => {
   const VoiceInputPrompt = loadForChunking(async () => null);
   const enqueued = [];
@@ -1899,6 +1905,26 @@ async function createLifecycleHarness(options = {}) {
   return { prompt, session: prompt.activeRecordingSession, recorder: prompt.mediaRecorder,
     calls, inserted, recovered, streams, timers, get hides() { return hides; } };
 }
+
+test("letters spanning chunks reach final formatting once and insert its returned text", async () => {
+  const h = await createLifecycleHarness({ invoke(command, ...args) {
+    if (command === "transcribe-audio") return Promise.resolve(args[4] === 0 ? "A P" : "I");
+    if (command === "record-assembled-transcription") {
+      assert.equal(args[0], "A P I");
+      return Promise.resolve("API");
+    }
+    return Promise.resolve(null);
+  } });
+  h.prompt.closeChunk(h.session.chunked, 320, "test");
+  await settlePromises();
+  assert.deepEqual(Array.from(h.session.chunked.results), ["A P"]);
+  h.prompt.consumeChunkedSamples(h.session, new Float32Array(320));
+  h.prompt.stopRecording();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["API"]);
+  assert.equal(h.session.finalText, "API");
+  assert.equal(h.calls.filter(([command]) => command === "record-assembled-transcription").length, 1);
+});
 
 test("a chunked session finalizes on release, and late onstop events cannot repeat it", async () => {
   const h = await createLifecycleHarness();

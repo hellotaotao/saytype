@@ -1751,6 +1751,7 @@ async function loadSettings() {
     const nemotronLatencySelect = document.getElementById("nemotronLatencySelect");
     const autoLaunchCheck = document.getElementById("autoLaunchCheck");
     const startMinimizedCheck = document.getElementById("startMinimizedCheck");
+    const mergeSpelledLettersCheck = document.getElementById("mergeSpelledLettersCheck");
     const apiKeyGroq = document.getElementById("apiKeyGroq");
     const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
 
@@ -1807,6 +1808,9 @@ async function loadSettings() {
     }
     if (startMinimizedCheck) {
       startMinimizedCheck.checked = !!currentSettings.startMinimized;
+    }
+    if (mergeSpelledLettersCheck) {
+      mergeSpelledLettersCheck.checked = currentSettings.mergeSpelledLetters !== false;
     }
 
     renderSettingChoices();
@@ -1962,6 +1966,8 @@ async function persistSettings(intent = null) {
       microphone: currentSettings.microphone,
       autoLaunch: !!document.getElementById("autoLaunchCheck")?.checked,
       startMinimized: !!document.getElementById("startMinimizedCheck")?.checked,
+      mergeSpelledLetters: document.getElementById("mergeSpelledLettersCheck")?.checked
+        ?? currentSettings.mergeSpelledLetters !== false,
       provider: target.provider,
       localCompute: document.getElementById("localComputeSelect")?.value || "auto",
       translateProvider: document.getElementById("translateProviderSelect")?.value || "",

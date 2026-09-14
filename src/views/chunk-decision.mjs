@@ -112,7 +112,8 @@ const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/;
 export function joinChunkTexts(texts) {
   let out = "";
   for (const raw of texts || []) {
-    const text = typeof raw === "string" ? raw.trim() : "";
+    // Keep explicit non-space separators at seams for final text formatting.
+    const text = typeof raw === "string" ? raw.replace(/^ +| +$/g, "") : "";
     if (!text) continue;
     if (!out) {
       out = text;
@@ -120,9 +121,9 @@ export function joinChunkTexts(texts) {
     }
     const left = out[out.length - 1];
     const right = text[0];
-    out += CJK.test(left) || CJK.test(right) ? text : ` ${text}`;
+    out += /\s/.test(left) || /\s/.test(right) || CJK.test(left) || CJK.test(right) ? text : ` ${text}`;
   }
-  return out;
+  return out.trim();
 }
 
 if (typeof window !== "undefined") {

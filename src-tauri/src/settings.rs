@@ -23,6 +23,10 @@ fn default_language() -> String {
   "auto".into()
 }
 
+fn default_merge_spelled_letters() -> bool {
+  true
+}
+
 fn default_ui_language() -> String {
   "auto".into()
 }
@@ -100,6 +104,8 @@ pub struct AppConfig {
   pub translate_shortcut: String,
   #[serde(default = "default_language")]
   pub language: String,
+  #[serde(default = "default_merge_spelled_letters")]
+  pub merge_spelled_letters: bool,
   #[serde(default = "default_ui_language")]
   pub ui_language: String,
   #[serde(default = "default_ui_theme")]
@@ -147,6 +153,7 @@ impl Default for AppConfig {
       shortcut: default_shortcut(),
       translate_shortcut: default_translate_shortcut(),
       language: default_language(),
+      merge_spelled_letters: default_merge_spelled_letters(),
       ui_language: default_ui_language(),
       ui_theme: default_ui_theme(),
       model: default_model(),
@@ -175,6 +182,7 @@ pub struct SettingsPayload {
   pub shortcut: String,
   pub translate_shortcut: String,
   pub language: String,
+  pub merge_spelled_letters: bool,
   pub ui_language: String,
   pub ui_theme: String,
   pub model: String,
@@ -236,6 +244,7 @@ impl SettingsPayload {
       shortcut: config.shortcut.clone(),
       translate_shortcut: config.translate_shortcut.clone(),
       language: config.language.clone(),
+      merge_spelled_letters: config.merge_spelled_letters,
       ui_language: config.ui_language.clone(),
       ui_theme: config.ui_theme.clone(),
       model: config.model.clone(),
@@ -427,6 +436,40 @@ pub fn update_auto_launch(enabled: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn merge_spelled_letters_defaults_on_for_new_and_existing_configs() {
+    use crate::hardware::LocalTier;
+    for config in [
+      AppConfig::default(),
+      fresh_config_for(LocalTier::Qwen),
+      fresh_config_for(LocalTier::CloudDefault),
+      serde_json::from_str::<AppConfig>(r#"{"provider":"groq"}"#).unwrap(),
+    ] {
+      assert_eq!(serde_json::to_value(config).unwrap()["mergeSpelledLetters"], true);
+    }
+  }
+
+  #[test]
+  fn merge_spelled_letters_disabled_survives_config_round_trip() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("config.json");
+    let config: AppConfig = serde_json::from_str(r#"{"mergeSpelledLetters":false}"#).unwrap();
+    write_config_to_path(&path, &config).unwrap();
+    let restored = read_config_from_path(&path).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap()["mergeSpelledLetters"], false);
+  }
+
+  #[test]
+  fn merge_spelled_letters_setting_is_in_the_frontend_payload() {
+    for enabled in [true, false] {
+      let config: AppConfig = serde_json::from_value(serde_json::json!({
+        "mergeSpelledLetters": enabled,
+      })).unwrap();
+      let payload = serde_json::to_value(SettingsPayload::from_config_with(&config, false)).unwrap();
+      assert_eq!(payload["mergeSpelledLetters"], enabled);
+    }
+  }
 
   #[test]
   fn defaults_match_current_app_behavior() {

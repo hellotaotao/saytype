@@ -29,6 +29,19 @@ somewhere the user can retry or copy it. How to test this on real devices is in
   JavaScript timeout may let a later insertion overtake it. There is no clipboard fallback: a failed
   insert shows a Copy button and the text stays in History.
 
+## Final text formatting
+
+- Complete batch results, assembled chunked results, Nemotron live finals and History retries use
+  the same final-text formatter before saving. History and normal insertion receive its returned
+  text. Individual chunks and live previews do not merge spelled letters.
+- Settings has a common "Merge spelled-out letters" toggle (`mergeSpelledLetters`), enabled by
+  default for new and existing configurations. Disabling it preserves letter spacing without
+  disabling the existing hallucination filter.
+- Two or more independent ASCII capital letters separated only by ordinary spaces merge without
+  a dictionary (`A P I` becomes `API`). Punctuation, tabs and line breaks interrupt the run;
+  cleanup and chunk joining preserve these separators. Incomplete recovery keeps its existing
+  preservation path rather than treating partial text as a successful final.
+
 ## Failed transcriptions keep their audio
 
 - `record_failed_transcription` writes **one** History row carrying both the reason and the clip
