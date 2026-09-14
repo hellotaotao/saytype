@@ -971,53 +971,54 @@ test("Qwen prewarm waits for probation after first paint and skips a cancelled r
   ]);
 });
 
-test("microphone priming does not trigger an unrequested permission prompt", async () => {
-  let microphoneOpens = 0;
-  const VoiceInputPrompt = loadVoiceInputPrompt({
-    invoke(command) {
-      assert.equal(command, "check-microphone-permission");
-      return Promise.resolve({ status: "not-determined" });
-    },
-    globals: {
-      navigator: {
-        mediaDevices: {
-          async getUserMedia() {
-            microphoneOpens += 1;
-            return { getTracks: () => [] };
-          },
-        },
-      },
-    },
-  });
-  const prompt = createBarePrompt(VoiceInputPrompt);
+test("the recording window does not open the microphone before a dictation", () => {
+  const VoiceInputPrompt = loadVoiceInputPrompt();
 
-  await prompt.primeMicrophone();
-
-  assert.equal(microphoneOpens, 0);
+  // Windows/Linux used to warm one getUserMedia stream and keep it for the whole
+  // process, which kept the OS microphone indicator lit and held Bluetooth
+  // headsets in call mode. Each dictation now opens and closes its own stream.
+  assert.equal(VoiceInputPrompt.prototype.primeMicrophone, undefined);
+  assert.equal(VoiceInputPrompt.prototype.acquireCaptureStream, undefined);
 });
 
-test("microphone priming still warms an already granted device", async () => {
-  let microphoneOpens = 0;
-  const VoiceInputPrompt = loadVoiceInputPrompt({
-    invoke() {
-      return Promise.resolve({ status: "granted" });
-    },
-    globals: {
-      navigator: {
-        mediaDevices: {
-          async getUserMedia() {
-            microphoneOpens += 1;
-            return { getTracks: () => [{ stop() {} }] };
-          },
-        },
-      },
-    },
+test("releasing a dictation stops its microphone tracks", () => {
+  const VoiceInputPrompt = loadVoiceInputPrompt();
+  const stopped = [];
+  const stream = {
+    getTracks: () => [{ kind: "audio", readyState: "live", stop: () => stopped.push("track") }],
+  };
+  const session = { mediaStream: stream, audioContext: null, mediaRecorder: null };
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    activeRecordingSession: session,
+    mediaStream: stream,
   });
-  const prompt = createBarePrompt(VoiceInputPrompt);
 
-  await prompt.primeMicrophone();
+  prompt.cleanup({ preserveAudioChunks: true, recordingSession: session });
 
-  assert.equal(microphoneOpens, 1);
+  assert.deepEqual(stopped, ["track"]);
+  assert.equal(session.mediaStream, null);
+  assert.equal(prompt.mediaStream, null);
+});
+
+test("an older dictation's cleanup leaves a newer dictation's microphone open", () => {
+  const VoiceInputPrompt = loadVoiceInputPrompt();
+  const stopped = [];
+  const streamNamed = (name) => ({
+    getTracks: () => [{ kind: "audio", readyState: "live", stop: () => stopped.push(name) }],
+  });
+  const olderStream = streamNamed("older");
+  const newerStream = streamNamed("newer");
+  const older = { mediaStream: olderStream, audioContext: null, mediaRecorder: null };
+  const newer = { mediaStream: newerStream, audioContext: null, mediaRecorder: null };
+  const prompt = createBarePrompt(VoiceInputPrompt, {
+    activeRecordingSession: newer,
+    mediaStream: newerStream,
+  });
+
+  prompt.cleanup({ preserveAudioChunks: true, recordingSession: older });
+
+  assert.deepEqual(stopped, ["older"]);
+  assert.equal(prompt.mediaStream, newerStream);
 });
 
 test("a failed old transcription cannot repaint or hide a newer recording", async () => {
@@ -2462,7 +2463,7 @@ test("cancelling pending microphone acquisition does not hide older recovery tex
   microphone.resolve();
   await starting;
   await settlePromises();
-  assert.equal(h.streams[1].stops, 0, "the shared warm stream remains available");
+  assert.equal(h.streams[1].stops, 1, "a startup cancelled while the microphone was opening closes that stream");
   assert.equal(h.hides, hidesBeforeStartup, "older recovery must not disappear with the cancelled startup");
   assert.deepEqual(h.recovered, []);
   assert.equal(h.prompt.cancelInProgress, false);

@@ -349,8 +349,6 @@ class VoiceInputPrompt {
     this.translateMode = false;
     this.audioContext = null;
     this.mediaStream = null;
-    this.sharedStream = null;
-    this.streamAcquisition = null;
     this.mediaRecorder = null;
     this.audioChunks = [];
     this.analyser = null;
@@ -407,13 +405,12 @@ class VoiceInputPrompt {
     this.createWaveBars();
     this.setupEventListeners();
     this.settingsReady = this.syncShortcutFromSettings();
-    this.primeMicrophone();
     this.primeVad();
   }
 
-  // Prewarm the neural VAD (onnxruntime wasm + Silero model) at launch, same
-  // idea as primeMicrophone: move the ~0.5-1s first-load off the user's first
-  // dictation. window.SayTypeVadGate is defined by vad-gate.js (loaded first).
+  // Prewarm the neural VAD (onnxruntime wasm + Silero model) at launch to move
+  // the ~0.5-1s first load off the user's first dictation. It touches no audio
+  // device. window.SayTypeVadGate is defined by vad-gate.js (loaded first).
   primeVad() {
     window.SayTypeVadGate?.warmup?.();
   }
@@ -459,117 +456,6 @@ class VoiceInputPrompt {
       return;
     }
     setTimeout(() => this.prewarmQwenWorker(recordingSession), delayMs);
-  }
-
-  // WebKit fallback (Windows/Linux): one capture stream for the whole process,
-  // shared by every recording. macOS bypasses this path and opens a fresh
-  // native CoreAudio stream only while the hotkey is held.
-  //
-  // A FRESH WKWebView capture stream delivers ~30 dB of attenuation for exactly
-  // its first 3.0 s. Measured with no speech at all: env_db sat at -80 for six
-  // consecutive 500 ms buckets and then stepped to -50, reproducibly, and it is
-  // none of the things it looked like — it survives a 531 ms prewarm as well as
-  // a 3105 ms one, the analyser loop ticks 7-8 times per bucket throughout, and
-  // forcing the track to 48 kHz (removing WebKit's resampler) does not move it.
-  // ffmpeg on the same microphone records a flat -56 dBFS from t=0, so this is
-  // WebKit's capture path, not the device.
-  //
-  // Because the cost is per fresh stream, acquiring one per recording made every
-  // dictation open with three near-silent seconds — loud speech survived it,
-  // quiet speech would not. Keeping one stream alive removes it entirely.
-  //
-  // Keeping this fallback preserves the existing Windows/Linux behavior without
-  // coupling those platforms to the macOS-only native implementation.
-  async acquireCaptureStream() {
-    const existing = this.sharedStream?.getAudioTracks?.()[0];
-    if (existing && existing.readyState === "live") {
-      return this.sharedStream;
-    }
-    // Single-flight: the prime and a first recording can land together, and two
-    // concurrent getUserMedia calls would each open a stream — the loser would
-    // be overwritten and leak, holding the microphone open forever.
-    if (this.streamAcquisition) return this.streamAcquisition;
-    // A track that ended (device unplugged, or the OS revoked it) can't be
-    // revived; drop it and open a replacement.
-    this.releaseCaptureStream();
-    this.streamAcquisition = navigator.mediaDevices
-      .getUserMedia(AUDIO_CONSTRAINTS)
-      .then((stream) => {
-        this.sharedStream = stream;
-        return stream;
-      })
-      .finally(() => {
-        this.streamAcquisition = null;
-      });
-    return this.streamAcquisition;
-  }
-
-  releaseCaptureStream() {
-    const stream = this.sharedStream;
-    this.sharedStream = null;
-    stream?.getTracks?.().forEach((track) => track.stop());
-  }
-
-  // Prime the WebKit audio stack once at launch, and keep the stream: this is
-  // what puts the 3.0 s attenuation window behind us before the first hotkey
-  // rather than inside it.
-  async primeMicrophone(attempt = 0) {
-    await this.settingsReady;
-    // macOS records through a fresh CoreAudio stream per dictation. Priming a
-    // WebKit stream there would bring back the always-on orange indicator and
-    // Bluetooth HFP side effect that native capture is meant to remove.
-    if (this.osName === "macos") {
-      return;
-    }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      return;
-    }
-    try {
-      // The hidden input window loads before onboarding. Query the native TCC
-      // state first so prewarming never becomes the action that triggers the
-      // first permission prompt behind the onboarding UI.
-      const permission = await ipc.invoke("check-microphone-permission");
-      if (permission?.status !== "granted") {
-        this.reportPrime(`attempt=${attempt} outcome=skipped permission=${permission?.status}`);
-        this.retryPrime(attempt);
-        return;
-      }
-      await this.acquireCaptureStream();
-      const track = this.sharedStream?.getAudioTracks?.()[0];
-      this.reportPrime(
-        `attempt=${attempt} outcome=acquired permission=granted track_state=${track?.readyState} muted=${track?.muted}`
-      );
-    } catch (error) {
-      // Reached when the bridge is not up yet, when permission has not been
-      // granted yet, or when there is no device. Only the first two resolve
-      // themselves, so retry rather than leaving the first dictation to pay
-      // the 3.0 s attenuation window.
-      this.reportPrime(`attempt=${attempt} outcome=error name=${error?.name}`);
-      this.retryPrime(attempt);
-    }
-  }
-
-  // Backs off across ~30 s: long enough to outlast a slow bridge or a
-  // permission granted during onboarding, bounded so a machine with no
-  // microphone does not retry forever.
-  retryPrime(attempt) {
-    if (attempt >= 5) return;
-    const delayMs = [500, 1500, 4000, 10000, 15000][attempt];
-    setTimeout(() => {
-      const track = this.sharedStream?.getAudioTracks?.()[0];
-      if (track && track.readyState === "live") return;
-      void this.primeMicrophone(attempt + 1);
-    }, delayMs);
-  }
-
-  reportPrime(detail) {
-    try {
-      void Promise.resolve(
-        ipc.invoke("report-audio-probe", { sessionId: 0, stage: "prime", detail, slow: false })
-      ).catch(() => {});
-    } catch {
-      // The bridge may be unavailable this early in page load.
-    }
   }
 
   createWaveBars() {
@@ -704,7 +590,6 @@ class VoiceInputPrompt {
         void ipc.invoke("stop-native-capture", native.sessionId).catch(() => {});
       }
       this.cleanup();
-      this.releaseCaptureStream();
     });
 
     // Insertion-failure "Copy" affordance — explicit click only (no auto copy).
@@ -2669,16 +2554,17 @@ class VoiceInputPrompt {
         this.clearTranscriptionPreview();
       }
 
-      // Attach to the process-wide capture stream (see acquireCaptureStream):
-      // it has been open since launch, so this recording starts past WebKit's
-      // 3.0 s attenuation window instead of inside it.
-      // On macOS, microphone/Accessibility permissions are handled by the OS and the Rust backend.
-      const stream = await this.acquireCaptureStream();
+      // Each dictation opens its own stream and cleanup() stops it on release,
+      // so the OS microphone indicator and Bluetooth call mode last only while
+      // the hotkey is held. macOS normally records natively (above) and reaches
+      // this path only when native capture could not start.
+      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       const microphoneReadyAt = performance.now();
 
       if (this.stopRequested) {
-        // The stream is shared and outlives this attempt, so leave it running;
-        // just bail without clearing older work or hiding recoverable text.
+        // Cancelled while the microphone was opening: close it right away and
+        // bail without clearing older work or hiding recoverable text.
+        stream.getTracks().forEach((track) => track.stop());
         this.scheduleHidePrompt(300);
         return;
       }
@@ -3074,13 +2960,9 @@ class VoiceInputPrompt {
     const ownsCurrentResources = !recordingSession || this.activeRecordingSession === recordingSession;
     logMicrophoneCleanup("Starting microphone cleanup...");
 
-    // The shared capture stream deliberately outlives the recording; stopping
-    // it here would make the next dictation pay the 3.0 s attenuation again.
-    if (mediaStream && mediaStream === this.sharedStream) {
-      logMicrophoneCleanup("Keeping the shared capture stream open");
-      if (this.mediaStream === mediaStream) this.mediaStream = null;
-      if (recordingSession) recordingSession.mediaStream = null;
-    } else if (mediaStream) {
+    // Stop this dictation's own stream. A newer recording holds a different
+    // stream object, so it stays open.
+    if (mediaStream) {
       logMicrophoneCleanup("Stopping media stream tracks...");
       mediaStream.getTracks().forEach((track) => {
         logMicrophoneCleanup(

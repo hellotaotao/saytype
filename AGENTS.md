@@ -212,9 +212,11 @@ still the natural default for events more than one window may want.
 - **macOS-only native APIs must be `#[cfg(target_os = "macos")]`-gated**, or the Windows/Linux CI and
   release legs fail to compile. Release builds are universal, so macOS-gated code must also cover
   `x86_64`; `cargo check --target x86_64-apple-darwin` reproduces that leg locally.
-- **Audio capture:** macOS opens a native CoreAudio stream per dictation; Windows/Linux use webview
-  `getUserMedia` with `echoCancellation`/`noiseSuppression`/`autoGainControl` all pinned `false`. Don't
-  add noise suppression, AGC or pre-denoising, and don't re-enable echo cancellation. The WebKit
+- **Audio capture:** every platform opens the microphone per dictation and closes it on release:
+  macOS through a native CoreAudio stream, Windows/Linux through webview `getUserMedia` with
+  `echoCancellation`/`noiseSuppression`/`autoGainControl` all pinned `false`. Don't keep a stream open
+  between dictations (it keeps the OS microphone indicator lit and holds Bluetooth headsets in call
+  mode), don't add noise suppression, AGC or pre-denoising, and don't re-enable echo cancellation. The
   measurements behind this are in `docs/audio-capture.md`.
 - Reset macOS permissions when re-testing:
   ```

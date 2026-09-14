@@ -16,11 +16,18 @@ cancellation and insertion state machines, and whole-clip or cloud uploads are a
 the same PCM. A stream error is sent to the frontend and stops that session; there is no attempt to
 migrate to another device mid-recording. The stream closes on release, so the orange microphone
 indicator doesn't stay lit between dictations and Bluetooth headsets aren't held in HFP mode.
-`primeMicrophone()` skips macOS.
 
-**Windows and Linux: webview `getUserMedia`**, through one shared stream (`acquireCaptureStream()`),
-with every processing constraint in `AUDIO_CONSTRAINTS` pinned to `false`. Windows runs WebView2
-(Chromium). Linux runs WebKitGTK, whose `getUserMedia` support currently blocks recording there.
+**Windows and Linux: webview `getUserMedia`, one stream per dictation**, opened when the hotkey is
+pressed and stopped on release, with every processing constraint in `AUDIO_CONSTRAINTS` pinned to
+`false`. Nothing opens the microphone before the first dictation. Windows runs WebView2 (Chromium).
+Linux runs WebKitGTK, whose `getUserMedia` support currently blocks recording there.
+
+Until 2026-09-14 these platforms kept one stream open for the whole process: the WKWebView workaround
+described below, left in place after macOS moved to native capture. The 3.0 s attenuation it guarded
+against did not reproduce on Windows, but its costs applied there too: a microphone-in-use indicator
+that never went out and Bluetooth headsets held in hands-free mode. Whether a cold WebView2 stream
+drops the first words is not measured yet; check `audio-onset` on a Windows machine, speaking
+immediately after pressing, before keeping a stream open again.
 
 **Format.** Native macOS capture produces PCM16 WAV, 16 kHz mono, 256 kbps (32 KB/s). That is about
 65% larger than the old WKWebView AAC, but it's already what local ASR consumes and needs no codec
@@ -78,7 +85,8 @@ fine.
 
 The first mitigation (`1a49a8a`) kept one WebKit stream open for the whole process. That fixed every
 recording after the first, at the cost of a permanently lit microphone indicator and Bluetooth HFP.
-Native capture removes both costs, and the shared stream survives only as the Windows/Linux path.
+Native capture removes both costs. The shared stream then lingered as the Windows/Linux path until
+2026-09-14, when those platforms went back to one stream per dictation too.
 
 Lessons that came out of this and an earlier investigation:
 
@@ -133,8 +141,8 @@ Three log lines on the `saytype_lifecycle` target survive release-level filterin
 grep -aE "audio-capture|audio-onset|audio-envelope" ~/Library/Logs/com.tao.saytype/SayType.log | tail
 ```
 
-- `audio-capture`: device, `getSettings()`, AudioContext state and `mic_ms`. On the WebKit path
-  `mic_ms=0` means the shared stream was reused.
+- `audio-capture`: device, `getSettings()`, AudioContext state and `mic_ms`, how long opening the
+  microphone took.
 - `audio-onset`: blocks, `captured_ms` vs `hold_ms`, and first non-zero / first signal / first speech,
   all on the audio timeline so main-thread jank can't smear them.
 - `audio-envelope`: per-500 ms RMS (`env_db`), per-bucket SNR against a 440 Hz tone (`snr_db`),
@@ -163,3 +171,5 @@ SayType's tap exists. For per-session lifecycle counts, use the offline report d
 - After capture changes, re-run the real-device gate: speak immediately after pressing, check first
   words, live waveform, final insertion, indicator shutdown and Bluetooth playback recovery (cases
   R01 and R06 in RELIABILITY_ACCEPTANCE.md).
+- Windows first words with one stream per dictation (since 2026-09-14): not yet measured on a real
+  machine.
