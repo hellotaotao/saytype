@@ -398,7 +398,6 @@ class VoiceInputPrompt {
     this.translateProvider = "";
     this.currentProvider = null;
     this.currentModel = "";
-    this.currentLanguage = "auto";
     this.currentMicrophone = "default";
     this._failedText = "";
 
@@ -607,7 +606,6 @@ class VoiceInputPrompt {
       this.osName = settings.os || this.osName;
       this.currentProvider = settings.provider || "openai";
       this.currentModel = settings.model || "";
-      this.currentLanguage = settings.language || "auto";
       this.currentMicrophone = settings.microphone || "default";
       this.translateConsented = !!settings.translateConsented;
       this.translateProvider = settings.translateProvider || "";
@@ -1608,8 +1606,7 @@ class VoiceInputPrompt {
     await ipc.invoke(
       "start-live-transcription",
       recordingSession.id,
-      Math.round(sampleRate),
-      this.currentLanguage || "auto"
+      Math.round(sampleRate)
     );
     const live = {
       sessionId: recordingSession.id,

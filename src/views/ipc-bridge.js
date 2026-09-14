@@ -93,7 +93,6 @@
     "start-live-transcription": [
       ["sessionId", "session_id"],
       ["sampleRate", "sample_rate"],
-      ["language"],
     ],
     "record-assembled-transcription": [["text"]],
     "save-recovered-transcription": [["recovery"]],

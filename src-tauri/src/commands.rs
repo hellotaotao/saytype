@@ -1000,7 +1000,6 @@ pub async fn start_live_transcription(
   app: AppHandle,
   session_id: u64,
   sample_rate: u32,
-  language: String,
 ) -> Result<bool, String> {
   let config = settings::read_config().map_err(stringify_error)?;
   if config.provider != crate::local_asr::LOCAL_PROVIDER
@@ -1009,11 +1008,13 @@ pub async fn start_live_transcription(
   {
     return Err("Nemotron is not the selected local model".into());
   }
+  // Read the language from saved settings, like the batch path, so a change in
+  // Settings reaches the next live session without restarting the app.
   crate::nemotron_asr::start_live_session(
     app,
     session_id,
     sample_rate,
-    language,
+    config.language.clone(),
     config.nemotron_latency_ms,
   )
   .await?;
