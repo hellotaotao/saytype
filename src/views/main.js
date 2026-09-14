@@ -1345,11 +1345,17 @@ function renderObFooter() {
   }
 }
 
+// Whether the practice field already took focus for the ready state now on
+// screen. It is focused once per showing, so later refreshes (window focus,
+// permission events) never pull focus back from wherever the user moved it.
+let obTryFocused = false;
+
 // Page 6 tells the truth: celebration + practice box only when everything
 // is actually ready; otherwise a checklist of what's missing, each row
 // jumping back to its page — nobody leaves the wizard surprised later.
 function renderObFinal() {
   if (!onboardingVisible() || obCurrent !== OB_TOTAL) {
+    obTryFocused = false;
     return;
   }
   const steps = [
@@ -1378,6 +1384,15 @@ function renderObFinal() {
   const tip = document.getElementById("obTryTip");
   if (tip) {
     tip.hidden = !ready;
+  }
+  // The first dictation needs an editable target (the macOS insert guard
+  // refuses keystrokes when no text field is focused), so the ready state
+  // puts the caret in the practice field.
+  if (!ready) {
+    obTryFocused = false;
+  } else if (!obTryFocused) {
+    obTryFocused = true;
+    document.getElementById("obTryInput")?.focus();
   }
 
   const checklist = document.getElementById("obChecklist");
