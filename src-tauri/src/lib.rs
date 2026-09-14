@@ -5,6 +5,7 @@ mod hardware;
 mod retry_error;
 mod hotkey;
 mod local_asr;
+mod microphone;
 mod native_capture;
 mod nemotron_asr;
 mod scrub;
@@ -230,6 +231,7 @@ pub fn run() {
       commands::dismiss_ax_cloud,
       commands::copy_to_clipboard,
       commands::check_microphone_permission,
+      commands::report_microphone_capture,
       commands::check_accessibility_permission,
       commands::request_accessibility_permission,
       commands::recheck_accessibility_permission,

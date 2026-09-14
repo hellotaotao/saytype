@@ -8,9 +8,8 @@
 //!
 //! * `macos`    — the real macOS implementation (CGEvent insertion, AX /
 //!                AVFoundation permission checks, pbcopy, LaunchAgent).
-//! * `fallback` — every other target (Windows, Linux). For now these are the
-//!                app's pre-cross-platform stubs ("not yet supported"); when we
-//!                fill a platform in, `fallback` splits into `windows`/`linux`.
+//! * `fallback` — Windows/Linux insertion and permission behavior, with Windows
+//!                clipboard and Settings integration in `windows`.
 //!
 //! ## Contract
 //!
@@ -23,7 +22,7 @@
 //! fn accessibility_granted(prompt: bool) -> bool;
 //! fn microphone_status() -> String;
 //! fn open_accessibility_settings();
-//! fn open_microphone_settings();
+//! fn open_microphone_settings() -> anyhow::Result<()>;
 //! fn reveal_app_in_finder();
 //! fn app_bundle_path() -> Option<std::path::PathBuf>;
 //! fn attach_app_drag_source(ns_view: *mut std::ffi::c_void) -> bool;
@@ -48,6 +47,9 @@ pub use macos::*;
 mod fallback;
 #[cfg(not(target_os = "macos"))]
 pub use fallback::*;
+
+#[cfg(any(windows, test))]
+mod windows;
 
 /// Run when the OS reports the app was brought to the front. Stored in a
 /// `static` on the platform side (the macOS callback comes from ObjC and has

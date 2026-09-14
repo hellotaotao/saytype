@@ -1401,6 +1401,16 @@ function bindEventHandlers() {
   // The backend broadcasts every real Accessibility state change (wizard
   // grant, main-window rechecks), so re-render without waiting for the next
   // visit to Settings.
+  ipc.on("microphone-status-changed", () => {
+    void checkMicrophonePermissionStatus();
+  });
+  document.getElementById("openWindowsMicrophoneSettings")?.addEventListener("click", async () => {
+    try { await ipc.invoke("open-microphone-settings"); await checkMicrophonePermissionStatus(); }
+    catch {
+      document.getElementById("permissionStatus").textContent = translate("microphoneAccess.settingsFailed");
+    }
+  });
+
   ipc.on("accessibility-permission-changed", () => {
     void refreshAccessibilityQuietly();
   });
@@ -1417,6 +1427,8 @@ function bindEventHandlers() {
 // both are granted the two rows collapse into one line; the moment one is
 // missing they expand again, with the button that fixes it.
 const permissionState = { microphone: null, accessibility: null };
+let microphoneProbeBusy = false;
+let microphoneRefreshVersion = 0;
 
 function renderPermissionSummary() {
   const allGranted =
@@ -1556,7 +1568,7 @@ async function recheckPermissions() {
   feedback.setAttribute("aria-busy", "true");
   try {
     const [microphone, accessibility] = await Promise.all([
-      checkMicrophonePermissionStatus(), checkAccessibilityStatus(),
+      currentSettings?.os === "windows" ? requestMicrophonePermission() : checkMicrophonePermissionStatus(), checkAccessibilityStatus(),
     ]);
     const failed = microphone == null || accessibility == null;
     const granted = microphone && (accessibility?.granted || accessibility?.status === "not_required");
@@ -1573,6 +1585,7 @@ async function recheckPermissions() {
 }
 
 async function checkMicrophonePermissionStatus() {
+  const version = ++microphoneRefreshVersion;
   if (!ipc) {
     return;
   }
@@ -1588,10 +1601,22 @@ async function checkMicrophonePermissionStatus() {
     statusElement.className = "permission-status";
 
     const result = await ipc.invoke("check-microphone-permission");
+    if (version !== microphoneRefreshVersion) return permissionState.microphone;
     const status = result.status;
     let ok = false;
 
-    if (status === "granted") {
+    if (currentSettings?.os === "windows") {
+      const value = ["granted", "denied", "unavailable", "error"].includes(status) ? status : "unknown";
+      ok = value === "granted";
+      statusElement.textContent = translate(`microphoneAccess.${value}`);
+      statusElement.className = `permission-status ${ok ? "granted" : value === "unknown" ? "unknown" : "denied"}`;
+      if (micButton) {
+        micButton.textContent = translate(microphoneProbeBusy ? "microphoneAccess.checking" : "microphoneAccess.check");
+        micButton.disabled = microphoneProbeBusy;
+      }
+      const settingsButton = document.getElementById("openWindowsMicrophoneSettings");
+      if (settingsButton) settingsButton.hidden = value !== "denied";
+    } else if (status === "granted") {
       statusElement.textContent = translate("settings.permission.granted");
       statusElement.className = "permission-status granted";
       ok = true;
@@ -1610,6 +1635,7 @@ async function checkMicrophonePermissionStatus() {
     renderPermissionSummary();
     return ok;
   } catch (error) {
+    if (version !== microphoneRefreshVersion) return permissionState.microphone;
     console.error("Failed to check microphone permission:", error);
     statusElement.textContent = translate("settings.permission.error");
     statusElement.className = "permission-status denied";
@@ -1621,21 +1647,32 @@ async function checkMicrophonePermissionStatus() {
 }
 
 async function requestMicrophonePermission() {
+  if (microphoneProbeBusy) return;
+  microphoneProbeBusy = true;
+  const button = document.getElementById("checkPermission");
+  if (button) button.disabled = true;
   try {
-    const current = await ipc.invoke("check-microphone-permission");
-    if (current?.status === "denied" || current?.status === "restricted") {
-      await ipc.invoke("open-microphone-settings");
-    } else if (
-      current?.status !== "granted" &&
-      navigator.mediaDevices?.getUserMedia
-    ) {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
+    if (currentSettings?.os === "windows") {
+      await window.SayTypeMicrophone.probe(ipc, "windows");
+    } else {
+      const current = await ipc.invoke("check-microphone-permission");
+      if (current?.status === "denied" || current?.status === "restricted") {
+        await ipc.invoke("open-microphone-settings");
+      } else if (
+        current?.status !== "granted" &&
+        navigator.mediaDevices?.getUserMedia
+      ) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+      }
     }
   } catch (error) {
     console.warn("Microphone permission action failed:", error);
+  } finally {
+    microphoneProbeBusy = false;
+    if (button) button.disabled = false;
   }
-  await checkMicrophonePermissionStatus();
+  return await checkMicrophonePermissionStatus();
 }
 
 async function checkAccessibilityStatus() {

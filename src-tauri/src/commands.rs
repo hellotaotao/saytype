@@ -208,7 +208,7 @@ pub struct AccessibilityStatus {
   pub status: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MicrophoneStatus {
   pub status: String,
@@ -1380,8 +1380,19 @@ pub fn show_permission_dialog() -> Result<i32, String> {
 // Onboarding: deep link to the Microphone privacy pane, for when the user
 // denied the system prompt and needs to flip the toggle manually.
 #[tauri::command]
-pub fn open_microphone_settings() -> Result<(), String> {
-  platform::open_microphone_settings();
+pub fn open_microphone_settings(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+  platform::open_microphone_settings().map_err(stringify_error)?;
+  #[cfg(windows)]
+  {
+    let mut microphone = state.microphone.lock().unwrap();
+    if microphone.reset() {
+      let _ = app.emit("microphone-status-changed", MicrophoneStatus {
+        status: microphone.status().into(),
+      });
+    }
+  }
+  #[cfg(not(windows))]
+  let _ = (app, state);
   Ok(())
 }
 
@@ -1432,9 +1443,41 @@ pub fn copy_to_clipboard(text: String, shape: Option<String>) -> Result<bool, St
 }
 
 #[tauri::command]
-pub fn check_microphone_permission() -> MicrophoneStatus {
+pub fn check_microphone_permission(state: State<'_, AppState>) -> MicrophoneStatus {
+  #[cfg(windows)]
+  return MicrophoneStatus {
+    status: state.microphone.lock().unwrap().status().into(),
+  };
+  #[cfg(not(windows))]
+  let _ = state;
+  #[cfg(not(windows))]
   MicrophoneStatus {
     status: platform::microphone_status(),
+  }
+}
+
+#[tauri::command]
+pub fn report_microphone_capture(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  outcome: String,
+) -> Result<MicrophoneStatus, String> {
+  #[cfg(windows)]
+  {
+    let mut microphone = state.microphone.lock().unwrap();
+    let changed = microphone.report(&outcome)?;
+    let status = MicrophoneStatus { status: microphone.status().into() };
+    if changed {
+      let _ = app.emit("microphone-status-changed", status.clone());
+    }
+    Ok(status)
+  }
+  #[cfg(not(windows))]
+  {
+    let _ = app;
+    // Validate the IPC contract without replacing native macOS authorization.
+    crate::microphone::CaptureMicrophoneState::default().report(&outcome)?;
+    Ok(check_microphone_permission(state))
   }
 }
 

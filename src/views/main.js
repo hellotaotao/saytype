@@ -195,6 +195,11 @@ function bindEvents() {
     }
   });
 
+  ipc.on("microphone-status-changed", () => {
+    void refreshReadiness();
+    if (onboardingVisible()) void obRefreshMicState();
+  });
+
   ipc.on("activity-updated", async () => {
     if (onboardingVisible() && obCurrent === "practice") {
       obPracticeActivity = true;
@@ -315,12 +320,17 @@ async function refreshReadiness() {
   });
 }
 
+let homeMicState = "unknown";
+let homeMicRefreshVersion = 0;
 async function checkMicOk() {
+  const version = ++homeMicRefreshVersion;
   try {
     const result = await ipc.invoke("check-microphone-permission");
+    if (version === homeMicRefreshVersion) homeMicState = ["granted", "denied", "unavailable", "error"].includes(result.status) ? result.status : "unknown";
     return result.status === "granted";
   } catch (error) {
     console.error("Failed to check microphone permission:", error);
+    if (version === homeMicRefreshVersion) homeMicState = "error";
     return false;
   }
 }
@@ -561,7 +571,10 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
       onFix: () => openSettings(isLocal ? `local-model:${cachedSettings.model}` : `engine:${cachedSettings?.provider}`),
     })
   );
-  pills.appendChild(buildPill({ label: t("readiness.microphone"), ok: micOk, onFix: openSettings }));
+  pills.appendChild(buildPill({
+    label: cachedSettings?.os === "windows" ? t(`microphoneAccess.${homeMicState}`) : t("readiness.microphone"),
+    ok: micOk, onFix: () => openSettings("app"),
+  }));
   pills.appendChild(
     buildPill({
       label: t("readiness.accessibility"),
@@ -1010,6 +1023,7 @@ function buildAxGuide() {
 let obCurrent = "welcome";
 let obMicState = "unknown";
 let obMicBusy = false;
+let obMicRefreshVersion = 0;
 let obAxGranted = false;
 let obKeyProvider = "openai";
 let obKeyStatus = "idle";
@@ -1610,26 +1624,22 @@ function obActionButton(label, onClick) {
 /* --- page 3: microphone --- */
 
 async function obRefreshMicState() {
+  const version = ++obMicRefreshVersion;
   const previous = obMicState;
   try {
     const result = await ipc.invoke("check-microphone-permission");
-    obMicState =
-      result.status === "granted"
-        ? "granted"
-        : result.status === "not-determined"
-          ? "prompt"
-          : result.status === "unknown"
-            ? "unknown"
-            : "denied";
+    if (version !== obMicRefreshVersion) return;
+    obMicState = result.status === "not-determined" ? "prompt" :
+      ["granted", "unknown", "denied", "unavailable", "error"].includes(result.status) ? result.status : "denied";
   } catch (error) {
+    if (version !== obMicRefreshVersion) return;
     console.error("Failed to check microphone permission:", error);
+    obMicState = "error";
   }
   renderObMic();
   renderObFooter();
   renderObFinal();
-  if (previous !== "granted" && obMicState === "granted") {
-    obScheduleAdvance("microphone");
-  }
+  if (previous !== "granted" && obMicState === "granted") obScheduleAdvance("microphone");
 }
 
 async function obEnableMic() {
@@ -1637,11 +1647,16 @@ async function obEnableMic() {
     return;
   }
   obMicBusy = true;
+  renderObMic();
   try {
-    // A momentary capture purely to trigger the macOS microphone prompt now,
-    // instead of surprising the user mid-first-dictation.
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    stream.getTracks().forEach((track) => track.stop());
+    if (cachedSettings?.os === "windows") {
+      await window.SayTypeMicrophone.probe(ipc, "windows");
+    } else {
+      // A momentary capture purely to trigger the macOS microphone prompt now,
+      // instead of surprising the user mid-first-dictation.
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    }
   } catch (error) {
     console.error("Microphone request was blocked or denied:", error);
   } finally {
@@ -1656,6 +1671,21 @@ function renderObMic() {
     return;
   }
   container.replaceChildren();
+  container.classList.toggle("ob-mic-observation", cachedSettings?.os === "windows");
+  if (cachedSettings?.os === "windows" && obMicState !== "granted") {
+    container.appendChild(obActionHint(t(`microphoneAccess.${obMicBusy ? "checking" : obMicState}`)));
+    if (obMicState === "denied") {
+      container.appendChild(obActionHint(t("microphoneAccess.deniedHint")));
+      container.appendChild(obActionButton(t("onboarding.mic.openSettings"), async () => {
+        try { await ipc.invoke("open-microphone-settings"); await obRefreshMicState(); }
+        catch { showNotification(t("microphoneAccess.settingsFailed"), "error"); }
+      }));
+    }
+    const button = obActionButton(t("microphoneAccess.check"), () => void obEnableMic());
+    button.disabled = obMicBusy;
+    container.appendChild(button);
+    return;
+  }
   if (obMicState === "granted") {
     container.appendChild(obStatusPill(t("onboarding.mic.granted")));
     return;

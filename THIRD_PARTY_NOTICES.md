@@ -12,6 +12,8 @@ below keep their own licenses.
 | [Silero VAD](https://github.com/snakers4/silero-vad) legacy model, as packaged by vad-web | — | MIT | `src/views/vendor/vad/silero_vad_legacy.onnx` |
 | [Material Icons](https://github.com/google/material-design-icons) font | — | Apache-2.0 | `src/views/fonts/MaterialIcons-Regular.woff2` |
 | [sysinfo](https://github.com/GuillaumeGomez/sysinfo) | 0.33.1 | MIT | Native hardware detection; `system` feature only, pinned in `src-tauri/Cargo.lock` |
+| [arboard](https://github.com/1Password/arboard) | 3.6.1 | MIT OR Apache-2.0 | Windows-only, explicit Unicode clipboard copy; default/image features disabled |
+| [clipboard-win](https://github.com/DoumanAsh/clipboard-win) / [error-code](https://github.com/DoumanAsh/error-code) | 5.4.1 / 3.4.0 | BSL-1.0 | Windows clipboard backend and error handling used by arboard |
 
 `src/views/vendor/vad/PROVENANCE.md` records how the VAD files were obtained and how to update them.
 
@@ -20,7 +22,9 @@ are MIT and/or Apache-2.0. As of 1.15.1 the exceptions are the ICU4X crates (`ic
 and related; Unicode-3.0), `rustls-webpki` and `untrusted` (ISC), `subtle`, `alloc-stdlib` and
 `alloc-no-stdlib` (BSD-3-Clause), `zlib-rs` (Zlib), `webpki-roots` (CDLA-Permissive-2.0), and
 `cssparser`, `cssparser-macros`, `selectors`, `dtoa-short` and `option-ext` (MPL-2.0). MPL-2.0
-applies file by file; SayType uses those crates unmodified, and their source is on crates.io. To
+applies file by file; SayType uses those crates unmodified, and their source is on crates.io.
+The Windows clipboard dependencies `clipboard-win` and `error-code` use the Boost Software
+License 1.0 (BSL-1.0). To
 list every crate with its license:
 
 ```bash

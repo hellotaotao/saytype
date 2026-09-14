@@ -21,6 +21,7 @@ for (const [mic, accessibility, expected] of [
     const context = vm.createContext({
       document:{getElementById:id=>id === 'recheckPermissions' ? button : feedback},
       translate:key=>key,
+      currentSettings:{os:"macos"},
       checkMicrophonePermissionStatus:()=>{calls++; return pending.then(()=>mic);},
       checkAccessibilityStatus:()=>pending.then(()=>accessibility),
     });

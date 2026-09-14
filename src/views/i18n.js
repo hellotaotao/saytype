@@ -507,6 +507,17 @@
         hint: "Drag me into the list",
         close: "Close",
       },
+      microphoneAccess: {
+        unknown: "Microphone not yet checked",
+        granted: "Microphone available",
+        denied: "Microphone access blocked",
+        unavailable: "No microphone found",
+        error: "Microphone check failed — try again",
+        check: "Check microphone",
+        checking: "Checking microphone…",
+        deniedHint: "Allow desktop apps to access the microphone in Windows Settings, then return and check again.",
+        settingsFailed: "Could not open Windows microphone settings. Open Privacy & security → Microphone manually.",
+      },
       inputPrompt: {
         title: "Voice Input",
         hint: "Hold {record} to dictate, {translate} for English",
@@ -556,6 +567,7 @@
         insertFailedHint: "Click Copy, then paste it yourself",
         copyButton: "Copy",
         copied: "Copied",
+        copyFailed: "Copy failed. Try again; your text is still in History.",
       },
     },
     zh: {
@@ -1052,6 +1064,17 @@
         hint: "把我拖进列表",
         close: "关闭",
       },
+      microphoneAccess: {
+        unknown: "麦克风尚未检查",
+        granted: "麦克风可用",
+        denied: "无法访问麦克风",
+        unavailable: "未找到麦克风",
+        error: "麦克风检查失败，请重试",
+        check: "检查麦克风",
+        checking: "正在检查麦克风…",
+        deniedHint: "请在 Windows 设置中允许桌面应用访问麦克风，然后返回重新检查。",
+        settingsFailed: "无法打开 Windows 麦克风设置，请手动前往“隐私和安全性 → 麦克风”。",
+      },
       inputPrompt: {
         title: "语音输入",
         hint: "按住 {record} 进行听写，{translate} 翻译成英文",
@@ -1100,6 +1123,7 @@
         insertFailedHint: "点「复制」，自己粘贴一下",
         copyButton: "复制",
         copied: "已复制",
+        copyFailed: "复制失败，请重试；文字仍保存在历史记录中。",
       },
     },
   };

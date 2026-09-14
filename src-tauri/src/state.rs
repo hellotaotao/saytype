@@ -20,6 +20,9 @@ pub struct AppState {
   pub active_transcriptions: Mutex<HashMap<u64, ActiveTranscription>>,
   pub next_transcription_id: AtomicU64,
   pub accessibility: Mutex<Option<bool>>,
+  /// Last capture observation for this process only; never an OS permission grant.
+  #[cfg(windows)]
+  pub microphone: Mutex<crate::microphone::CaptureMicrophoneState>,
   /// Shared HTTP client for transcription requests. Reused across calls so we
   /// keep connection/TLS pooling instead of re-handshaking on every utterance,
   /// and carries the request timeouts so a hung network can't wedge the UI.
@@ -43,6 +46,8 @@ impl Default for AppState {
       active_transcriptions: Mutex::new(HashMap::new()),
       next_transcription_id: AtomicU64::new(0),
       accessibility: Mutex::new(None),
+      #[cfg(windows)]
+      microphone: Mutex::new(crate::microphone::CaptureMicrophoneState::default()),
       http_client: reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(15))

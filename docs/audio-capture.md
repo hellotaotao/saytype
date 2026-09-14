@@ -19,8 +19,17 @@ indicator doesn't stay lit between dictations and Bluetooth headsets aren't held
 
 **Windows and Linux: webview `getUserMedia`, one stream per dictation**, opened when the hotkey is
 pressed and stopped on release, with every processing constraint in `AUDIO_CONSTRAINTS` pinned to
-`false`. Nothing opens the microphone before the first dictation. Windows runs WebView2 (Chromium).
+`false`. No background stream is opened before the first dictation. A user-triggered microphone
+check in onboarding or Settings briefly opens a stream and stops every track before reporting the
+result; it does not encode or transcribe audio. Windows runs WebView2 (Chromium).
 Linux runs WebKitGTK, whose `getUserMedia` support currently blocks recording there.
+
+Windows microphone readiness is the last capture observation in this process, not a permanent OS
+grant. It starts `unknown`; capture/check success reports `granted`, permission rejection reports
+`denied`, missing devices report `unavailable`, and other capture failures report `error`. Normal
+recording reports asynchronously so IPC cannot delay capture startup. The shared status event
+refreshes Home, onboarding and Settings. Opening Windows microphone privacy Settings invalidates
+the observation to `unknown`; the user can then check again. No readiness check keeps a stream alive.
 
 Until 2026-09-14 these platforms kept one stream open for the whole process: the WKWebView workaround
 described below, left in place after macOS moved to native capture. The 3.0 s attenuation it guarded

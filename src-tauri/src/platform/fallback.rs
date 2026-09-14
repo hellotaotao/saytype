@@ -3,15 +3,18 @@
 //! * text insertion: synthetic Unicode typing via `enigo` (SendInput on Windows,
 //!   XTEST/libxdo on Linux/X11) — layout-independent, no special permission,
 //!   works with CJK/emoji.
-//! * permissions: report "not required" / "granted" (Windows/X11 have no gate;
-//!   the mic prompt is handled by the webview at capture time).
-//! * clipboard write and autostart are not wired up yet.
+//! * Accessibility requires no separate grant. Windows microphone observations
+//!   are tracked by the command layer; Linux keeps its existing permission stub.
+//! * Windows clipboard and microphone Settings use native APIs; Linux clipboard
+//!   and autostart remain unwired.
 //!
 //! Shared by Windows and Linux while their behavior is identical; splits into
 //! `windows` / `linux` when Linux needs Wayland-specific handling.
 
 use super::InsertResult;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+#[cfg(not(windows))]
+use anyhow::anyhow;
 use enigo::{Enigo, Keyboard, Settings};
 
 pub fn accessibility_required() -> bool {
@@ -23,12 +26,17 @@ pub fn accessibility_granted(_prompt: bool) -> bool {
 }
 
 pub fn microphone_status() -> String {
-  "granted".into()
+  if cfg!(windows) { "unknown".into() } else { "granted".into() }
 }
 
 pub fn open_accessibility_settings() {}
 
-pub fn open_microphone_settings() {}
+pub fn open_microphone_settings() -> Result<()> {
+  #[cfg(windows)]
+  return super::windows::open_microphone_settings();
+  #[cfg(not(windows))]
+  Ok(())
+}
 
 pub fn reveal_app_in_finder() {}
 
@@ -42,8 +50,14 @@ pub fn attach_app_drag_source(_ns_view: *mut std::ffi::c_void) -> bool {
   false
 }
 
-pub fn copy_to_clipboard(_text: &str) -> Result<()> {
-  Err(anyhow!("Clipboard write is not supported on this platform"))
+pub fn copy_to_clipboard(text: &str) -> Result<()> {
+  #[cfg(windows)]
+  return super::windows::copy_to_clipboard(text);
+  #[cfg(not(windows))]
+  {
+    let _ = text;
+    Err(anyhow!("Clipboard write is not supported on this platform"))
+  }
 }
 
 pub fn insert_text(text: &str) -> InsertResult {

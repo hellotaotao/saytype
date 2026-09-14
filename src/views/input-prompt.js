@@ -778,7 +778,10 @@ class VoiceInputPrompt {
     const recoveryId = this.recoveryShownId;
     const recordingId = this.recordingSessionId;
     try {
-      await ipc.invoke("copy-to-clipboard", text, textShape(text));
+      const copied = await ipc.invoke("copy-to-clipboard", text, textShape(text));
+      if (copied === false) throw new Error("Clipboard write was rejected");
+      if (recordingId !== this.recordingSessionId || this.isRecording || this.starting ||
+          recoveryId !== this.recoveryShownId || text !== this._failedText) return;
       if (recoveryId != null) {
         if (this.recoveryShownId === recoveryId) this.recoveryShownId = null;
       }
@@ -790,7 +793,12 @@ class VoiceInputPrompt {
       this.scheduleHidePrompt(1200);
     } catch (error) {
       console.error("Clipboard copy failed:", error);
-      // Keep the window + failure UI up so the user can retry.
+      if (recordingId !== this.recordingSessionId || this.isRecording || this.starting ||
+          recoveryId !== this.recoveryShownId || text !== this._failedText) return;
+      this.statusText.textContent = t("inputPrompt.copyFailed");
+      this.statusText.style.color = "var(--status-warning-strong)";
+      if (this.copyBtn) this.copyBtn.hidden = false;
+      this.scheduleHidePrompt(15000);
     }
   }
 
@@ -2598,7 +2606,9 @@ class VoiceInputPrompt {
       // so the OS microphone indicator and Bluetooth call mode last only while
       // the hotkey is held. macOS normally records natively (above) and reaches
       // this path only when native capture could not start.
-      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      const stream = this.osName === "windows"
+        ? await window.SayTypeMicrophone.open(ipc, this.osName, AUDIO_CONSTRAINTS)
+        : await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       const microphoneReadyAt = performance.now();
 
       if (this.stopRequested) {

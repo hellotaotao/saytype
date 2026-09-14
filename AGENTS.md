@@ -164,7 +164,10 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
 - `platform/` — the platform abstraction (`mod.rs` contract + `macos.rs` / `fallback.rs`, plus the
   macOS-only `activation.rs` and `drag_cloud.rs`). It owns text insertion, permission checks,
   clipboard write and autostart. Non-macOS (`fallback.rs`, shared by Windows/Linux): insertion via
-  `enigo`, permission checks report "not required", clipboard write and autostart are stubs. Other
+  `enigo`, Accessibility requires no separate grant, and autostart is a stub. Windows delegates
+  explicit clipboard copy and microphone Settings to `windows.rs`; microphone status is a
+  process-local capture observation (`microphone.rs`), initially unknown. Linux microphone status
+  and clipboard remain stubs. Other
   platform-specific code keeps its own `#[cfg]` gates beside the feature: the hotkey event sources
   (`hotkey.rs`), native capture (`native_capture.rs`), runtime archives and GPU (`local_asr.rs`),
   Nemotron runtimes (`nemotron_asr.rs`) and the drag-cloud window (`ax_cloud.rs`). See

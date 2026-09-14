@@ -48,6 +48,7 @@
     "dismiss-ax-cloud": "dismiss_ax_cloud",
     "copy-to-clipboard": "copy_to_clipboard",
     "check-microphone-permission": "check_microphone_permission",
+    "report-microphone-capture": "report_microphone_capture",
     "check-accessibility-permission": "check_accessibility_permission",
     "request-accessibility-permission": "request_accessibility_permission",
     "recheck-accessibility-permission": "recheck_accessibility_permission",
@@ -77,6 +78,7 @@
   };
 
   const tauriArgs = {
+    "report-microphone-capture": [["outcome"]],
     "report-recording-startup": [["timing"]],
     "report-transcription-lifecycle": [["report"]],
     "report-audio-probe": [["report"]],

@@ -67,10 +67,11 @@ pub fn open_accessibility_settings() {
     .status();
 }
 
-pub fn open_microphone_settings() {
+pub fn open_microphone_settings() -> Result<()> {
   let _ = Command::new("open")
     .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
     .status();
+  Ok(())
 }
 
 /// The `.app` bundle three levels above the executable (exe = SayType.app/Contents/MacOS/x).

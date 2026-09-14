@@ -935,6 +935,10 @@ body {
   flex: none;
 }
 
+.ob-mic-observation .ob-action-hint {
+  flex: 0 0 100%;
+}
+
 /* Keep the permission action visible while its explanation can scroll. */
 .ob-permission-page {
   overflow: hidden;
