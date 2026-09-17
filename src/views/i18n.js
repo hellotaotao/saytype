@@ -325,7 +325,7 @@
         startMinimized: {
           title: "Start minimized",
           description:
-            "When starting with system, hide the main window and run in the background.",
+            "Every launch keeps the main window hidden and runs SayType in the background; the shortcut still works.",
           aria: "Start minimized",
         },
         updates: {
@@ -885,7 +885,7 @@
         },
         startMinimized: {
           title: "启动时最小化",
-          description: "开机自启时隐藏主窗口并在后台运行。",
+          description: "每次启动都不显示主窗口，只在后台运行，快捷键照常可用。",
           aria: "启动时最小化",
         },
         updates: {
