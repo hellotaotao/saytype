@@ -370,3 +370,14 @@ test("cloud models explain cost and tradeoffs without a single-choice button", (
   assert.match(i18nJs, /modelTurboDetail/);
   assert.match(settingsCss, /#engineAdvanced\s*\{[^}]*background:\s*transparent/);
 });
+
+test("the Settings accessibility row offers the Finder route while the grant is missing", () => {
+  // A SayType row that never appears in the Accessibility list can only be fixed
+  // by dragging the app in. Home already offered the Finder reveal and the drag
+  // cloud; the Settings route to the same pane now offers both too.
+  assert.match(mainHtml, /id="accessibilityRevealRow"/);
+  assert.match(mainHtml, /id="revealAppForAccessibility"[^>]*data-i18n="readiness\.axGuide\.revealApp"/);
+  assert.match(settingsJs, /getElementById\("accessibilityRevealRow"\)\?\.classList\.toggle\("hidden", ok\)/);
+  assert.match(settingsJs, /getElementById\("revealAppForAccessibility"\)/);
+  assert.match(settingsJs, /async function handleAccessibilityPermission[\s\S]*?invoke\("show-ax-cloud"\)/);
+});

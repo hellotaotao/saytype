@@ -1327,6 +1327,11 @@ function bindEventHandlers() {
     // that, even though its editor is its own page.
     window.showPage?.("dictionary");
   });
+  document.getElementById("revealAppForAccessibility")?.addEventListener("click", () => {
+    void ipc.invoke("reveal-app-in-finder").catch((error) => {
+      console.error("Failed to reveal the app:", error);
+    });
+  });
   document.getElementById("revealAppBtn")?.addEventListener("click", () => {
     void ipc.invoke("reveal-app-in-finder").catch((error) => {
       console.error("Failed to reveal the app:", error);
@@ -1467,6 +1472,9 @@ function renderAccessibilityStatus(result) {
 
   // Once granted there's nothing to act on, so hide the check button.
   document.getElementById("checkAccessibility")?.classList.toggle("hidden", ok);
+  // The Finder route matters only while the grant is missing: a SayType row
+  // that never appears in the Accessibility list is fixed by dragging the app in.
+  document.getElementById("accessibilityRevealRow")?.classList.toggle("hidden", ok);
   permissionState.accessibility = ok;
   renderPermissionSummary();
 }
@@ -1524,6 +1532,13 @@ async function handleAccessibilityPermission() {
     pendingAccessibilityRecheck = false;
     console.error("Failed to open accessibility settings:", error);
   }
+
+  // Same as the Home guide: the drag cloud appears with the deep-link, not
+  // later, because a missing row in the list is exactly when it is needed. A dev
+  // bare binary has no .app bundle, so the backend declines and returns false.
+  ipc.invoke("show-ax-cloud").catch((error) => {
+    console.error("Failed to show the drag cloud:", error);
+  });
 }
 
 function setupShortcutSync() {
