@@ -226,6 +226,7 @@ pub fn run() {
       commands::show_permission_dialog,
       commands::open_microphone_settings,
       commands::reveal_app_in_finder,
+      commands::open_release_page,
       commands::show_ax_cloud,
       commands::hide_ax_cloud,
       commands::dismiss_ax_cloud,

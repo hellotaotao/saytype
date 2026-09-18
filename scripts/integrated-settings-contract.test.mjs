@@ -381,3 +381,16 @@ test("the Settings accessibility row offers the Finder route while the grant is 
   assert.match(settingsJs, /getElementById\("revealAppForAccessibility"\)/);
   assert.match(settingsJs, /async function handleAccessibilityPermission[\s\S]*?invoke\("show-ax-cloud"\)/);
 });
+
+test("the Home update card links to the release notes for the waiting version", () => {
+  // The card only said "downloaded, restart when you like". What changed lives
+  // on the GitHub release page, so the card opens that page for its version.
+  assert.match(mainJs, /t\("update\.whatsNew"\)/);
+  assert.match(mainJs, /card\.replaceChildren\(icon, titles, notes, restart\)/);
+  assert.match(mainJs, /invoke\("open-release-page", updateStatus\.version\)/);
+  // The URL is built and validated in Rust from the version alone.
+  assert.match(commandsRs, /pub fn open_release_page\(version: String\)/);
+  assert.match(commandsRs, /updater::release_page_url\(&version\)/);
+  assert.ok(i18nJs.includes('whatsNew: "看看改了什么"'));
+  assert.ok(i18nJs.includes(`whatsNew: "What's new"`));
+});

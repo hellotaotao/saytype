@@ -1406,6 +1406,17 @@ pub fn reveal_app_in_finder() -> Result<(), String> {
   Ok(())
 }
 
+// Open the GitHub release page for a version the updater reported, so the Home
+// update card can show what changed. The URL is built here from a validated
+// version; the frontend never supplies one.
+#[tauri::command]
+pub fn open_release_page(version: String) -> Result<(), String> {
+  log::info!("command:open_release_page version={version}");
+  let url = crate::updater::release_page_url(&version)
+    .ok_or_else(|| format!("not a release version: {version}"))?;
+  platform::open_url(&url).map_err(stringify_error)
+}
+
 // Show the Accessibility drag cloud. Returns whether it was actually shown —
 // false on a dev bare binary (no .app bundle), which the frontend uses to
 // decide whether it needs to hide it later.

@@ -183,6 +183,7 @@
         readyTitle: "{version} is downloaded — restart to use it",
         cardTitle: "{version} is ready",
         cardHint: "Restart whenever suits you — it won't do it on its own.",
+        whatsNew: "What's new",
         restart: "Restart to update",
       },
       history: {
@@ -745,6 +746,7 @@
         readyTitle: "{version} 已下好，重启即可用上",
         cardTitle: "{version} 已经下好了",
         cardHint: "什么时候重启由你决定，它不会自己跳。",
+        whatsNew: "看看改了什么",
         restart: "重启更新",
       },
       history: {

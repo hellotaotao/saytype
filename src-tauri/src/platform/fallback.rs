@@ -104,3 +104,15 @@ pub fn supports_local_first() -> bool {
   // Engine-specific availability remains gated separately by each backend.
   true
 }
+
+/// Open an http(s) URL in the default browser. The exit status is ignored on
+/// purpose: `explorer` reports 1 even when it succeeds, so only a failure to
+/// launch at all is an error.
+pub fn open_url(url: &str) -> Result<()> {
+  #[cfg(windows)]
+  let program = "explorer";
+  #[cfg(not(windows))]
+  let program = "xdg-open";
+  std::process::Command::new(program).arg(url).status()?;
+  Ok(())
+}

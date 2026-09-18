@@ -640,3 +640,11 @@ mod tests {
     );
   }
 }
+
+/// Open an http(s) URL in the default browser. Callers build the URL
+/// themselves (never from user input), and `open` takes it as a single argv
+/// entry, so no shell quoting is involved.
+pub fn open_url(url: &str) -> Result<()> {
+  Command::new("open").arg(url).status().context("failed to launch open")?;
+  Ok(())
+}

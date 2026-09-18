@@ -75,6 +75,7 @@
     "check-for-updates": "check_for_updates",
     "get-update-status": "get_update_status",
     "install-update-and-restart": "install_update_and_restart",
+    "open-release-page": "open_release_page",
   };
 
   const tauriArgs = {
@@ -112,6 +113,7 @@
     "copy-to-clipboard": [["text"], ["shape"]],
     "save-onboarding-api-key": [["provider"], ["apiKey", "api_key"]],
     "set-provider": [["provider"]],
+    "open-release-page": [["version"]],
     "set-translate-consent": [["consented"]],
     "set-local-model": [["model"]],
     "open-local-model-panel": [["model"]],

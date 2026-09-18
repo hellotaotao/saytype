@@ -725,7 +725,24 @@ function renderUpdateCard() {
   restart.textContent = t("update.restart");
   restart.addEventListener("click", () => void installUpdate());
 
-  card.replaceChildren(icon, titles, restart);
+  const notes = document.createElement("button");
+  notes.type = "button";
+  notes.className = "link-btn update-card-notes";
+  notes.textContent = t("update.whatsNew");
+  notes.addEventListener("click", () => void openReleasePage());
+
+  card.replaceChildren(icon, titles, notes, restart);
+}
+
+// The release page is where the notes live (the release workflow writes them
+// there after the build), so link to it rather than render a copy in the app.
+async function openReleasePage() {
+  try {
+    await ipc.invoke("open-release-page", updateStatus.version);
+  } catch (error) {
+    console.error("Failed to open the release page:", error);
+    showNotification(String(error?.message || error), "warning");
+  }
 }
 
 async function installUpdate() {

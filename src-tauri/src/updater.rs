@@ -186,3 +186,41 @@ mod tests {
     assert!(status.version.is_none());
   }
 }
+
+/// The GitHub release page for `version`, or `None` when the string is not a
+/// plain release version. The repository comes from Cargo.toml's `repository`
+/// field, and the version is checked character by character, so the page the
+/// Home update card opens can never be steered to another URL.
+pub fn release_page_url(version: &str) -> Option<String> {
+  let version = version.trim().trim_start_matches('v');
+  let valid = !version.is_empty()
+    && version.len() <= 64
+    && version.starts_with(|c: char| c.is_ascii_digit())
+    && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+  if !valid {
+    return None;
+  }
+  let repository = env!("CARGO_PKG_REPOSITORY").trim_end_matches('/');
+  Some(format!("{repository}/releases/tag/v{version}"))
+}
+
+#[cfg(test)]
+mod release_page_tests {
+  use super::release_page_url;
+
+  #[test]
+  fn builds_the_tag_page_for_a_release_version() {
+    let url = release_page_url("1.15.6").unwrap();
+    assert!(url.starts_with("https://github.com/"), "{url}");
+    assert!(url.ends_with("/releases/tag/v1.15.6"), "{url}");
+    assert_eq!(release_page_url("v1.15.6"), Some(url));
+    assert!(release_page_url("1.16.0-beta.1").unwrap().ends_with("/tag/v1.16.0-beta.1"));
+  }
+
+  #[test]
+  fn refuses_anything_that_could_change_the_url() {
+    for bad in ["", "v", "latest", "../evil", "1.2.3/../../x", "1.2.3 && open x", "1.2.3?x=1", "1.2.3#x"] {
+      assert_eq!(release_page_url(bad), None, "{bad:?}");
+    }
+  }
+}
