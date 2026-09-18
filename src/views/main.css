@@ -2,52 +2,67 @@
 
 [hidden] { display: none !important; }
 
+/* Dark theme ("midnight"). Not a separate look — the night side of the light
+   theme: same warm-neutral ink, same eucalyptus accent raised until it reads on
+   a dark surface. Surfaces are near-black with a green-grey cast, and depth is
+   carried by lightness (white overlays stack up as things rise), because drop
+   shadows are invisible down here. Text is paper-warm off-white rather than
+   #fff, which halos against near-black. */
 :root {
-  --app-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  --app-text: #ffffff;
-  --text-muted: rgba(255, 255, 255, 0.85);
-  --text-soft: rgba(255, 255, 255, 0.7);
-  --time-color: rgba(255, 255, 255, 0.7);
-  --sidebar-bg: rgba(0, 0, 0, 0.2);
-  --sidebar-border: rgba(255, 255, 255, 0.1);
-  --panel-bg: rgba(255, 255, 255, 0.1);
-  --panel-bg-subtle: rgba(255, 255, 255, 0.05);
-  --panel-bg-strong: rgba(255, 255, 255, 0.12);
-  --panel-border: rgba(255, 255, 255, 0.12);
-  --panel-border-strong: rgba(255, 255, 255, 0.2);
-  --nav-item-color: rgba(255, 255, 255, 0.8);
-  --nav-item-hover-bg: rgba(255, 255, 255, 0.1);
-  --nav-item-active-bg: rgba(255, 255, 255, 0.16);
-  --button-bg: rgba(255, 255, 255, 0.2);
-  --button-hover-bg: rgba(255, 255, 255, 0.3);
-  --button-secondary-bg: rgba(255, 255, 255, 0.1);
-  --button-secondary-border: rgba(255, 255, 255, 0.2);
-  --button-secondary-hover: rgba(255, 255, 255, 0.2);
-  --input-bg: rgba(255, 255, 255, 0.08);
-  --input-border: rgba(255, 255, 255, 0.15);
-  --input-border-focus: rgba(255, 255, 255, 0.4);
-  --input-placeholder: rgba(255, 255, 255, 0.5);
-  --item-hover-bg: rgba(255, 255, 255, 0.06);
-  --icon-btn-color: rgba(255, 255, 255, 0.75);
-  --icon-btn-hover-bg: rgba(255, 255, 255, 0.18);
-  --accent: #c3c4ff;
-  --accent-soft-bg: rgba(150, 152, 246, 0.22);
-  --accent-text: #e7e7ff;
-  --keycap-bg: rgba(255, 255, 255, 0.14);
-  --keycap-border: rgba(255, 255, 255, 0.28);
-  --keycap-text: #ffffff;
-  --pill-ok-bg: rgba(40, 92, 56, 0.92);
-  --pill-ok-text: #bdf0c8;
-  --pill-warn-bg: rgba(122, 84, 28, 0.92);
-  --pill-warn-text: #ffdca6;
-  --danger-text: #ffb1a8;
-  --status-success: #6fcf80;
-  --status-warning: #ffb74d;
-  --status-info: #64b5f6;
-  --status-danger: #ef6b5e;
+  color-scheme: dark;
+  --app-bg: linear-gradient(135deg, #171d1c 0%, #0f1413 100%);
+  --app-text: #e9e6df;
+  --text-muted: rgba(233, 230, 223, 0.72);
+  --text-soft: rgba(233, 230, 223, 0.55);
+  --time-color: rgba(233, 230, 223, 0.45);
+  --sidebar-bg: rgba(0, 0, 0, 0.32);
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --panel-bg: rgba(255, 255, 255, 0.07);
+  --panel-bg-subtle: rgba(255, 255, 255, 0.035);
+  --panel-bg-strong: rgba(255, 255, 255, 0.11);
+  --panel-border: rgba(255, 255, 255, 0.1);
+  --panel-border-strong: rgba(255, 255, 255, 0.17);
+  --nav-item-color: rgba(233, 230, 223, 0.72);
+  --nav-item-hover-bg: rgba(255, 255, 255, 0.06);
+  --nav-item-active-bg: rgba(123, 193, 175, 0.15);
+  --button-bg: rgba(123, 193, 175, 0.2);
+  --button-hover-bg: rgba(123, 193, 175, 0.3);
+  --button-secondary-bg: rgba(255, 255, 255, 0.06);
+  --button-secondary-border: rgba(255, 255, 255, 0.16);
+  --button-secondary-hover: rgba(255, 255, 255, 0.12);
+  --input-bg: rgba(0, 0, 0, 0.24);
+  --input-border: rgba(255, 255, 255, 0.12);
+  --input-border-focus: rgba(123, 193, 175, 0.55);
+  --input-placeholder: rgba(233, 230, 223, 0.38);
+  --item-hover-bg: rgba(255, 255, 255, 0.045);
+  --icon-btn-color: rgba(233, 230, 223, 0.62);
+  --icon-btn-hover-bg: rgba(255, 255, 255, 0.1);
+  --accent: #7bc1af;
+  --accent-soft-bg: rgba(123, 193, 175, 0.16);
+  --accent-text: #a8dccd;
+  --keycap-bg: rgba(255, 255, 255, 0.1);
+  --keycap-border: rgba(255, 255, 255, 0.22);
+  --keycap-text: #f2efe8;
+  --pill-ok-bg: rgba(86, 150, 112, 0.2);
+  --pill-ok-text: #9ed9b4;
+  --pill-warn-bg: rgba(196, 148, 78, 0.2);
+  --pill-warn-text: #f0cb95;
+  --danger-text: #f0a99d;
+  --status-success: #6ec18e;
+  --status-warning: #e3b06b;
+  --status-info: #7fb2d9;
+  --status-danger: #e8897c;
+  /* Notifications are a filled surface, so their label tracks the fill, not the
+     page: dark ink on these lifted status colours, white on the light theme's
+     deeper ones. */
+  --notification-text: #101514;
+  /* Deep enough to separate the onboarding card from a near-black canvas;
+     the light theme's soft drop shadow would simply vanish here. */
+  --card-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
 
 :root[data-theme="elegant"] {
+  color-scheme: light;
   --app-bg: linear-gradient(135deg, #f6f1ea 0%, #e4ece7 100%);
   --app-text: #1f2626;
   --text-muted: rgba(31, 38, 38, 0.78);
@@ -90,6 +105,8 @@
   --status-warning: #c28a4a;
   --status-info: #4c7aa1;
   --status-danger: #b65a4a;
+  --notification-text: #ffffff;
+  --card-shadow: 0 18px 50px rgba(31, 38, 38, 0.1);
 }
 
 body {
@@ -748,7 +765,7 @@ body {
   border: 1px solid var(--panel-border);
   border-radius: 20px;
   padding: 40px 52px 30px;
-  box-shadow: 0 18px 50px rgba(31, 38, 38, 0.10);
+  box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
 }
@@ -1580,7 +1597,7 @@ body {
   padding: 14px 18px;
   border-radius: 10px;
   background: var(--status-info);
-  color: #ffffff;
+  color: var(--notification-text);
   font-size: 14px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   opacity: 0;

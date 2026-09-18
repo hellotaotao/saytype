@@ -773,8 +773,8 @@
   margin-bottom: 8px;
 }
 .theme-swatch-elegant { background: linear-gradient(135deg,#f4f0e9,#e5ece7); }
-.theme-swatch-midnight { background: linear-gradient(135deg,#7274db,#704aa5); }
-.theme-swatch-auto { background: linear-gradient(90deg,#eeeee7 50%,#7863bf 50%); }
+.theme-swatch-midnight { background: linear-gradient(135deg,#243330,#101514); }
+.theme-swatch-auto { background: linear-gradient(90deg,#f0ece5 50%,#1a2220 50%); }
 .theme-choices .setting-choice[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
 .theme-choices .setting-choice[aria-pressed="true"] .theme-swatch { outline: 2px solid var(--accent); outline-offset: -2px; }
 .engine-drawer { padding: 4px 16px 16px 36px; background: var(--panel-bg); }

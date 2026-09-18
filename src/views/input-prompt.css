@@ -1,64 +1,72 @@
+/* Dark theme ("midnight") — the same near-black warm-neutral surface the main
+   window uses, so the floating prompt reads as part of the app rather than a
+   separate widget. The accent is the eucalyptus green raised for a dark
+   surface; it is what actually glows here, since on near-black a coloured rim
+   carries the recording state better than any drop shadow can. The dot stays
+   amber: it is the on-air lamp, and it should be the one warm thing on screen. */
 :root {
-  --prompt-bg: linear-gradient(135deg, rgba(30, 35, 50, 0.95), rgba(45, 50, 70, 0.95));
-  --prompt-bg-recording: linear-gradient(135deg, rgba(35, 40, 80, 0.95), rgba(50, 55, 100, 0.95));
+  color-scheme: dark;
+  --prompt-bg: linear-gradient(135deg, rgba(28, 35, 34, 0.96), rgba(17, 22, 21, 0.96));
+  --prompt-bg-recording: linear-gradient(135deg, rgba(33, 46, 43, 0.97), rgba(20, 28, 27, 0.97));
   --prompt-border: none;
-  --prompt-shadow: 0 6px 16px rgba(0, 0, 0, 0.28),
-    0 0 0 1px rgba(255, 255, 255, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  --prompt-shadow-recording: 0 0 30px rgba(99, 102, 241, 0.3),
-    0 8px 20px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(99, 102, 241, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  --prompt-shadow: 0 6px 16px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --prompt-shadow-recording: 0 0 30px rgba(123, 193, 175, 0.3),
+    0 8px 20px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(123, 193, 175, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
   /* Recording box stepped back while the transcription bubble is up: no glow,
      no downward drop — so the bubble (which keeps its own strong shadow) reads
      as the front-most layer. Applied via body.has-transcription. */
-  --prompt-shadow-recording-dimmed: 0 1px 8px rgba(0, 0, 0, 0.16),
-    0 0 0 1px rgba(99, 102, 241, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  --prompt-shadow-hover: 0 12px 30px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(255, 255, 255, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  --prompt-shadow-recording-hover: 0 0 40px rgba(99, 102, 241, 0.4),
-    0 12px 30px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(99, 102, 241, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-  --prompt-breathe-shadow-start: 0 8px 20px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(255, 255, 255, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  --prompt-breathe-shadow-end: 0 12px 30px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(255, 255, 255, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  --prompt-text: #ffffff;
-  --prompt-text-muted: rgba(255, 255, 255, 0.9);
-  --prompt-text-secondary: rgba(255, 255, 255, 0.7);
+  --prompt-shadow-recording-dimmed: 0 1px 8px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(123, 193, 175, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --prompt-shadow-hover: 0 12px 30px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --prompt-shadow-recording-hover: 0 0 40px rgba(123, 193, 175, 0.34),
+    0 12px 30px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(123, 193, 175, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --prompt-breathe-shadow-start: 0 8px 20px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --prompt-breathe-shadow-end: 0 12px 30px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --prompt-text: #f1eee7;
+  --prompt-text-muted: rgba(241, 238, 231, 0.88);
+  --prompt-text-secondary: rgba(241, 238, 231, 0.66);
   --prompt-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-  --prompt-accent: #6366f1;
-  --prompt-accent-deep: #4f46e5;
-  --prompt-accent-bright: #8b5cf6;
-  --prompt-accent-shadow: rgba(99, 102, 241, 0.4);
-  --wave-bar-shadow: 0 0 6px rgba(99, 102, 241, 0.2);
-  --wave-bar-shadow-active: 0 0 8px rgba(99, 102, 241, 0.4);
-  --mic-glow-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
-  --mic-glow-shadow-strong: 0 0 20px rgba(99, 102, 241, 0.8);
-  --prompt-transcription-bg: linear-gradient(135deg, rgba(24, 30, 48, 0.98), rgba(40, 50, 74, 0.98));
-  --prompt-transcription-border: rgba(255, 255, 255, 0.16);
+  --prompt-accent: #7bc1af;
+  --prompt-accent-deep: #4e8e7f;
+  --prompt-accent-bright: #a9e2d1;
+  --prompt-accent-shadow: rgba(123, 193, 175, 0.45);
+  --wave-bar-shadow: 0 0 6px rgba(123, 193, 175, 0.22);
+  --wave-bar-shadow-active: 0 0 8px rgba(123, 193, 175, 0.45);
+  --mic-glow-shadow: 0 0 10px rgba(123, 193, 175, 0.5);
+  --mic-glow-shadow-strong: 0 0 20px rgba(123, 193, 175, 0.8);
+  --prompt-transcription-bg: linear-gradient(135deg, rgba(26, 33, 32, 0.98), rgba(15, 20, 19, 0.98));
+  --prompt-transcription-border: rgba(255, 255, 255, 0.14);
   /* Lifts the streamed-text bubble to the visual front: an upward-casting
      shadow that falls over the dimmed prompt box above it, plus a deeper drop
      shadow beneath. Pairs with --prompt-shadow-recording-dimmed. */
-  --prompt-transcription-shadow: 0 -4px 16px rgba(0, 0, 0, 0.26),
-    0 12px 26px rgba(0, 0, 0, 0.34);
-  --recording-dot-start: #f59e0b;
-  --recording-dot-end: #d97706;
-  --recording-dot-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
-  --recording-dot-shadow-strong: 0 0 16px rgba(245, 158, 11, 0.8);
-  --status-success: #00ff00;
-  --status-warning: #ffaa00;
-  --status-warning-strong: #ff6600;
-  --status-danger: #ff0000;
-  --insert-failed-glow: rgba(255, 170, 0, 0.30);
+  --prompt-transcription-shadow: 0 -4px 16px rgba(0, 0, 0, 0.34),
+    0 12px 26px rgba(0, 0, 0, 0.44);
+  --recording-dot-start: #f0a93a;
+  --recording-dot-end: #d98a1f;
+  --recording-dot-shadow: 0 0 8px rgba(240, 169, 58, 0.5);
+  --recording-dot-shadow-strong: 0 0 16px rgba(240, 169, 58, 0.85);
+  --status-success: #6ec18e;
+  --status-warning: #e3b06b;
+  --status-warning-strong: #ef9a4e;
+  --status-danger: #e8897c;
+  --insert-failed-glow: rgba(227, 176, 107, 0.3);
 }
 
 :root[data-theme="elegant"] {
+  color-scheme: light;
   --prompt-bg: linear-gradient(135deg, rgba(248, 245, 240, 0.96), rgba(233, 241, 236, 0.96));
   --prompt-bg-recording: linear-gradient(135deg, rgba(240, 236, 228, 0.98), rgba(224, 236, 231, 0.98));
   --prompt-border: 1px solid rgba(32, 40, 36, 0.12);
