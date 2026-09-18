@@ -59,6 +59,12 @@
   /* Deep enough to separate the onboarding card from a near-black canvas;
      the light theme's soft drop shadow would simply vanish here. */
   --card-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  /* Lists nested in a card (the engine picker) sit one layer deep, a little
+     below the card like the inputs. Stacking another translucent white on the
+     card turns grey and milky here. */
+  --list-edge: rgba(255, 255, 255, 0.09);
+  --list-row-bg: rgba(0, 0, 0, 0.14);
+  --list-drawer-bg: rgba(0, 0, 0, 0.24);
 }
 
 :root[data-theme="elegant"] {
@@ -107,6 +113,9 @@
   --status-danger: #b65a4a;
   --notification-text: #ffffff;
   --card-shadow: 0 18px 50px rgba(31, 38, 38, 0.1);
+  --list-edge: transparent;
+  --list-row-bg: var(--panel-bg-strong);
+  --list-drawer-bg: var(--panel-bg);
 }
 
 body {

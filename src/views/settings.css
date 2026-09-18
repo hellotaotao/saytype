@@ -515,10 +515,16 @@
 .engine-cards {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  border: 1px solid var(--list-edge);
   border-radius: 10px;
   overflow: hidden;
-  background: var(--panel-border);
+}
+
+/* Hairlines between rows are drawn on the rows, not by letting the list's
+   background show through a gap: rows are translucent on the dark theme, so
+   that background tinted every row and stacked into a grey fog. */
+.engine-cards > * + * {
+  border-top: 1px solid var(--panel-border);
 }
 
 .engine-card-row {
@@ -528,7 +534,7 @@
   width: 100%;
   padding: 13px 15px;
   border: none;
-  background: var(--panel-bg-strong);
+  background: var(--list-row-bg);
   color: var(--app-text);
   font: inherit;
   text-align: left;
@@ -708,10 +714,12 @@
 }
 
 .engine-drawer {
-  background: var(--panel-bg);
+  background: var(--list-drawer-bg);
   border-left: 3px solid var(--panel-border);
   border-bottom: 1px solid var(--panel-border);
 }
+
+.engine-drawer:last-child { border-bottom: none; }
 
 .engine-drawer[hidden] { display: none; }
 
@@ -719,6 +727,7 @@
   margin: 0;
   border: none;
   border-radius: 0;
+  background: none;
   box-shadow: none;
 }
 
@@ -777,7 +786,7 @@
 .theme-swatch-auto { background: linear-gradient(90deg,#f0ece5 50%,#1a2220 50%); }
 .theme-choices .setting-choice[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
 .theme-choices .setting-choice[aria-pressed="true"] .theme-swatch { outline: 2px solid var(--accent); outline-offset: -2px; }
-.engine-drawer { padding: 4px 16px 16px 36px; background: var(--panel-bg); }
+.engine-drawer { padding: 4px 16px 16px 36px; }
 #settings-page .engine-drawer .setting-item {
   margin-top: 10px;
   background: var(--panel-bg);
