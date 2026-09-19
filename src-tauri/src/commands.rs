@@ -940,7 +940,7 @@ fn record_successful_transcription(
   }
   // Resolve a prior failure or append the success in one locked History write.
   let mut debug_entry_id = None;
-  let saved = history::record_transcription(&text, failure_id, 100, || {
+  let saved = history::record_transcription(&text, failure_id, || {
     let entry = activity_entry(&text, true, None);
     debug_entry_id = entry["id"].as_str().map(str::to_owned);
     entry
@@ -980,7 +980,7 @@ pub fn save_recovered_transcription(
   recovery: RecoveredTranscription,
 ) -> Result<String, String> {
   validate_recovered_transcription(window.label(), &recovery)?;
-  let saved = history::save_recovered_entry(&recovery.id, &recovery.text, recovery.kind, 100)
+  let saved = history::save_recovered_entry(&recovery.id, &recovery.text, recovery.kind)
     .map_err(stringify_error)?;
   for audio_id in saved.dropped_audio_ids {
     let _ = history::delete_debug_audio(&audio_id);
@@ -1831,7 +1831,7 @@ fn activity_entry(text: &str, success: bool, error: Option<String>) -> Value {
 
 fn append_activity(text: &str, success: bool, error: Option<String>) -> Result<()> {
   let entry = activity_entry(text, success, error);
-  for aid in history::append_entry(entry, 100)? {
+  for aid in history::append_entry(entry)? {
     let _ = history::delete_debug_audio(&aid);
   }
   Ok(())
@@ -1852,7 +1852,7 @@ fn record_failed_transcription(
   translate: bool,
 ) {
   let message = transcription_failure_message(translate, error);
-  match history::append_failed_audio(failure_id, &message, error, audio, mime, translate, 100) {
+  match history::append_failed_audio(failure_id, &message, error, audio, mime, translate) {
     Ok(saved) => {
       for audio_id in saved.dropped_audio_ids {
         let _ = history::delete_debug_audio(&audio_id);
@@ -1923,8 +1923,8 @@ fn append_pending_audio(bytes: &[u8], mime: &str) -> Result<String> {
     "audioMime": mime,
   });
   // Serialized read-modify-write; drop the audio files of entries falling off
-  // the 100-entry cap so the store can't grow unbounded.
-  for aid in history::append_entry(entry, 100)? {
+  // the History cap so the store can't grow unbounded.
+  for aid in history::append_entry(entry)? {
     let _ = history::delete_debug_audio(&aid);
   }
   Ok(id)
@@ -1970,7 +1970,7 @@ pub async fn save_pending_transcription(
     if audio.len() > MAX_AUDIO_SIZE_BYTES {
       return Err("pending recovery audio exceeds the size limit".into());
     }
-    let saved = history::save_pending_audio(&recovery_id, &audio, &mime, 100)
+    let saved = history::save_pending_audio(&recovery_id, &audio, &mime)
       .map_err(stringify_error)?;
     for audio_id in saved.dropped_audio_ids {
       let _ = history::delete_debug_audio(&audio_id);

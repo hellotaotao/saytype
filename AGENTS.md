@@ -153,8 +153,8 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   release; keep it.
 - `settings.rs` — JSON config in the app data dir, shortcut normalization, auto-launch, model
   defaults, API keys and translate-provider selection.
-- `history.rs` — the History store (`{ "activities": [...] }`, 100-entry cap, atomic writes),
-  including pending audio.
+- `history.rs` — the History store (`{ "activities": [...] }`, 200-entry `HISTORY_CAP`, atomic
+  writes), including pending audio.
 - `retry_error.rs` — typed registry of the persisted `RETRY_*` codes.
 - `scrub.rs` — strips known ASR boilerplate and prompt leaks. `finalize_transcription` also merges
   space-separated capital letters when `merge_spelled_letters` is enabled (default). Run it only on

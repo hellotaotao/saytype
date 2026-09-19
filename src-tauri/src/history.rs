@@ -30,8 +30,12 @@ pub fn next_entry_id() -> String {
   )
 }
 
-pub fn append_entry(entry: Value, cap: usize) -> Result<Vec<String>> {
-  append_entry_in(&settings::history_path()?, entry, cap)
+// Every History writer enforces this row limit. Rows past it fall off, and the
+// writers return their audioIds so the caller can delete the clips too.
+const HISTORY_CAP: usize = 200;
+
+pub fn append_entry(entry: Value) -> Result<Vec<String>> {
+  append_entry_in(&settings::history_path()?, entry, HISTORY_CAP)
 }
 
 // Prepends `entry`, truncates to `cap`, and returns the audioIds of entries
@@ -84,9 +88,8 @@ pub fn save_recovered_entry(
   recovery_id: &str,
   text: &str,
   kind: RecoveryKind,
-  cap: usize,
 ) -> Result<RecoveryWrite> {
-  save_recovered_entry_in(&settings::history_path()?, recovery_id, text, kind, cap)
+  save_recovered_entry_in(&settings::history_path()?, recovery_id, text, kind, HISTORY_CAP)
 }
 
 // A successful return is an acknowledgement that this exact text is on disk.
@@ -164,10 +167,10 @@ pub fn save_pending_audio(
   recovery_id: &str,
   bytes: &[u8],
   mime: &str,
-  cap: usize,
 ) -> Result<RecoveryWrite> {
   save_pending_audio_in(
-    &settings::history_path()?, &settings::debug_audio_dir()?, recovery_id, bytes, mime, cap,
+    &settings::history_path()?, &settings::debug_audio_dir()?, recovery_id, bytes, mime,
+    HISTORY_CAP,
   )
 }
 
@@ -250,11 +253,10 @@ pub fn append_failed_audio(
   bytes: &[u8],
   mime: &str,
   translate: bool,
-  cap: usize,
 ) -> Result<RecoveryWrite> {
   append_failed_audio_in(
     &settings::history_path()?, &settings::debug_audio_dir()?, failure_id, message, error, bytes,
-    mime, translate, cap,
+    mime, translate, HISTORY_CAP,
   )
 }
 
@@ -395,9 +397,9 @@ fn settle_pending_entry(entry: &mut Value, failure_id: &str, text: &str) {
 // Build a fresh entry lazily: a retry resolving an existing row needs neither a
 // second History read nor a new debug-audio copy.
 pub fn record_transcription(
-  text: &str, failure_id: Option<&str>, cap: usize, make_entry: impl FnOnce() -> Value,
+  text: &str, failure_id: Option<&str>, make_entry: impl FnOnce() -> Value,
 ) -> Result<Vec<String>> {
-  record_transcription_in(&settings::history_path()?, text, failure_id, cap, make_entry)
+  record_transcription_in(&settings::history_path()?, text, failure_id, HISTORY_CAP, make_entry)
 }
 
 fn record_transcription_in(

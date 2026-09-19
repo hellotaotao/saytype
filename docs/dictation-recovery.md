@@ -48,7 +48,7 @@ somewhere the user can retry or copy it. How to test this on real devices is in
   (`pending: true`, `audioId`, `translate`), never a text-only failure next to an audio-only
   placeholder. This runs in release builds, so recordings of failed dictations do land under
   `<app-data>`. A clip is released only when a retry produces text, when the row is deleted or
-  cleared, or when it falls off the 100-entry cap.
+  cleared, or when it falls off the 200-entry `HISTORY_CAP`.
 - Route resolution (`resolve_transcription_route`) is inside that net. A missing API key fails before
   any request is built, and it's exactly the kind of failure a user fixes and retries.
 - Two cases are not recorded there because the frontend owns them: chunked dictation
