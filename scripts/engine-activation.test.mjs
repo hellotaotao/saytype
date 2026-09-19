@@ -279,3 +279,49 @@ test("a queued model pick survives opening another engine's drawer before the sa
   h.context.inspectEngine("groq");
   assert.equal(h.fields.modelSelect.value, "whisper-large-v3-turbo");
 });
+
+test("reopening the active engine mid-save shows the pick being saved, so picking back undoes it", async () => {
+  let release;
+  let first = true;
+  const h = harness({ beforeSave: () => {
+    if (!first) return;
+    first = false;
+    return new Promise(resolve => { release = resolve; });
+  } });
+  h.context.currentSettings = { provider: "groq", model: "whisper-large-v3-turbo" };
+  h.context.inspectEngine("groq");
+  h.fields.modelSelect.value = "whisper-large-v3";
+  h.context.handleModelChange();
+  await settle();
+  h.context.inspectEngine("openai");
+  h.context.inspectEngine("groq");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3", "the drawer shows the pick being saved");
+  h.fields.modelSelect.value = "whisper-large-v3-turbo";
+  h.context.handleModelChange();
+  release();
+  await settle();
+  assert.deepEqual(h.saved.map(settings => settings.model), ["whisper-large-v3", "whisper-large-v3-turbo"]);
+  assert.equal(h.context.currentSettings.model, "whisper-large-v3-turbo");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3-turbo");
+});
+
+test("a model picked while switching to that engine is applied once the switch lands", async () => {
+  let release;
+  let first = true;
+  const h = harness({ beforeSave: () => {
+    if (!first) return;
+    first = false;
+    return new Promise(resolve => { release = resolve; });
+  } });
+  h.context.inspectEngine("groq");
+  h.fields.modelSelect.value = "whisper-large-v3-turbo";
+  void h.context.activateEngine(h.context.inspectedEngineTarget());
+  await settle();
+  h.fields.modelSelect.value = "whisper-large-v3";
+  h.context.handleModelChange();
+  release();
+  await settle();
+  assert.deepEqual(h.saved.map(settings => `${settings.provider}/${settings.model}`), ["groq/whisper-large-v3-turbo", "groq/whisper-large-v3"]);
+  assert.equal(h.context.currentSettings.model, "whisper-large-v3");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3");
+});

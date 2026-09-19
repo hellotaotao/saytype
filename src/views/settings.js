@@ -1916,6 +1916,8 @@ async function loadSettings() {
 }
 
 let engineSwitchPending = false;
+// The { provider, model } the running save is applying, while it runs.
+let engineSwitchTarget = null;
 let engineActivationMessage = "";
 // A model picked in the active cloud engine while a save was running, kept as
 // the exact { provider, model } so opening another drawer cannot change it.
@@ -1976,7 +1978,9 @@ function engineReadinessHint() {
 // queued and applied when that save ends.
 function handleModelChange() {
   const target = inspectedEngineTarget();
-  const activeProvider = target.provider !== "local" && target.provider === currentSettings.provider;
+  // The engine in use, or the one a running save is switching to.
+  const activeProvider = target.provider !== "local"
+    && (target.provider === currentSettings.provider || target.provider === engineSwitchTarget?.provider);
   if (activeProvider && engineSwitchPending) {
     queuedModelChoice = target;
     return;
@@ -1988,12 +1992,15 @@ function handleModelChange() {
   renderEngineActivation();
 }
 
-// The model the active engine's drawer should show: a pick still waiting to be
-// saved, otherwise the model in use.
+// The model the active engine's drawer should show: the latest pick waiting to
+// be saved, then the pick being saved, then the model in use. Showing an older
+// model would swallow a click on it, since picking the selected choice is a
+// no-op.
 function activeModelChoice() {
-  return queuedModelChoice?.provider === currentSettings.provider
-    ? queuedModelChoice.model
-    : currentSettings.model;
+  const provider = currentSettings.provider;
+  if (queuedModelChoice?.provider === provider) return queuedModelChoice.model;
+  if (engineSwitchTarget?.provider === provider) return engineSwitchTarget.model;
+  return currentSettings.model;
 }
 
 // After a save, the open drawer of the engine in use shows what was actually
@@ -2012,12 +2019,14 @@ async function activateEngine(target) {
   if (engineSwitchPending) return false;
   const intent = { provider: target.provider, model: target.model };
   engineSwitchPending = true;
+  engineSwitchTarget = intent;
   engineActivationMessage = "";
   renderEngineActivation();
   try {
     return await queueSettingsSave(intent);
   } finally {
     engineSwitchPending = false;
+    engineSwitchTarget = null;
     // Replay a pick queued during this save only while its engine is still the
     // one in use; the pick carries its own target, whichever drawer is open.
     const queued = queuedModelChoice;
