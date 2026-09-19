@@ -1258,8 +1258,10 @@ function inspectEngine(providerChoice, { toggle = false } = {}) {
   select.value = providerChoice;
   inspectedLocalModel = localModelForProvider(providerChoice) || null;
   if (!inspectedLocalModel) {
-    const candidate = engineCloudDrafts.get(providerChoice)
-      || (currentSettings.provider === providerChoice ? currentSettings.model : "");
+    // The engine in use shows its real model; drafts are for the others.
+    const candidate = currentSettings.provider === providerChoice
+      ? activeModelChoice()
+      : engineCloudDrafts.get(providerChoice) || "";
     updateModelOptions(providerChoice);
     if (candidate) setSelectValue(modelSelect, candidate, modelSelect?.options[0]?.value || "");
   }
@@ -1915,7 +1917,9 @@ async function loadSettings() {
 
 let engineSwitchPending = false;
 let engineActivationMessage = "";
-let modelChoiceQueued = false;
+// A model picked in the active cloud engine while a save was running, kept as
+// the exact { provider, model } so opening another drawer cannot change it.
+let queuedModelChoice = null;
 
 function inspectedEngineTarget() {
   const choice = document.getElementById("providerSelect")?.value || providerForSettings(currentSettings);
@@ -1969,30 +1973,38 @@ function engineReadinessHint() {
 // A model picked inside the active cloud engine's drawer applies at once, like
 // every other setting. For an inactive engine it stays a candidate until that
 // row is chosen. The last pick wins: one made while a save is still running is
-// replayed when that save ends, against the model that was actually saved.
+// queued and applied when that save ends.
 function handleModelChange() {
   const target = inspectedEngineTarget();
   const activeProvider = target.provider !== "local" && target.provider === currentSettings.provider;
   if (activeProvider && engineSwitchPending) {
-    modelChoiceQueued = true;
+    queuedModelChoice = target;
     return;
   }
   if (activeProvider && target.model !== currentSettings.model) {
-    void activateEngine(target).then((saved) => {
-      // A replayed pick may already be saving; it settles the choice itself.
-      if (!saved && !engineSwitchPending) restoreActiveModelChoice();
-    });
+    void activateEngine(target);
     return;
   }
   renderEngineActivation();
 }
 
-// After a failed save the engine is unchanged, so its highlighted model must be
-// the one still in use, not the pick that did not take.
-function restoreActiveModelChoice() {
+// The model the active engine's drawer should show: a pick still waiting to be
+// saved, otherwise the model in use.
+function activeModelChoice() {
+  return queuedModelChoice?.provider === currentSettings.provider
+    ? queuedModelChoice.model
+    : currentSettings.model;
+}
+
+// After a save, the open drawer of the engine in use shows what was actually
+// saved, including after a failure that left the engine unchanged.
+function syncActiveModelChoice() {
   const select = document.getElementById("modelSelect");
-  if (!select || inspectedEngineTarget().provider !== currentSettings.provider) return;
-  setSelectValue(select, currentSettings.model, select.options[0]?.value || "");
+  const choice = document.getElementById("providerSelect")?.value;
+  if (!select || choice !== currentSettings.provider) return;
+  const model = activeModelChoice();
+  if (select.value === model) return;
+  setSelectValue(select, model, select.options[0]?.value || "");
   renderSettingChoices();
 }
 
@@ -2006,11 +2018,14 @@ async function activateEngine(target) {
     return await queueSettingsSave(intent);
   } finally {
     engineSwitchPending = false;
+    // Replay a pick queued during this save only while its engine is still the
+    // one in use; the pick carries its own target, whichever drawer is open.
+    const queued = queuedModelChoice;
+    queuedModelChoice = null;
+    const replay = queued && queued.provider === currentSettings.provider && queued.model !== currentSettings.model;
+    if (!replay) syncActiveModelChoice();
     renderEngineCards();
-    if (modelChoiceQueued) {
-      modelChoiceQueued = false;
-      handleModelChange();
-    }
+    if (replay) void activateEngine(queued);
   }
 }
 

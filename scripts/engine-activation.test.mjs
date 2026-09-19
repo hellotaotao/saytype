@@ -135,7 +135,7 @@ test("ordinary queued write after pending activation preserves successful active
 });
 
 
-test("inspecting active Groq restores its actual model and retains an unsaved cloud candidate", () => {
+test("the active cloud engine's drawer shows its real model; an inactive one keeps its candidate", () => {
   const h = harness();
   h.context.currentSettings = { provider: "groq", model: "whisper-large-v3" };
   h.context.updateModelOptions = () => { h.fields.modelSelect.value = "whisper-large-v3-turbo"; };
@@ -144,7 +144,14 @@ test("inspecting active Groq restores its actual model and retains an unsaved cl
   h.fields.modelSelect.value = "whisper-large-v3-turbo";
   h.context.inspectEngine("local-qwen-large");
   h.context.inspectEngine("groq");
-  assert.equal(h.fields.modelSelect.value, "whisper-large-v3-turbo");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3", "a pick that never saved is not shown as in use");
+
+  h.context.currentSettings = { provider: "local", model: small };
+  h.context.inspectEngine("groq");
+  h.fields.modelSelect.value = "whisper-large-v3";
+  h.context.inspectEngine("local-qwen-large");
+  h.context.inspectEngine("groq");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3");
   assert.equal(h.saved.length, 0);
 });
 
@@ -247,4 +254,28 @@ test("a failed model save puts the choice back on the model still in use", async
   assert.equal(h.context.currentSettings.model, "whisper-large-v3-turbo");
   assert.equal(h.fields.modelSelect.value, "whisper-large-v3-turbo");
   assert.notEqual(vm.runInContext("engineActivationMessage", h.context), "");
+});
+
+test("a queued model pick survives opening another engine's drawer before the save ends", async () => {
+  let release;
+  let first = true;
+  const h = harness({ beforeSave: () => {
+    if (!first) return;
+    first = false;
+    return new Promise(resolve => { release = resolve; });
+  } });
+  h.context.currentSettings = { provider: "groq", model: "whisper-large-v3-turbo" };
+  h.context.inspectEngine("groq");
+  h.fields.modelSelect.value = "whisper-large-v3";
+  h.context.handleModelChange();
+  await settle();
+  h.fields.modelSelect.value = "whisper-large-v3-turbo";
+  h.context.handleModelChange();
+  h.context.inspectEngine("openai");
+  release();
+  await settle();
+  assert.deepEqual(h.saved.map(settings => settings.model), ["whisper-large-v3", "whisper-large-v3-turbo"]);
+  assert.equal(h.context.currentSettings.model, "whisper-large-v3-turbo");
+  h.context.inspectEngine("groq");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3-turbo");
 });
