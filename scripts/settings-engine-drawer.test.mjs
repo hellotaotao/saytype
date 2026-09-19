@@ -96,3 +96,16 @@ test("selection control activates the inspected target, independently of title e
   assert.match(source, /row.append\(activation, card\)/);
   assert.match(source, /activation.addEventListener\("click", \(\) => void selectSettingsEngine\(entry.value\)\)/);
 });
+
+test("drawer content starts where the row's title does", () => {
+  const css = readFileSync(new URL("../src/views/settings.css", import.meta.url), "utf8");
+  const block = selector => css.match(new RegExp(`${selector.replace(/[.[\]]/g, "\\$&")} \\{([^}]+)\\}`))[1];
+  const px = (rule, property) => Number(rule.match(new RegExp(`${property}: ([\\d.]+)px`))[1]);
+  const row = block(".engine-card-row");
+  const rowPaddingLeft = Number(row.match(/padding: [\d.]+px ([\d.]+)px/)[1]);
+  const titleInset = rowPaddingLeft + px(block(".engine-select-button"), "width") + px(row, "gap")
+    + px(block(".engine-card-icon"), "font-size") + px(block(".engine-details-toggle"), "gap");
+  const drawerBorder = Number(block(".engine-drawer").match(/border-left: ([\d.]+)px/)[1]);
+  const drawerPadding = Number(css.match(/\.engine-drawer \{ padding: [\d.]+px [\d.]+px [\d.]+px ([\d.]+)px; \}/)[1]);
+  assert.equal(drawerBorder + drawerPadding, titleInset);
+});
