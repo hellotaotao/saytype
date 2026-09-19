@@ -265,7 +265,7 @@
         <div class="settings-header-row">
           <div>
             <h1 data-i18n="settings.pageTitle">Settings</h1>
-            <p data-i18n="settings.pageSubtitle">Settings save automatically. Engine changes require Use this model.</p>
+            <p data-i18n="settings.pageSubtitle">Settings save automatically.</p>
           </div>
           <div class="save-status" id="saveStatus" role="status" aria-live="polite"></div>
         </div>
@@ -292,7 +292,7 @@
                   Who turns your speech into text. Switching changes which of the settings below apply.
                 </div>
               </div>
-              <!-- Cards inspect a candidate. Activation requires the explicit Use button. -->
+              <!-- A row's title opens its details; only the row's check activates it. -->
               <div class="engine-cards" id="engineCards" role="group" aria-label="Transcription engine"></div>
               <div class="setting-control setting-control-fallback">
                 <select class="input provider-select" id="providerSelect" title="Select transcription provider" data-i18n="settings.apiProvider.selectTitle" data-i18n-attr="title">
@@ -307,7 +307,6 @@
 
             <div id="engineActivation" class="engine-activation">
               <p id="engineCloudNotice" class="setting-note" data-i18n="settings.engine.cloudNotice" hidden>Using this cloud model uploads dictation audio to its provider.</p>
-              <button type="button" class="btn" id="engineUseBtn">Use this model</button>
               <span id="engineActivationStatus" role="status" aria-live="polite"></span>
             </div>
 
@@ -376,14 +375,14 @@
             <div class="setting-item">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.transcriptionLanguage.title">Set default language</div>
-                <div class="setting-description" data-i18n="settings.transcriptionLanguage.description">
+                <div class="setting-description" id="languageDescription" data-i18n="settings.transcriptionLanguage.description">
                   Choose the default language for voice transcription.
                 </div>
-                <div class="setting-note hidden" id="languageLocalNote" data-i18n="settings.transcriptionLanguage.localNote">
+                <div class="setting-description hidden" id="languageLocalNote" data-i18n="settings.transcriptionLanguage.localNote">
                   Qwen detects the language automatically and does not use this setting.
                 </div>
               </div>
-              <div class="setting-control">
+              <div class="setting-control" id="languageControl">
                 <select class="input language-select" id="languageSelect" title="Select default language for transcription" data-i18n="settings.transcriptionLanguage.selectTitle" data-i18n-attr="title">
                   <optgroup label="Common" data-i18n="settings.transcriptionLanguage.groupCommon" data-i18n-attr="label">
                   <option value="auto" data-i18n="settings.transcriptionLanguage.auto">Auto-detect</option>

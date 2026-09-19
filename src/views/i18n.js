@@ -243,7 +243,7 @@
       settings: {
         title: "Settings - SayType",
         pageTitle: "Settings",
-        pageSubtitle: "Settings save automatically. Click the check button to use an engine; click its title to configure it.",
+        pageSubtitle: "Settings save automatically.",
         tabsAria: "Settings sections",
         modelSingleHint: "Cloud transcription · billed by audio duration.",
         modelMultipleHint: "Prices in USD. Groq bills at least 10 seconds per request.",
@@ -376,7 +376,6 @@
           whisperTurbo: "Whisper Large V3 Turbo",
           gptTranscribe: "GPT Transcribe",
           use: "Use {model}",
-          switching: "Switching…",
           switchFailed: "Engine unchanged.",
           invalidModel: "Choose an available model.",
           keyRequired: "Enter an API key before using this model.",
@@ -385,7 +384,8 @@
           experimental: "Experimental",
           localQwenLarge: {
             name: "Qwen3-ASR 1.7B",
-            description: "Experimental: about 2.5 GB to download and 2.9 GB peak process memory on M4 / 24 GB. A 30-second clip took 2.07 s versus 0.96 s with 0.6B, excluding model load. Accuracy improvement has not been measured.",
+            description: "Also local. Slower than 0.6B; accuracy gain not yet measured.",
+            detail: "Measured on M4 / 24 GB: about 2.5 GB to download and 2.9 GB peak process memory. A 30-second clip took 2.07 s versus 0.96 s with 0.6B, excluding model load.",
           },
           localQwen: {
             name: "Qwen3-ASR 0.6B",
@@ -805,7 +805,7 @@
       settings: {
         title: "设置 - SayType",
         pageTitle: "设置",
-        pageSubtitle: "设置会自动保存。点击勾选按钮启用引擎，点击名称查看配置。",
+        pageSubtitle: "设置会自动保存。",
         tabsAria: "设置分类",
         modelSingleHint: "云端转写，按音频时长计费。",
         modelMultipleHint: "价格为美元。Groq 每次请求至少按 10 秒计费。",
@@ -937,7 +937,6 @@
           whisperTurbo: "Whisper Large V3 Turbo",
           gptTranscribe: "GPT Transcribe",
           use: "使用 {model}",
-          switching: "正在切换…",
           switchFailed: "引擎未更改。",
           invalidModel: "请选择可用的模型。",
           keyRequired: "使用此模型前，请先填写 API 密钥。",
@@ -946,7 +945,8 @@
           experimental: "实验",
           localQwenLarge: {
             name: "Qwen3-ASR 1.7B",
-            description: "实验性：下载约 2.5 GB，在 M4 / 24 GB 上测得进程内存峰值约 2.9 GB。30 秒录音转写耗时 2.07 秒，0.6B 为 0.96 秒（均不含模型加载）。准确率提升尚未实测。",
+            description: "同样本地运行。比 0.6B 慢，准确率提升尚未实测。",
+            detail: "在 M4 / 24 GB 上实测：下载约 2.5 GB，进程内存峰值约 2.9 GB。30 秒录音转写耗时 2.07 秒，0.6B 为 0.96 秒（均不含模型加载）。",
           },
           localQwen: {
             name: "Qwen3-ASR 0.6B",

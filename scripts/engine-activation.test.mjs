@@ -35,7 +35,8 @@ function harness(options = {}) {
     } },
     engineCloudDrafts: new Map(),
     setSelectValue: (element, value) => { element.value = value; },
-    inspectedLocalModel: null, toggleProviderFields() {}, updateModelOptions() {}, refreshLocalModelStatus: async () => {},
+    inspectedLocalModel: null, expandedEngineProvider: null,
+    toggleProviderFields() {}, updateModelOptions() {}, refreshLocalModelStatus: async () => {},
   });
   vm.runInContext(activationSource + "\n" + section("function inspectEngine", "function handleThemeChange"), context);
   return { context, fields, saved, calls };
@@ -52,10 +53,10 @@ test("inspecting cloud and editing its key or theme never changes active engine"
   assert.equal(h.context.currentSettings.localCapable, true);
   assert.equal(h.calls.some(([command]) => command === "get-local-model-status"), false);
 });
-test("explicit cloud Use captures provider and model before queue runs", async () => {
+test("explicit cloud activation captures provider and model before queue runs", async () => {
   const h = harness();
   h.context.inspectEngine("groq");
-  const switching = h.context.activateInspectedEngine();
+  const switching = h.context.activateEngine(h.context.inspectedEngineTarget());
   h.fields.providerSelect.value = "openai";
   h.fields.modelSelect.value = "gpt-transcribe";
   const ordinary = h.context.saveSettings();
@@ -70,23 +71,23 @@ test("explicit cloud Use captures provider and model before queue runs", async (
 test("failed activation leaves persisted engine unchanged and reports failure", async () => {
   for (const options of [{ fail: true }, { saveResult: false }]) {
     const h = harness(options);
-    assert.equal(await h.context.activateInspectedEngine(), false);
+    assert.equal(await h.context.activateEngine(h.context.inspectedEngineTarget()), false);
     assert.equal(h.context.currentSettings.model, small);
     assert.notEqual(vm.runInContext("engineActivationMessage", h.context), "");
     assert.equal(vm.runInContext("engineSwitchPending", h.context), false);
   }
 });
-test("cloud Use requires a key but key editing alone never activates", async () => {
+test("cloud activation requires a key but key editing alone never activates", async () => {
   const h = harness();
   h.context.inspectEngine("groq"); h.fields.apiKeyGroq.value = "";
-  assert.equal(await h.context.activateInspectedEngine(), false);
+  assert.equal(await h.context.activateEngine(h.context.inspectedEngineTarget()), false);
   assert.equal(h.saved.length, 0);
   assert.equal(h.context.currentSettings.model, small);
 });
 for (const state of ["absent", "partial", "downloading", "ready"]) {
   test(`explicit local selection persists intent when model is ${state}`, async () => {
     const h = harness({ status: () => ({ state }) });
-    assert.equal(await h.context.activateInspectedEngine(), true);
+    assert.equal(await h.context.activateEngine(h.context.inspectedEngineTarget()), true);
     assert.equal(h.context.currentSettings.model, large);
     assert.equal(h.saved[0].provider, "local");
     assert.equal(h.saved[0].model, large);
@@ -117,13 +118,13 @@ test("ordinary queued write after pending activation preserves successful active
     first = false;
     return new Promise(resolve => { resolveSave = resolve; });
   } });
-  const activate = h.context.activateInspectedEngine();
+  const activate = h.context.activateEngine(h.context.inspectedEngineTarget());
   for (let i = 0; i < 30 && !resolveSave; i++) await Promise.resolve();
   assert.ok(resolveSave);
   h.context.inspectEngine("groq");
   const save = h.context.saveSettings();
   assert.equal(vm.runInContext("engineSwitchPending", h.context), true);
-  assert.equal(await h.context.activateInspectedEngine(), false);
+  assert.equal(await h.context.activateEngine(h.context.inspectedEngineTarget()), false);
   resolveSave();
   await activate; await save;
   assert.equal(h.saved.length, 2);
@@ -144,16 +145,51 @@ test("inspecting active Groq restores its actual model and retains an unsaved cl
   assert.equal(h.saved.length, 0);
 });
 
-test("active local engine hides redundant actions while failures remain visible", () => {
+test("local drawers show the activation panel only for a failure; cloud drawers keep the upload notice", () => {
   const h = harness();
-  for (const id of ["engineUseBtn", "engineActivation", "engineActivationStatus", "engineCloudNotice"]) h.fields[id] = {};
-  h.fields.providerSelect.value = "local-qwen";
-  h.context.renderEngineActivation();
-  assert.equal(h.fields.engineUseBtn.hidden, true);
-  assert.equal(h.fields.engineActivation.hidden, true);
+  for (const id of ["engineActivation", "engineActivationStatus", "engineCloudNotice"]) h.fields[id] = {};
+  for (const choice of ["local-qwen", "local-qwen-large"]) {
+    h.fields.providerSelect.value = choice;
+    h.context.renderEngineActivation();
+    assert.equal(h.fields.engineActivation.hidden, true, choice);
+  }
   vm.runInContext('engineActivationMessage = "Failed to switch"', h.context);
   h.context.renderEngineActivation();
   assert.equal(h.fields.engineActivation.hidden, false);
   assert.equal(h.fields.engineActivationStatus.textContent, "Failed to switch");
+  vm.runInContext('engineActivationMessage = ""', h.context);
+  h.fields.providerSelect.value = "groq";
+  h.context.renderEngineActivation();
+  assert.equal(h.fields.engineActivation.hidden, false);
+  assert.equal(h.fields.engineCloudNotice.hidden, false);
+  assert.doesNotMatch(source, /engineUseBtn|activateInspectedEngine/);
   assert.doesNotMatch(source, /engineUndoTarget|engineUndoBtn|settings\.engine\.activated/);
+});
+
+test("a model picked in the active cloud engine applies at once; an inactive engine's model waits for its check", async () => {
+  const h = harness();
+  h.context.currentSettings = { provider: "groq", model: "whisper-large-v3" };
+  h.context.inspectEngine("groq");
+  h.fields.modelSelect.value = "whisper-large-v3-turbo";
+  h.context.handleModelChange();
+  await h.context.saveSettings();
+  assert.equal(h.saved[0].provider, "groq");
+  assert.equal(h.saved[0].model, "whisper-large-v3-turbo");
+  assert.equal(h.context.currentSettings.model, "whisper-large-v3-turbo");
+
+  const idle = harness();
+  idle.context.inspectEngine("openai");
+  idle.fields.modelSelect.value = "gpt-transcribe";
+  idle.context.handleModelChange();
+  await idle.context.saveSettings();
+  assert.equal(idle.saved.length, 1);
+  assert.equal(idle.saved[0].provider, "local");
+  assert.equal(idle.saved[0].model, small);
+});
+
+test("a failure message stays with its engine instead of following the next drawer opened", () => {
+  const h = harness();
+  vm.runInContext('engineActivationMessage = "Failed to switch"', h.context);
+  h.context.inspectEngine("groq");
+  assert.equal(vm.runInContext("engineActivationMessage", h.context), "");
 });

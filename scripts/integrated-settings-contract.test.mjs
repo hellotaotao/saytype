@@ -122,7 +122,8 @@ test("the engine is chosen from cards that show what a label cannot", () => {
 test("a local engine states what it cannot use instead of hiding it", () => {
   // Qwen ignores language; Nemotron and cloud requests carry it.
   // Neither local engine uses the dictionary.
-  assert.match(mainHtml, /id="languageLocalNote"/);
+  assert.match(mainHtml, /class="setting-description hidden" id="languageLocalNote"/);
+  assert.match(mainHtml, /class="setting-control" id="languageControl"/);
   assert.match(mainHtml, /id="dictionaryLocalNote"/);
   assert.match(settingsJs, /languageSelect\.disabled = isQwen/);
   assert.match(settingsJs, /getElementById\("languageLocalNote"\)\?\.classList\.toggle\("hidden", !isQwen\)/);
@@ -393,4 +394,14 @@ test("the Home update card links to the release notes for the waiting version", 
   assert.match(commandsRs, /updater::release_page_url\(&version\)/);
   assert.ok(i18nJs.includes('whatsNew: "看看改了什么"'));
   assert.ok(i18nJs.includes(`whatsNew: "What's new"`));
+});
+
+test("an engine row activates only through its check; 1.7B's measured costs sit in its drawer", () => {
+  assert.doesNotMatch(mainHtml, /engineUseBtn/);
+  assert.match(settingsJs, /experimental: true, detail: true/);
+  assert.match(settingsJs, /detail\.className = "engine-drawer-detail"/);
+  assert.match(settingsCss, /\.engine-card-row\.experimental:not\(\.active\) \{\s*opacity: 0\.75;/);
+  assert.doesNotMatch(settingsCss, /\.engine-card-row\.experimental \{[^}]*opacity/);
+  const check = settingsCss.match(/\.engine-select-button::before \{([^}]+)\}/)[1];
+  assert.match(check, /border-radius: 50%/);
 });

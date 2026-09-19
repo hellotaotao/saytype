@@ -305,7 +305,7 @@ function updateModelOptions(provider) {
 // is usable at all, which a bare dropdown could not show.
 const ENGINE_CARDS = [
   { value: LOCAL_QWEN_PROVIDER, local: true, icon: "memory", recommended: true },
-  { value: LOCAL_QWEN_LARGE_PROVIDER, local: true, icon: "memory", experimental: true },
+  { value: LOCAL_QWEN_LARGE_PROVIDER, local: true, icon: "memory", experimental: true, detail: true },
   { value: "openai", local: false, icon: "cloud" },
   { value: "groq", local: false, icon: "cloud" },
   { value: LOCAL_NEMOTRON_PROVIDER, local: true, icon: "memory", experimental: true },
@@ -361,6 +361,8 @@ function renderEngineCards() {
         updateEngineSelectButton(existing.parentElement.querySelector(".engine-select-button"), entry, active);
         existing.querySelector(".engine-card-name > span").textContent = translate(`settings.engine.${camelKey(entry.value)}.name`);
         existing.querySelector(".engine-card-desc").textContent = translate(`settings.engine.${camelKey(entry.value)}.description`);
+        const detail = document.getElementById(`engine-drawer-${entry.value}`)?.querySelector(".engine-drawer-detail");
+        if (detail) detail.textContent = translate(`settings.engine.${camelKey(entry.value)}.detail`);
         const status = engineStatus(entry);
         const badge = existing.querySelector(".engine-card-status");
         badge.textContent = active ? translate("settings.engine.activeModel", { model: engineTargetLabel(currentSettings) }) : translate(status.key);
@@ -434,6 +436,12 @@ function renderEngineCards() {
       drawer.hidden = true;
       drawer.setAttribute("role", "region");
       drawer.setAttribute("aria-labelledby", card.id);
+      if (entry.detail) {
+        const detail = document.createElement("p");
+        detail.className = "engine-drawer-detail";
+        detail.textContent = translate(`settings.engine.${camelKey(entry.value)}.detail`);
+        drawer.appendChild(detail);
+      }
       row.append(activation, card);
       host.append(row, drawer);
     });
@@ -551,6 +559,8 @@ function toggleProviderFields(providerChoice) {
     languageSelect.disabled = isQwen;
   }
   document.getElementById("languageLocalNote")?.classList.toggle("hidden", !isQwen);
+  document.getElementById("languageDescription")?.classList.toggle("hidden", isQwen);
+  document.getElementById("languageControl")?.classList.toggle("hidden", isQwen);
 
   apiKeyItem?.classList.remove("hidden");
   modelItem?.classList.toggle("hidden", isLocal);
@@ -1214,6 +1224,7 @@ function inspectEngine(providerChoice, { toggle = false } = {}) {
     syncEngineDrawer();
     return;
   }
+  if (expandedEngineProvider !== providerChoice) engineActivationMessage = "";
   expandedEngineProvider = providerChoice;
   const previousChoice = select.value;
   const modelSelect = document.getElementById("modelSelect");
@@ -1310,9 +1321,7 @@ function bindEventHandlers() {
   const themeSelect = document.getElementById("themeSelect");
 
   providerSelect?.addEventListener("change", handleProviderChange);
-  document.getElementById("engineUseBtn")?.addEventListener("click", () => void activateInspectedEngine());
-
-  document.getElementById("modelSelect")?.addEventListener("change", renderEngineActivation);
+  document.getElementById("modelSelect")?.addEventListener("change", handleModelChange);
   document
     .getElementById("translateProviderSelect")
     ?.addEventListener("change", handleTranslateProviderChange);
@@ -1905,25 +1914,30 @@ function engineTargetLabel(target) {
   return translate(`settings.engine.${key}.name`);
 }
 
+// The row's check is the only activation control. The drawer panel carries
+// what activating means (cloud upload) and why the last attempt failed.
 function renderEngineActivation() {
-  const button = document.getElementById("engineUseBtn");
-  if (!button) return;
+  const panel = document.getElementById("engineActivation");
+  if (!panel) return;
   const target = inspectedEngineTarget();
-  const active = target.provider === currentSettings.provider && target.model === currentSettings.model;
-  button.hidden = active;
-  button.disabled = engineSwitchPending || active;
-  button.textContent = translate(engineSwitchPending ? "settings.engine.switching" : "settings.engine.use", { model: engineTargetLabel(target) });
   const notice = document.getElementById("engineCloudNotice");
   if (notice) notice.hidden = target.provider === "local";
   const message = document.getElementById("engineActivationStatus");
   if (message) message.textContent = engineActivationMessage;
-  const panel = document.getElementById("engineActivation");
-  if (panel) panel.hidden = active && target.provider === "local" && !engineActivationMessage;
+  panel.hidden = target.provider === "local" && !engineActivationMessage;
 }
 
-async function activateInspectedEngine() {
-  // Capture the exact candidate before any await or queued whole-form write.
-  return activateEngine(inspectedEngineTarget());
+// A model picked inside the active cloud engine's drawer applies at once, like
+// every other setting. For an inactive engine it stays a candidate until that
+// row's check activates it.
+function handleModelChange() {
+  const target = inspectedEngineTarget();
+  const activeProvider = target.provider !== "local" && target.provider === currentSettings.provider;
+  if (activeProvider && target.model !== currentSettings.model) {
+    void activateEngine(target);
+    return;
+  }
+  renderEngineActivation();
 }
 
 async function activateEngine(target) {

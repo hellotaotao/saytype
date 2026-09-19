@@ -35,12 +35,14 @@ for (const [choice, model, provider, disabled] of [
   ["groq", "whisper-large-v3-turbo", "groq", false],
   ["openai", "gpt-transcribe", "openai", false],
 ]) {
-  test(`${choice}: language is visible, Qwen alone disables it without clearing the saved value`, () => {
+  test(`${choice}: Qwen alone reduces the language row to one plain note without clearing the saved value`, () => {
     const h = harness(model, provider);
     h.context.toggleProviderFields(choice);
     assert.equal(h.node("languageSelect").disabled, disabled);
     assert.equal(h.node("dictationOptions").classList.contains("hidden"), false);
     assert.equal(h.node("languageLocalNote").classList.contains("hidden"), !disabled);
+    assert.equal(h.node("languageDescription").classList.contains("hidden"), disabled);
+    assert.equal(h.node("languageControl").classList.contains("hidden"), disabled);
     assert.equal(h.node("dictionarySettingItem").classList.contains("hidden"), provider === "local");
     assert.equal(h.node("languageSelect").value, "en");
   });

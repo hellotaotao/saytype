@@ -559,6 +559,11 @@
 .engine-card-row.experimental {
   padding-top: 10px;
   padding-bottom: 10px;
+}
+
+/* Experimental engines recede until chosen; the one in use reads at full
+   strength, or it looks disabled. */
+.engine-card-row.experimental:not(.active) {
   opacity: 0.75;
 }
 
@@ -587,7 +592,7 @@
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: 50%;
   background: transparent;
   color: var(--text-soft);
   cursor: pointer;
@@ -599,7 +604,7 @@
   width: 20px;
   height: 20px;
   border: 1px solid var(--panel-border-strong);
-  border-radius: 5px;
+  border-radius: 50%;
   background: var(--panel-bg);
 }
 .engine-select-button .material-icons { position: relative; font-size: 14px; opacity: 0; }
@@ -854,3 +859,11 @@
 }
 
 .engine-activation[hidden] { display: none; }
+
+/* Measured costs that would crowd the row; shown once its details are open. */
+.engine-drawer-detail {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
