@@ -73,6 +73,9 @@ test("engine cards show a decorative chevron driven by expansion state", () => {
   assert.match(render, /chevron\.setAttribute\("aria-hidden", "true"\)/);
   const css = readFileSync(new URL("../src/views/settings.css", import.meta.url), "utf8");
   assert.match(css, /\.engine-details-toggle\[aria-expanded="true"\] \.engine-card-chevron/);
+  // A full-width row with padding must not outgrow the list, whose overflow
+  // clipping would cut the chevron off the right edge.
+  assert.match(css, /\.engine-card-row \{[^}]*box-sizing: border-box;[^}]*width: 100%/);
 });
 
 test("selection control activates the inspected target, independently of title expansion", async () => {
