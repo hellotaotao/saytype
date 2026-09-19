@@ -460,19 +460,25 @@ function syncEngineDrawer() {
   const local = !!localModelForProvider(expanded);
   const drawer = document.getElementById(`engine-drawer-${expanded}`);
   if (!drawer) return;
-  const move = (id) => {
+  // These nodes are shared by every drawer and follow whichever one is open.
+  // Each goes in before a later one already here, so their order never depends
+  // on which drawers were opened before. Nodes already here stay put: moving
+  // the focused key field would blur it mid-typing.
+  const place = (ids) => ids.forEach((id, index) => {
     const node = document.getElementById(id);
-    if (node && node.parentElement !== drawer) drawer.appendChild(node);
-  };
+    if (!node || node.parentElement === drawer) return;
+    const next = ids.slice(index + 1)
+      .map((later) => document.getElementById(later))
+      .find((later) => later?.parentElement === drawer);
+    drawer.insertBefore(node, next || null);
+  });
   if (local) {
-    move("engineAdvanced");
+    place(["engineAdvanced", "engineActivation"]);
     const advanced = document.getElementById("engineAdvanced");
     if (advanced) advanced.open = true;
   } else {
-    move("apiKeyItem");
-    move("modelItem");
+    place(["apiKeyItem", "modelItem", "engineActivation"]);
   }
-  move("engineActivation");
 }
 
 function camelKey(providerValue) {

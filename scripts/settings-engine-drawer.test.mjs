@@ -7,14 +7,28 @@ const source = readFileSync(new URL("../src/views/settings.js", import.meta.url)
 function section(start, end) {
   return source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
 }
+function container(id) {
+  return {
+    id, hidden: true, children: [],
+    appendChild(node) { return this.insertBefore(node, null); },
+    insertBefore(node, reference) {
+      const previous = node.parentElement?.children;
+      if (previous) previous.splice(previous.indexOf(node), 1);
+      const index = reference ? this.children.indexOf(reference) : -1;
+      if (index < 0) this.children.push(node); else this.children.splice(index, 0, node);
+      node.parentElement = this;
+      return node;
+    },
+  };
+}
 function harness() {
   const choices = ["local-qwen", "local-qwen-large", "groq", "openai"];
   const nodes = {};
   for (const choice of choices) {
-    nodes[`engine-drawer-${choice}`] = { hidden: true, appendChild(node) { node.parentElement = this; } };
+    nodes[`engine-drawer-${choice}`] = container(`engine-drawer-${choice}`);
     nodes[`engine-choice-${choice}`] = { attributes: {}, setAttribute(key, value) { this.attributes[key] = value; } };
   }
-  for (const id of ["engineAdvanced", "engineActivation", "apiKeyItem", "modelItem"]) nodes[id] = {};
+  for (const id of ["engineAdvanced", "engineActivation", "apiKeyItem", "modelItem"]) nodes[id] = { id };
   nodes.providerSelect = { value: "local-qwen", options: choices.map(value => ({ value })) };
   nodes.modelSelect = { value: "groq-model", options: [{ value: "groq-model" }] };
   const context = vm.createContext({
@@ -108,4 +122,18 @@ test("drawer content starts where the row's title does", () => {
   const drawerBorder = Number(block(".engine-drawer").match(/border-left: ([\d.]+)px/)[1]);
   const drawerPadding = Number(css.match(/\.engine-drawer \{ padding: [\d.]+px [\d.]+px [\d.]+px ([\d.]+)px; \}/)[1]);
   assert.equal(drawerBorder + drawerPadding, titleInset);
+});
+
+test("a cloud drawer keeps its key, model and notice in order after a local drawer borrowed some of them", () => {
+  const h = harness();
+  const translationSlot = container("translationKeySlot");
+  // As in toggleProviderFields: inspecting a local engine parks the key field
+  // in the translation panel, while the model card stays in the old drawer.
+  h.context.toggleProviderFields = (choice) => {
+    if (h.context.localModelForProvider(choice)) translationSlot.appendChild(h.nodes.apiKeyItem);
+    h.context.syncEngineDrawer();
+  };
+  for (const choice of ["groq", "local-qwen-large", "groq"]) h.context.inspectEngine(choice);
+  const order = h.nodes["engine-drawer-groq"].children.map((node) => node.id);
+  assert.deepEqual(order, ["apiKeyItem", "modelItem", "engineActivation"]);
 });
