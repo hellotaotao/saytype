@@ -111,7 +111,8 @@ test("the engine is chosen from cards that show what a label cannot", () => {
   // The select survives as the value holder and the keyboard path, so every
   // existing listener keeps working — cards drive it rather than replace it.
   assert.match(mainHtml, /id="providerSelect"/);
-  assert.match(settingsJs, /card\.addEventListener\("click", \(\) => inspectEngine\(entry\.value, \{ toggle: true \}\)\)/);
+  assert.match(settingsJs, /card\.addEventListener\("click", \(\) => void chooseSettingsEngine\(entry\.value\)\)/);
+  assert.match(settingsJs, /disclosure\.addEventListener\("click", \(\) => inspectEngine\(entry\.value, \{ toggle: true \}\)\)/);
   assert.match(settingsCss, /\.setting-control-fallback/);
   assert.doesNotMatch(settingsCss, /\.setting-control-fallback\s*\{[^}]*display:\s*none/);
   for (const key of ["needsKey", "keySet", "needsDownload"]) {
@@ -396,12 +397,12 @@ test("the Home update card links to the release notes for the waiting version", 
   assert.ok(i18nJs.includes(`whatsNew: "What's new"`));
 });
 
-test("an engine row activates only through its check; 1.7B's measured costs sit in its drawer", () => {
+test("engines switch from their row with no separate Use button; 1.7B's measured costs sit in its drawer", () => {
   assert.doesNotMatch(mainHtml, /engineUseBtn/);
   assert.match(settingsJs, /experimental: true, detail: true/);
   assert.match(settingsJs, /detail\.className = "engine-drawer-detail"/);
   assert.match(settingsCss, /\.engine-card-row\.experimental:not\(\.active\) \{\s*opacity: 0\.75;/);
   assert.doesNotMatch(settingsCss, /\.engine-card-row\.experimental \{[^}]*opacity/);
-  const check = settingsCss.match(/\.engine-select-button::before \{([^}]+)\}/)[1];
+  const check = settingsCss.match(/\.engine-check::before \{([^}]+)\}/)[1];
   assert.match(check, /border-radius: 50%/);
 });

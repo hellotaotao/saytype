@@ -327,20 +327,25 @@ function engineStatus(entry) {
     : { key: "settings.engine.status.needsKey", tone: "warn" };
 }
 
-function updateEngineSelectButton(button, entry, active) {
-  const name = translate(`settings.engine.${camelKey(entry.value)}.name`);
+function updateEngineChoice(button, active) {
   button.setAttribute("aria-pressed", String(active));
-  button.setAttribute("aria-label", translate(active ? "settings.engine.activeModel" : "settings.engine.use", { model: name }));
-  button.title = button.getAttribute("aria-label");
   button.disabled = engineSwitchPending;
 }
 
-async function selectSettingsEngine(choice) {
+// Rows behave like a Wi-Fi list. Clicking a usable engine switches to it and
+// opens its details; one that still needs a key or a download only opens, to
+// show what is missing, and switches on a later click once it is usable. The
+// active engine's row just opens or closes, and so does the chevron on any row.
+async function chooseSettingsEngine(choice) {
   if (engineSwitchPending) return;
+  const entry = ENGINE_CARDS.find((card) => card.value === choice);
+  const active = choice === providerForSettings(currentSettings);
+  if (active || !entry || engineStatus(entry).tone !== "ok") {
+    inspectEngine(choice, { toggle: true });
+    return;
+  }
   inspectEngine(choice);
-  const target = inspectedEngineTarget();
-  if (target.provider === currentSettings.provider && target.model === currentSettings.model) return;
-  await activateEngine(target);
+  await activateEngine(inspectedEngineTarget());
 }
 
 function renderEngineCards() {
@@ -358,7 +363,9 @@ function renderEngineCards() {
       const existing = document.getElementById(`engine-choice-${entry.value}`);
       if (existing) {
         existing.parentElement.classList.toggle("active", active);
-        updateEngineSelectButton(existing.parentElement.querySelector(".engine-select-button"), entry, active);
+        updateEngineChoice(existing, active);
+        document.getElementById(`engine-disclosure-${entry.value}`)?.setAttribute(
+          "aria-label", translate("settings.engine.details", { model: translate(`settings.engine.${camelKey(entry.value)}.name`) }));
         existing.querySelector(".engine-card-name > span").textContent = translate(`settings.engine.${camelKey(entry.value)}.name`);
         existing.querySelector(".engine-card-desc").textContent = translate(`settings.engine.${camelKey(entry.value)}.description`);
         const detail = document.getElementById(`engine-drawer-${entry.value}`)?.querySelector(".engine-drawer-detail");
@@ -375,20 +382,18 @@ function renderEngineCards() {
       row.className = `engine-card-row${active ? " active" : ""}${
         entry.experimental ? " experimental" : ""
       }`;
-      card.className = "engine-details-toggle";
+      card.className = "engine-choice";
       card.id = `engine-choice-${entry.value}`;
-      card.setAttribute("aria-controls", `engine-drawer-${entry.value}`);
+      updateEngineChoice(card, active);
 
-      const activation = document.createElement("button");
-      activation.type = "button";
-      activation.className = "engine-select-button";
+      // Shows which engine is in use; the whole row is the control.
       const check = document.createElement("span");
-      check.className = "material-icons";
-      check.textContent = "check";
+      check.className = "engine-check";
       check.setAttribute("aria-hidden", "true");
-      activation.appendChild(check);
-      updateEngineSelectButton(activation, entry, active);
-      activation.addEventListener("click", () => void selectSettingsEngine(entry.value));
+      const tick = document.createElement("span");
+      tick.className = "material-icons";
+      tick.textContent = "check";
+      check.appendChild(tick);
 
       const icon = document.createElement("span");
       icon.className = "engine-card-icon material-icons";
@@ -424,12 +429,25 @@ function renderEngineCards() {
       statusEl.className = `engine-card-status${status.tone ? ` engine-status-${status.tone}` : ""}`;
       statusEl.textContent = active ? translate("settings.engine.activeModel", { model: engineTargetLabel(currentSettings) }) : translate(status.key);
 
+      card.append(check, icon, body, statusEl);
+      card.addEventListener("click", () => void chooseSettingsEngine(entry.value));
+
       const chevron = document.createElement("span");
       chevron.className = "engine-card-chevron material-icons";
       chevron.textContent = "expand_more";
       chevron.setAttribute("aria-hidden", "true");
-      card.append(icon, body, statusEl, chevron);
-      card.addEventListener("click", () => inspectEngine(entry.value, { toggle: true }));
+      const disclosure = document.createElement("button");
+      disclosure.type = "button";
+      disclosure.className = "engine-disclosure";
+      disclosure.id = `engine-disclosure-${entry.value}`;
+      disclosure.setAttribute("aria-controls", `engine-drawer-${entry.value}`);
+      disclosure.setAttribute("aria-label", translate("settings.engine.details", { model: name.textContent }));
+      disclosure.appendChild(chevron);
+      disclosure.addEventListener("click", () => inspectEngine(entry.value, { toggle: true }));
+      // The row's own padding counts as the row, not as a dead strip.
+      row.addEventListener("click", (event) => {
+        if (event.target === row) void chooseSettingsEngine(entry.value);
+      });
       const drawer = document.createElement("div");
       drawer.id = `engine-drawer-${entry.value}`;
       drawer.className = "engine-drawer";
@@ -442,7 +460,7 @@ function renderEngineCards() {
         detail.textContent = translate(`settings.engine.${camelKey(entry.value)}.detail`);
         drawer.appendChild(detail);
       }
-      row.append(activation, card);
+      row.append(card, disclosure);
       host.append(row, drawer);
     });
   syncEngineDrawer();
@@ -454,7 +472,7 @@ function syncEngineDrawer() {
   for (const entry of ENGINE_CARDS) {
     const panel = document.getElementById(`engine-drawer-${entry.value}`);
     if (panel) panel.hidden = entry.value !== expanded;
-    document.getElementById(`engine-choice-${entry.value}`)
+    document.getElementById(`engine-disclosure-${entry.value}`)
       ?.setAttribute("aria-expanded", String(entry.value === expanded));
   }
   const local = !!localModelForProvider(expanded);
@@ -1920,8 +1938,8 @@ function engineTargetLabel(target) {
   return translate(`settings.engine.${key}.name`);
 }
 
-// The row's check is the only activation control. The drawer panel carries
-// what activating means (cloud upload) and why the last attempt failed.
+// The drawer's activation panel carries what switching means (cloud upload),
+// why the last attempt failed, and what an unusable engine still needs.
 function renderEngineActivation() {
   const panel = document.getElementById("engineActivation");
   if (!panel) return;
@@ -1929,8 +1947,22 @@ function renderEngineActivation() {
   const notice = document.getElementById("engineCloudNotice");
   if (notice) notice.hidden = target.provider === "local";
   const message = document.getElementById("engineActivationStatus");
-  if (message) message.textContent = engineActivationMessage;
-  panel.hidden = target.provider === "local" && !engineActivationMessage;
+  const text = engineActivationMessage || engineReadinessHint();
+  if (message) message.textContent = text;
+  panel.hidden = target.provider === "local" && !text;
+}
+
+// An opened engine that is not usable yet is not in use either. Say so, and
+// what the next click needs, so an open drawer is not mistaken for a choice.
+function engineReadinessHint() {
+  const choice = document.getElementById("providerSelect")?.value;
+  if (!choice || choice === providerForSettings(currentSettings)) return "";
+  const entry = ENGINE_CARDS.find((card) => card.value === choice);
+  if (!entry) return "";
+  const status = engineStatus(entry);
+  if (status.tone === "ok" || status.key === "settings.permission.checking") return "";
+  const model = translate(`settings.engine.${camelKey(choice)}.name`);
+  return translate(entry.local ? "settings.engine.notReadyDownload" : "settings.engine.notReadyKey", { model });
 }
 
 // A model picked inside the active cloud engine's drawer applies at once, like

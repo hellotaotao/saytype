@@ -563,7 +563,9 @@
   opacity: 0.75;
 }
 
-.engine-details-toggle {
+/* The row's main control: clicking it switches to a usable engine (see
+   chooseSettingsEngine). The chevron beside it only opens details. */
+.engine-choice {
   display: flex;
   align-items: center;
   gap: 13px;
@@ -578,22 +580,18 @@
   cursor: pointer;
 }
 
-/* Keep the hit target generous while the visible control stays compact. */
-.engine-select-button {
+/* Marks the engine in use. The 32px box keeps the row's title where the
+   drawer alignment expects it. */
+.engine-check {
   position: relative;
   display: grid;
   place-items: center;
   flex: 0 0 32px;
   width: 32px;
   height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
   color: var(--text-soft);
-  cursor: pointer;
 }
-.engine-select-button::before {
+.engine-check::before {
   content: "";
   position: absolute;
   box-sizing: border-box;
@@ -603,13 +601,27 @@
   border-radius: 50%;
   background: var(--panel-bg);
 }
-.engine-select-button .material-icons { position: relative; font-size: 14px; opacity: 0; }
-.engine-select-button[aria-pressed="true"] { color: white; }
-.engine-select-button[aria-pressed="true"]::before { background: var(--accent); border-color: var(--accent); }
-.engine-select-button[aria-pressed="true"] .material-icons { opacity: 1; }
-.engine-select-button[aria-pressed="false"]:hover .material-icons { opacity: .4; }
-.engine-select-button:focus-visible,
-.engine-details-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.engine-check .material-icons { position: relative; font-size: 14px; opacity: 0; }
+.engine-choice[aria-pressed="true"] .engine-check { color: white; }
+.engine-choice[aria-pressed="true"] .engine-check::before { background: var(--accent); border-color: var(--accent); }
+.engine-choice[aria-pressed="true"] .engine-check .material-icons { opacity: 1; }
+.engine-choice:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+
+.engine-disclosure {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.engine-disclosure:hover { background: var(--icon-btn-hover-bg); color: var(--app-text); }
+.engine-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .engine-card-icon {
   flex: none;
@@ -844,13 +856,8 @@
   transition: transform 0.15s ease;
 }
 
-.engine-details-toggle[aria-expanded="true"] .engine-card-chevron {
+.engine-disclosure[aria-expanded="true"] .engine-card-chevron {
   transform: rotate(180deg);
-}
-
-.engine-details-toggle[aria-expanded="true"] {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

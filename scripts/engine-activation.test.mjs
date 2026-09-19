@@ -36,6 +36,9 @@ function harness(options = {}) {
     engineCloudDrafts: new Map(),
     setSelectValue: (element, value) => { element.value = value; },
     inspectedLocalModel: null, expandedEngineProvider: null,
+    ENGINE_CARDS: ["local-qwen", "local-qwen-large", "groq", "openai"].map(value => ({ value, local: value.startsWith("local") })),
+    engineStatus: entry => options.notReady?.includes(entry.value) ? { key: "needs", tone: "warn" } : { key: "ready", tone: "ok" },
+    camelKey: value => value,
     toggleProviderFields() {}, updateModelOptions() {}, refreshLocalModelStatus: async () => {},
   });
   vm.runInContext(activationSource + "\n" + section("function inspectEngine", "function handleThemeChange"), context);
@@ -192,4 +195,19 @@ test("a failure message stays with its engine instead of following the next draw
   vm.runInContext('engineActivationMessage = "Failed to switch"', h.context);
   h.context.inspectEngine("groq");
   assert.equal(vm.runInContext("engineActivationMessage", h.context), "");
+});
+
+test("an opened engine that is not usable yet says it is not in use and what the next click needs", () => {
+  const h = harness({ notReady: ["openai", "local-qwen-large"] });
+  for (const id of ["engineActivation", "engineActivationStatus", "engineCloudNotice"]) h.fields[id] = {};
+  h.fields.providerSelect.value = "openai";
+  h.context.renderEngineActivation();
+  assert.equal(h.fields.engineActivationStatus.textContent, "settings.engine.notReadyKey");
+  h.fields.providerSelect.value = "local-qwen-large";
+  h.context.renderEngineActivation();
+  assert.equal(h.fields.engineActivation.hidden, false);
+  assert.equal(h.fields.engineActivationStatus.textContent, "settings.engine.notReadyDownload");
+  h.fields.providerSelect.value = "local-qwen";
+  h.context.renderEngineActivation();
+  assert.equal(h.fields.engineActivation.hidden, true, "the engine in use needs no hint");
 });
