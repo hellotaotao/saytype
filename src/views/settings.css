@@ -801,6 +801,19 @@
 #settings-page .engine-drawer .setting-info { flex: 0 0 auto; }
 #settings-page .engine-drawer .setting-control { flex: 1; min-width: 0; }
 #modelSelectChoices { width: 100%; }
+/* In a drawer the model choices take the full width under their label;
+   beside it they were squeezed into narrow columns. */
+#settings-page .engine-drawer #modelItem {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+#settings-page .engine-drawer #modelItem .setting-info,
+#settings-page .engine-drawer #modelItem .setting-control {
+  flex: none;
+  width: 100%;
+  text-align: left;
+}
 @media (max-width: 760px) {
   .theme-choices { gap: 8px; }
   .theme-choices .setting-choice { width: 72px; }
