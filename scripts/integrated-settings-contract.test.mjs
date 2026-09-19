@@ -328,7 +328,7 @@ test("optional local translation is a separate collapsed panel", () => {
   assert.match(mainHtml, /<details[^>]*id="translationPanel"[^>]*>/);
   assert.doesNotMatch(mainHtml.match(/<details[^>]*id="translationPanel"[^>]*>/)?.[0] || "", /\sopen(?:\s|=|>)/);
   assert.match(mainHtml, /id="translationKeySlot"/);
-  assert.match(settingsCss, /#settings-page \.setting-group\s*\{[^}]*margin-bottom:\s*20px/);
+  assert.match(settingsCss, /#settings-page \.setting-group\s*\{[^}]*margin-bottom:\s*14px/);
 });
 
 test("model setup opens Dictation while update checks still open App", () => {

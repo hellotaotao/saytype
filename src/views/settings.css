@@ -5,14 +5,14 @@
 }
 
 .settings-header {
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .settings-tabs {
   display: flex;
   gap: 6px;
-  padding: 5px;
-  margin-bottom: 18px;
+  padding: 4px;
+  margin-bottom: 14px;
   border: 1px solid var(--panel-border);
   border-radius: 12px;
   background: var(--panel-bg-subtle);
@@ -24,8 +24,8 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 9px 14px;
+  min-height: 38px;
+  padding: 7px 14px;
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
@@ -66,7 +66,7 @@
 }
 
 #settings-page .setting-group {
-  margin-bottom: 20px;
+  margin-bottom: 14px;
   overflow: hidden;
   border: 1px solid var(--panel-border);
   border-radius: 12px;
@@ -79,8 +79,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  min-height: 58px;
-  padding: 18px 20px;
+  min-height: 50px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--panel-border);
 }
 
@@ -490,7 +490,7 @@
 }
 
 #settings-page .setting-item-stacked .setting-info {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 /* The select is the accessible fallback, not the visible control. Off-screen
@@ -528,7 +528,7 @@
   gap: 13px;
   box-sizing: border-box;
   width: 100%;
-  padding: 13px 15px;
+  padding: 11px 15px;
   border: none;
   background: var(--list-row-bg);
   color: var(--app-text);
@@ -553,8 +553,8 @@
 }
 
 .engine-card-row.experimental {
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 9px;
+  padding-bottom: 9px;
 }
 
 /* Experimental engines recede until chosen; the one in use reads at full
@@ -681,7 +681,7 @@
 }
 
 .translation-summary {
-  padding: 18px 20px;
+  padding: 14px 20px;
   cursor: pointer;
 }
 
@@ -737,7 +737,7 @@
 #settings-page .engine-drawer .setting-item {
   flex-wrap: wrap;
   gap: 12px;
-  padding: 16px;
+  padding: 12px 16px;
 }
 
 #settings-page select[hidden] { display: none; }
@@ -790,9 +790,9 @@
 /* Drawer content starts where the row's title does, so an engine's settings
    read as belonging to it: row padding 15 + check 32 + gap 13 + icon 20 +
    gap 13 = 93px, less the drawer's 3px left border. */
-.engine-drawer { padding: 4px 16px 16px 90px; }
+.engine-drawer { padding: 2px 16px 12px 90px; }
 #settings-page .engine-drawer .setting-item {
-  margin-top: 10px;
+  margin-top: 8px;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   border-radius: 10px;
@@ -832,8 +832,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 14px 0;
+  gap: 8px;
+  padding: 10px 0 0;
 }
 .engine-activation .setting-note { flex-basis: 100%; margin: 0; }
 #engineActivationStatus { font-size: 13px; }
@@ -861,7 +861,7 @@
 
 /* Measured costs that would crowd the row; shown once its details are open. */
 .engine-drawer-detail {
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--text-soft);
