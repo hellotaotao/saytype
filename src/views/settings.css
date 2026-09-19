@@ -289,6 +289,15 @@
   font-weight: 600;
 }
 
+/* An update status can run long; it wraps inside the control instead of
+   squeezing the description beside it into one word per line. */
+#settings-page #updateStatus {
+  max-width: 280px;
+  border-radius: 10px;
+  white-space: normal;
+  text-align: left;
+}
+
 #settings-page .permission-status.granted {
   background: var(--pill-ok-bg);
   color: var(--pill-ok-text);

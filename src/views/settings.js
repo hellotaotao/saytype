@@ -978,6 +978,7 @@ function renderUpdateStatus(status) {
 
   const state = status?.state || "idle";
   const version = status?.version || "";
+  statusEl.title = "";
   checkBtn.disabled = state === "checking" || state === "downloading";
   checkBtn.classList.toggle("hidden", state === "ready");
   installBtn.classList.toggle("hidden", state !== "ready");
@@ -989,7 +990,10 @@ function renderUpdateStatus(status) {
   } else if (state === "ready") {
     statusEl.textContent = translate("settings.updates.ready", { version });
   } else if (state === "error") {
-    statusEl.textContent = translate("settings.updates.error", { message: status?.message || "" });
+    // The updater's own message is technical and can run to a paragraph; it
+    // stays in the tooltip and the log.
+    statusEl.textContent = translate("settings.updates.error");
+    statusEl.title = status?.message || "";
   } else if (state === "upToDate") {
     statusEl.textContent = translate("settings.updates.upToDate", { version: currentAppVersion });
   } else {

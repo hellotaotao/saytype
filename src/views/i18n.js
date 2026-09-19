@@ -338,7 +338,7 @@
           downloading: "Downloading v{version}…",
           ready: "v{version} ready — restart to update",
           upToDate: "v{version} — up to date",
-          error: "Update check failed: {message}",
+          error: "Couldn't check for updates. Try again later.",
         },
         diagnostics: {
           title: "Diagnostic logs",
@@ -901,7 +901,7 @@
           downloading: "正在下载 v{version}…",
           ready: "v{version} 已就绪 — 重启即可更新",
           upToDate: "v{version} — 已是最新",
-          error: "检查更新失败:{message}",
+          error: "检查更新失败，请稍后再试。",
         },
         diagnostics: {
           title: "\u8bca\u65ad\u65e5\u5fd7",
