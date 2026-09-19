@@ -387,7 +387,7 @@
           localQwenLarge: {
             name: "Qwen3-ASR 1.7B",
             description: "Also local. Slower than 0.6B; accuracy gain not yet measured.",
-            detail: "Measured on M4 / 24 GB: about 2.5 GB to download and 2.9 GB peak process memory. A 30-second clip took 2.07 s versus 0.96 s with 0.6B, excluding model load.",
+            detail: "Downloads about 2.5 GB and uses up to about 3 GB of memory. On an M4 Mac, a 30-second recording takes about 2 seconds to transcribe, versus about 1 second with 0.6B.",
           },
           localQwen: {
             name: "Qwen3-ASR 0.6B",
@@ -950,7 +950,7 @@
           localQwenLarge: {
             name: "Qwen3-ASR 1.7B",
             description: "同样本地运行。比 0.6B 慢，准确率提升尚未实测。",
-            detail: "在 M4 / 24 GB 上实测：下载约 2.5 GB，进程内存峰值约 2.9 GB。30 秒录音转写耗时 2.07 秒，0.6B 为 0.96 秒（均不含模型加载）。",
+            detail: "需要下载约 2.5 GB，运行时最多占用约 3 GB 内存。在 M4 Mac 上，一段 30 秒的录音大约 2 秒转完，0.6B 约 1 秒。",
           },
           localQwen: {
             name: "Qwen3-ASR 0.6B",
