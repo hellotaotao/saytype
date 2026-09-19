@@ -39,7 +39,7 @@ function harness(options = {}) {
     ENGINE_CARDS: ["local-qwen", "local-qwen-large", "groq", "openai"].map(value => ({ value, local: value.startsWith("local") })),
     engineStatus: entry => options.notReady?.includes(entry.value) ? { key: "needs", tone: "warn" } : { key: "ready", tone: "ok" },
     camelKey: value => value,
-    toggleProviderFields() {}, updateModelOptions() {}, refreshLocalModelStatus: async () => {},
+    toggleProviderFields() {}, updateModelOptions() {}, renderSettingChoices() {}, refreshLocalModelStatus: async () => {},
   });
   vm.runInContext(activationSource + "\n" + section("function inspectEngine", "function handleThemeChange"), context);
   return { context, fields, saved, calls };
@@ -210,4 +210,41 @@ test("an opened engine that is not usable yet says it is not in use and what the
   h.fields.providerSelect.value = "local-qwen";
   h.context.renderEngineActivation();
   assert.equal(h.fields.engineActivation.hidden, true, "the engine in use needs no hint");
+});
+
+const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+test("rapid model picks in the active cloud engine save the last one, even mid-save", async () => {
+  let release;
+  let first = true;
+  const h = harness({ beforeSave: () => {
+    if (!first) return;
+    first = false;
+    return new Promise(resolve => { release = resolve; });
+  } });
+  h.context.currentSettings = { provider: "groq", model: "whisper-large-v3-turbo" };
+  h.context.inspectEngine("groq");
+  h.fields.modelSelect.value = "whisper-large-v3";
+  h.context.handleModelChange();
+  await settle();
+  assert.ok(release, "the first save is still in flight");
+  h.fields.modelSelect.value = "whisper-large-v3-turbo";
+  h.context.handleModelChange();
+  release();
+  await settle();
+  assert.deepEqual(h.saved.map(settings => settings.model), ["whisper-large-v3", "whisper-large-v3-turbo"]);
+  assert.equal(h.context.currentSettings.model, "whisper-large-v3-turbo");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3-turbo");
+});
+
+test("a failed model save puts the choice back on the model still in use", async () => {
+  const h = harness({ fail: true });
+  h.context.currentSettings = { provider: "groq", model: "whisper-large-v3-turbo" };
+  h.context.inspectEngine("groq");
+  h.fields.modelSelect.value = "whisper-large-v3";
+  h.context.handleModelChange();
+  await settle();
+  assert.equal(h.context.currentSettings.model, "whisper-large-v3-turbo");
+  assert.equal(h.fields.modelSelect.value, "whisper-large-v3-turbo");
+  assert.notEqual(vm.runInContext("engineActivationMessage", h.context), "");
 });

@@ -1915,6 +1915,7 @@ async function loadSettings() {
 
 let engineSwitchPending = false;
 let engineActivationMessage = "";
+let modelChoiceQueued = false;
 
 function inspectedEngineTarget() {
   const choice = document.getElementById("providerSelect")?.value || providerForSettings(currentSettings);
@@ -1967,15 +1968,32 @@ function engineReadinessHint() {
 
 // A model picked inside the active cloud engine's drawer applies at once, like
 // every other setting. For an inactive engine it stays a candidate until that
-// row's check activates it.
+// row is chosen. The last pick wins: one made while a save is still running is
+// replayed when that save ends, against the model that was actually saved.
 function handleModelChange() {
   const target = inspectedEngineTarget();
   const activeProvider = target.provider !== "local" && target.provider === currentSettings.provider;
+  if (activeProvider && engineSwitchPending) {
+    modelChoiceQueued = true;
+    return;
+  }
   if (activeProvider && target.model !== currentSettings.model) {
-    void activateEngine(target);
+    void activateEngine(target).then((saved) => {
+      // A replayed pick may already be saving; it settles the choice itself.
+      if (!saved && !engineSwitchPending) restoreActiveModelChoice();
+    });
     return;
   }
   renderEngineActivation();
+}
+
+// After a failed save the engine is unchanged, so its highlighted model must be
+// the one still in use, not the pick that did not take.
+function restoreActiveModelChoice() {
+  const select = document.getElementById("modelSelect");
+  if (!select || inspectedEngineTarget().provider !== currentSettings.provider) return;
+  setSelectValue(select, currentSettings.model, select.options[0]?.value || "");
+  renderSettingChoices();
 }
 
 async function activateEngine(target) {
@@ -1989,6 +2007,10 @@ async function activateEngine(target) {
   } finally {
     engineSwitchPending = false;
     renderEngineCards();
+    if (modelChoiceQueued) {
+      modelChoiceQueued = false;
+      handleModelChange();
+    }
   }
 }
 
