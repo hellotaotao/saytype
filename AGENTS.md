@@ -73,10 +73,11 @@ global hotkey. Local builds are not notarized.
 
 Push a `vX.Y.Z` tag. `.github/workflows/release.yml` builds macOS (universal; signed and notarized
 when the Apple secrets are set, otherwise it warns and builds unsigned), Windows and Linux, emits
-minisign-signed updater artifacts plus `latest.json`, and **publishes the release directly**
-(`releaseDraft: false`). Publishing is the auto-update rollout: installed clients poll
-`releases/latest/download/latest.json`. The workflow builds the version in the tagged commit, so
-bump and commit first:
+minisign-signed updater artifacts plus `latest.json` into a draft, and **publishes it automatically
+once all three legs have uploaded** (the `publish` job). Publishing is the auto-update rollout:
+installed clients poll `releases/latest/download/latest.json`, so a draft keeps them from seeing a
+`latest.json` that lacks their platform. A failed leg leaves the draft unpublished until its jobs are
+re-run. The workflow builds the version in the tagged commit, so bump and commit first:
 
 ```bash
 npm run version:tauri:patch

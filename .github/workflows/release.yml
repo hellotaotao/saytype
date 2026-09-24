@@ -1,16 +1,37 @@
 name: Release
 
 # Runs on a tag like v1.0.90: a three-platform matrix (macOS universal DMG, signed and
-# notarized; Windows NSIS/MSI; Linux AppImage/deb/rpm) that produces minisign-signed updater
-# artifacts and a merged latest.json, then publishes the GitHub Release directly, which makes
-# the new version visible to the auto-update endpoint.
+# notarized; Windows NSIS/MSI; Linux AppImage/deb/rpm) that uploads minisign-signed updater
+# artifacts and a merged latest.json into a draft Release. Once every leg has uploaded and the
+# notes are written, the publish job turns the draft into the latest Release, which is what makes
+# the new version visible to the auto-update endpoint. Publishing only after all legs finish means
+# no client ever reads a latest.json that lacks its platform.
 on:
   push:
     tags:
       - "v*"
 
 jobs:
+  create-release:
+    # One draft up front, so the matrix legs never race to create duplicates. tauri-action
+    # finds a draft by listing releases, because a draft can't be fetched by tag.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; reusing it."
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "SayType ${GITHUB_REF_NAME}" --notes "下载对应平台的安装包。"
+          fi
+
   release:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -124,8 +145,8 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "SayType ${{ github.ref_name }}"
           releaseBody: "下载对应平台的安装包。"
-          # Publish directly: publishing is the auto-update rollout (see RELEASING.md).
-          releaseDraft: false
+          # Upload into the draft; the publish job below releases it (see RELEASING.md).
+          releaseDraft: true
           prerelease: false
           # Generate and merge latest.json (the auto-update manifest); Windows uses the NSIS .exe.
           includeUpdaterJson: true
@@ -134,8 +155,9 @@ jobs:
   release-notes:
     # Fills the release body with AI-generated bilingual notes covering
     # <previous v* tag>..<this tag>. Missing secret or any failure -> warning,
-    # the release itself never breaks. Runs once, after all matrix legs, so the
-    # notes edit never races an asset upload.
+    # the release itself never breaks. Runs once, after all matrix legs and
+    # while the release is still a draft, so the notes are in place when
+    # clients first see the version.
     needs: release
     runs-on: ubuntu-latest
     permissions:
@@ -167,3 +189,18 @@ jobs:
           else
             echo "::warning::Release-notes generation failed — release keeps the default body."
           fi
+
+  publish:
+    # Publishing is the auto-update rollout. It waits for every matrix leg, so a
+    # failed leg leaves the draft unpublished: re-run the failed jobs and this job
+    # publishes once they pass. A failed notes job doesn't block it.
+    needs: [release, release-notes]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

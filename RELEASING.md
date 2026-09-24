@@ -21,13 +21,19 @@ Pushing a tag shaped like `vX.Y.Z` runs a **3-platform matrix**:
    updater key.
 4. A follow-up job writes bilingual AI release notes into the release (optional, see
    [Release notes](#release-notes)).
-5. The release is **published directly** (`releaseDraft: false`).
+5. Everything above lands in a **draft** release (created up front by the `create-release` job).
+   When every leg has uploaded and the notes job has run, the `publish` job turns the draft into the
+   latest release. Nothing is manual: pushing the tag is still the whole release.
 
 Publishing is also the **auto-update rollout**. Installed clients (v1.4.0 and later) check
 `releases/latest/download/latest.json` at startup and every 24 hours, download in the background, and
-offer "Restart to update" in the tray and in Settings. The release becomes public as soon as the first
-leg uploads, so a client that checks during the ~15–25 minute build may find `latest.json` missing, or
-without its platform yet. That check fails quietly (it is logged) and the next one succeeds.
+offer "Restart to update" in the tray and in Settings. Because the release stays a draft until all
+three legs are in, no client ever sees a `latest.json` that lacks its platform. (Before this change the
+release was published by the first leg, and a Mac that checked in the minutes before the macOS leg
+finished got an update error.)
+
+If a leg fails, the draft stays unpublished and clients keep the previous version. Re-run the failed
+jobs from the Actions run; `publish` runs once they pass. To give up on the version, delete the draft.
 
 > The workflow only runs on `v*` tag pushes; ordinary commits never trigger it.
 
@@ -211,12 +217,16 @@ SayType 面向 **macOS、Windows、Linux** 三平台发布安装包到项目的
 3. 每条腿都产出 minisign 签名的**自动更新产物**,并合并成一个 `latest.json`。`createUpdaterArtifacts`
    只写在 `tauri.release.conf.json` 里,所以本地构建永远不需要更新密钥。
 4. 随后的 job 把中英双语的 AI 发布说明写进 release(可选,见[发布说明](#发布说明))。
-5. release **直接发布**(`releaseDraft: false`)。
+5. 以上产物都上传到一个**草稿** release(由 `create-release` job 预先创建)。三条腿都上传完、发布说明
+   job 也跑完后,`publish` job 把草稿转成最新的正式 release。全程不需要手动操作,推 tag 仍然就是发版。
 
 发布同时就是**自动更新放量**。已安装的客户端(v1.4.0 起)在启动时和每 24 小时检查一次
-`releases/latest/download/latest.json`,后台下载,然后在托盘和设置里提供"重启以更新"。第一条腿上传后
-release 就公开了,所以在约 15–25 分钟的构建期间检查更新的客户端,可能拿不到 `latest.json`,或者里面还没有
-自己平台的条目。这次检查会静默失败(写日志),下一次就正常了。
+`releases/latest/download/latest.json`,后台下载,然后在托盘和设置里提供"重启以更新"。release 在三条腿
+都传完之前一直是草稿,所以客户端不会读到缺了自己平台的 `latest.json`。(改成草稿流程之前,第一条腿上传后
+release 就公开了,macOS 那条腿完成前几分钟里检查更新的 Mac 会报更新错误。)
+
+某条腿失败时,草稿不会发布,客户端继续停在上一个版本。在 Actions 里重跑失败的 job,通过后 `publish` 会接着
+发布。不打算发这个版本了,就删掉草稿。
 
 > 该 workflow 只在推送 `v*` tag 时运行,普通提交不会触发。
 
