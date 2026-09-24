@@ -240,8 +240,7 @@ pub fn save_pending_audio_in(
 // A failed transcription keeps the exact clip it could not transcribe, on the
 // same row that reports why it failed — so History shows one entry, not a
 // text-only failure beside an audio-only placeholder. `pending` marks it
-// re-transcribable; `translate` records the mode so a retry keeps the user's
-// original intent. The audio write MUST succeed (a pending row with no audio is
+// re-transcribable. The audio write MUST succeed (a pending row with no audio is
 // useless), so its error propagates and the caller falls back to a plain row.
 //
 // `failure_id` makes a re-attempted upload idempotent — see the function body.
@@ -252,11 +251,10 @@ pub fn append_failed_audio(
   error: &str,
   bytes: &[u8],
   mime: &str,
-  translate: bool,
 ) -> Result<RecoveryWrite> {
   append_failed_audio_in(
     &settings::history_path()?, &settings::debug_audio_dir()?, failure_id, message, error, bytes,
-    mime, translate, HISTORY_CAP,
+    mime, HISTORY_CAP,
   )
 }
 
@@ -269,7 +267,6 @@ pub fn append_failed_audio_in(
   error: &str,
   bytes: &[u8],
   mime: &str,
-  translate: bool,
   cap: usize,
 ) -> Result<RecoveryWrite> {
   anyhow::ensure!(cap > 0, "history capacity must be positive");
@@ -319,7 +316,6 @@ pub fn append_failed_audio_in(
     "success": false,
     "error": error,
     "pending": true,
-    "translate": translate,
     "audioId": id,
     "audioMime": mime,
   }));
@@ -831,13 +827,13 @@ mod tests {
   }
 
   #[test]
-  fn failed_audio_entry_keeps_the_clip_error_and_translate_flag_on_one_row() {
+  fn failed_audio_entry_keeps_the_clip_and_error_on_one_row() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("history.json");
     let audio_dir = temp.path().join("audio");
     let saved = append_failed_audio_in(
       &path, &audio_dir, None, "Transcription failed: 401 unauthorized",
-      "401 unauthorized", &[1, 2, 3], "audio/wav", true, 100,
+      "401 unauthorized", &[1, 2, 3], "audio/wav", 100,
     ).unwrap();
     assert!(saved.dropped_audio_ids.is_empty());
 
@@ -849,7 +845,6 @@ mod tests {
     assert_eq!(entry["error"], "401 unauthorized");
     assert_eq!(entry["success"], false);
     assert_eq!(entry["pending"], true);
-    assert_eq!(entry["translate"], true);
     assert_eq!(entry["audioId"], saved.entry_id.as_str());
     assert_eq!(entry["audioMime"], "audio/wav");
     assert_eq!(read_debug_audio_in(&audio_dir, &saved.entry_id).unwrap().0, vec![1, 2, 3]);
@@ -864,7 +859,7 @@ mod tests {
       .unwrap();
     let saved = append_failed_audio_in(
       &path, &audio_dir, None, "Transcription failed: offline", "offline", &[9], "audio/wav",
-      false, 1,
+      1,
     ).unwrap();
     assert_eq!(saved.dropped_audio_ids, vec!["old-audio"]);
     assert_eq!(read_history_entries_from(&path).unwrap().len(), 1);
@@ -878,7 +873,7 @@ mod tests {
     let audio_dir = temp.path().join("audio");
     assert!(append_failed_audio_in(
       &blocked_parent.join("history.json"), &audio_dir, None, "failed", "boom", &[1], "audio/wav",
-      false, 100,
+      100,
     ).is_err());
     assert_eq!(fs::read_dir(&audio_dir).unwrap().count(), 0,
       "an unreferenced clip must not be left behind");
@@ -895,7 +890,7 @@ mod tests {
 
     let saved = append_failed_audio_in(
       &path, &audio_dir, None, "Transcription failed: API key not configured",
-      "API key not configured", &[7, 7, 7], "audio/wav", false, 100,
+      "API key not configured", &[7, 7, 7], "audio/wav", 100,
     ).unwrap();
     let id = saved.entry_id;
 
@@ -946,13 +941,13 @@ mod tests {
 
     let first = append_failed_audio_in(
       &path, &audio_dir, Some(retry_id), "Transcription failed: operation timed out",
-      "operation timed out", &[4, 2], "audio/wav", false, 100,
+      "operation timed out", &[4, 2], "audio/wav", 100,
     ).unwrap();
     assert_eq!(first.entry_id, retry_id);
 
     let second = append_failed_audio_in(
       &path, &audio_dir, Some(retry_id), "Transcription failed: connection reset",
-      "connection reset", &[4, 2], "audio/wav", false, 100,
+      "connection reset", &[4, 2], "audio/wav", 100,
     ).unwrap();
     assert_eq!(second.entry_id, retry_id, "the retry must land on the first attempt's row");
 
@@ -977,7 +972,7 @@ mod tests {
     append_entry_in(&path, json!({"id": "older", "text": "an earlier success"}), 100).unwrap();
     append_failed_audio_in(
       &path, &audio_dir, Some(retry_id), "Transcription failed: operation timed out",
-      "operation timed out", &[4, 2], "audio/wav", false, 100,
+      "operation timed out", &[4, 2], "audio/wav", 100,
     ).unwrap();
     let failed_at = read_history_entry_in(&path, retry_id).unwrap().unwrap()["timestamp"].clone();
 
@@ -1021,14 +1016,13 @@ mod tests {
     let audio_dir = temp.path().join("audio");
     let id = "failed-100-1";
     append_failed_audio_in(&path, &audio_dir, Some(id), "timeout", "timeout",
-      &[1, 2], "audio/wav", true, 100).unwrap();
+      &[1, 2], "audio/wav",  100).unwrap();
     for (text, reason) in [("partial words", RetryError::CaptureIncomplete), ("", RetryError::NoSpeech)] {
       assert!(refresh_incomplete_retry_in(&path, id, text).unwrap());
       let entry = read_history_entry_in(&path, id).unwrap().unwrap();
       assert_eq!(entry["error"], reason.code());
       assert_eq!(entry["text"], reason.code());
       assert_eq!(entry["pending"], true);
-      assert_eq!(entry["translate"], true);
       assert_eq!(read_debug_audio_in(&audio_dir, id).unwrap().0, vec![1, 2]);
     }
     finish_pending_transcription_in(&path, &audio_dir, id, "manual result").unwrap();
@@ -1043,7 +1037,7 @@ mod tests {
     let audio_dir = temp.path().join("audio");
     let id = "failed-100-1";
     append_failed_audio_in(&path, &audio_dir, Some(id), "timeout", "timeout",
-      &[1], "audio/wav", false, 100).unwrap();
+      &[1], "audio/wav",  100).unwrap();
     assert!(finish_pending_transcription_in(&path, &audio_dir, id, "manual words").unwrap());
     assert!(record_transcription_in(&path, "automatic words", Some(id), 100,
       || json!({"id": "automatic", "text": "automatic words", "success": true})).unwrap().is_empty());
@@ -1097,7 +1091,7 @@ mod tests {
 
     let saved = append_failed_audio_in(
       &path, &audio_dir, Some(retry_id), "Transcription failed: offline", "offline", &[1],
-      "audio/wav", false, 100,
+      "audio/wav", 100,
     ).unwrap();
     assert_ne!(saved.entry_id, retry_id);
 
@@ -1112,11 +1106,11 @@ mod tests {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("history.json");
     append_entry_in(&path, json!({"id": "a", "text": "one"}), 10).unwrap();
-    append_entry_in(&path, json!({"id": "b", "text": "two", "translate": true}), 10).unwrap();
+    append_entry_in(&path, json!({"id": "b", "text": "two"}), 10).unwrap();
 
     let found = read_history_entry_in(&path, "a").unwrap().expect("entry a must be found");
     assert_eq!(found["text"], "one");
-    assert_eq!(read_history_entry_in(&path, "b").unwrap().unwrap()["translate"], true);
+    assert_eq!(read_history_entry_in(&path, "b").unwrap().unwrap()["text"], "two");
     assert!(read_history_entry_in(&path, "missing").unwrap().is_none());
   }
 
@@ -1127,7 +1121,7 @@ mod tests {
     let audio_dir = temp.path().join("audio");
     let id = "failed-100-1";
     append_failed_audio_in(
-      &path, &audio_dir, Some(id), "timeout", "timeout", &[1], "audio/wav", false, 100,
+      &path, &audio_dir, Some(id), "timeout", "timeout", &[1], "audio/wav", 100,
     ).unwrap();
     // A manual request has started; the automatic retry finishes first.
     assert!(resolve_failed_audio_in(&path, id, "recovered words").unwrap());
@@ -1149,7 +1143,7 @@ mod tests {
     let audio_dir = temp.path().join("audio");
     let id = "failed-100-2";
     append_failed_audio_in(
-      &path, &audio_dir, Some(id), "timeout", "timeout", &[1], "audio/wav", true, 100,
+      &path, &audio_dir, Some(id), "timeout", "timeout", &[1], "audio/wav", 100,
     ).unwrap();
     // A directory at the audio path deterministically produces a read error
     // even when tests run with privileges that bypass file permissions.
@@ -1162,7 +1156,6 @@ mod tests {
     let entry = read_history_entry_in(&path, id).unwrap().unwrap();
     assert_eq!(entry["pending"], true);
     assert_eq!(entry["audioId"], id);
-    assert_eq!(entry["translate"], true);
     fs::remove_dir(&clip).unwrap();
     write_debug_audio_in(&audio_dir, id, &[2], "audio/wav").unwrap();
     assert_eq!(read_debug_audio_in(&audio_dir, id).unwrap().0, vec![2]);

@@ -273,9 +273,6 @@ pre-1.12 manual `bin/b9960-vulkan` extraction (unstamped) is reinstalled rather 
   selection for Nemotron and cloud engines, and disables it only for Qwen; whether Nemotron
   follows the parameter hasn't been checked.
   The dictionary applies to cloud providers only.
-- Translation never runs locally. With a local engine selected it goes to the cloud provider in
-  `translate_provider` and requires `translate_consented`; see
-  [cloud-transcription.md](cloud-transcription.md).
 - The CPU paths on Windows and Linux are not verified end to end on real machines.
 
 ## Open measurements

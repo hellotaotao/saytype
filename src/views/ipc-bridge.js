@@ -61,7 +61,6 @@
     "set-onboarding-completed": "set_onboarding_completed",
     "save-onboarding-api-key": "save_onboarding_api_key",
     "set-provider": "set_provider",
-    "set-translate-consent": "set_translate_consent",
     "set-local-model": "set_local_model",
     "open-local-model-panel": "open_local_model_panel",
     "download-local-model": "download_local_model",
@@ -114,7 +113,6 @@
     "save-onboarding-api-key": [["provider"], ["apiKey", "api_key"]],
     "set-provider": [["provider"]],
     "open-release-page": [["version"]],
-    "set-translate-consent": [["consented"]],
     "set-local-model": [["model"]],
     "open-local-model-panel": [["model"]],
     "download-local-model": [["model"]],
@@ -138,13 +136,12 @@
     "transcribe-audio": {
       body: 0, // args[0] = audio bytes (Uint8Array / ArrayBuffer)
       headers: {
-        "translate-mode": 1,
-        "mime-type": 2,
-        "session-id": 3,
-        "chunk-index": 4, // chunked local path only; omitted for whole-clip decodes
-        "capture-incomplete": 5, // partial capture is persisted through recovery
-        "failure-id": 6, // stable across transcribeWithRetry's automatic retry
-        "session-provider": 7, // recording-start provider snapshot
+        "mime-type": 1,
+        "session-id": 2,
+        "chunk-index": 3, // chunked local path only; omitted for whole-clip decodes
+        "capture-incomplete": 4, // partial capture is persisted through recovery
+        "failure-id": 5, // stable across transcribeWithRetry's automatic retry
+        "session-provider": 6, // recording-start provider snapshot
       },
     },
     "save-pending-transcription": {

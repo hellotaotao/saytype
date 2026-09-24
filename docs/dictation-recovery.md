@@ -19,7 +19,7 @@ somewhere the user can retry or copy it. How to test this on real devices is in
   (`RECORDER_STOP_TIMEOUT_MS`) only logs a missing stop callback.
 - WebKit batch recordings log a warning at 2 s and keep waiting until a 15 s hard deadline
   (`BATCH_RECORDER_STOP_TIMEOUT_MS`). A hard timeout releases the FIFO slot and reports failure. If a
-  complete local, non-translation recording arrives later, it is encoded to 16 kHz WAV and saved to
+  complete local recording arrives later, it is encoded to 16 kHz WAV and saved to
   pending History for manual retry; it is never inserted automatically and never repaints a newer
   session.
 - Escape during activity cancels the selected recording or the latest transcription without
@@ -45,22 +45,22 @@ somewhere the user can retry or copy it. How to test this on real devices is in
 ## Failed transcriptions keep their audio
 
 - `record_failed_transcription` writes **one** History row carrying both the reason and the clip
-  (`pending: true`, `audioId`, `translate`), never a text-only failure next to an audio-only
+  (`pending: true`, `audioId`), never a text-only failure next to an audio-only
   placeholder. This runs in release builds, so recordings of failed dictations do land under
   `<app-data>`. A clip is released only when a retry produces text, when the row is deleted or
   cleared, or when it falls off the 200-entry `HISTORY_CAP`.
 - Route resolution (`resolve_transcription_route`) is inside that net. A missing API key fails before
   any request is built, and it's exactly the kind of failure a user fixes and retries.
 - Two cases are not recorded there because the frontend owns them: chunked dictation
-  (`chunk_index.is_some()`), and a local, non-translation `capture_incomplete` session
-  (`preserveRecoveryAudio` runs before the request). Cloud/translation capture-incomplete failures are
+  (`chunk_index.is_some()`), and a local `capture_incomplete` session
+  (`preserveRecoveryAudio` runs before the request). Cloud capture-incomplete failures are
   saved by Rust, including route-resolution errors.
-- A successful retry of incomplete cloud/translation capture refreshes the pending reason to
+- A successful retry of incomplete cloud capture refreshes the pending reason to
   incomplete/no-speech and keeps the clip, while the frontend preserves the partial text.
 - Incomplete and hang recovery use the provider snapshot taken when recording started
-  (`recovery-provider`), so changing Settings mid-recording doesn't change which side owns recovery.
+  (`session-provider`), so changing Settings mid-recording doesn't change which side owns recovery.
 - A hung decode is handed to the frontend only for local-origin sessions
-  (`frontend_owns_hang_recovery`), matching the frontend's gate `provider === "local" && !translateMode`.
+  (`frontend_owns_hang_recovery`), matching the frontend's gate `provider === "local"`.
   Gating on `is_hang_error` alone once made every cloud timeout vanish from History, with no row and
   no audio.
 
@@ -87,8 +87,7 @@ somewhere the user can retry or copy it. How to test this on real devices is in
 
 - `retranscribe_pending` runs the clip through whichever engine is configured **now**, not the one
   that failed. The cause is usually a key, network or model the user has since fixed, and pinning the
-  row to its original provider would lock the clip to the thing that broke. `translate` is carried on
-  the row because it is a mode, not an engine.
+  row to its original provider would lock the clip to the thing that broke.
 - Every failure after loading the row goes through `refresh_failed_row`, so the stored reason never
   keeps blaming a cause the user already fixed. A toast doesn't survive closing the window.
 - Success and failure both read the current row under the History lock and only update a row that is
@@ -152,10 +151,10 @@ by itself. `scripts/dictation-report.mjs` summarizes these lines offline without
 
 - In-memory recovery doesn't survive quitting the app; recovery is durable only after a persistence
   acknowledgement.
-- Cloud/translation incomplete audio that never reaches `transcribe_audio`, or whose request succeeds,
+- Cloud incomplete audio that never reaches `transcribe_audio`, or whose request succeeds,
   is held only in frontend memory (`routeDeferred`). Rust persists the clip only when the request
   fails. Partial text has its own acknowledged path (`preserveCompletedChunks`).
-- Cloud/translation audio that arrives after the hard recorder deadline stays in memory. It is neither
+- Cloud audio that arrives after the hard recorder deadline stays in memory. It is neither
   persisted as raw audio nor silently sent through a possibly changed provider.
 - If a pending row was already retranscribed manually, a stale retry of the original save returns an
   error instead of overwriting it.

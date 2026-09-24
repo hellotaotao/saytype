@@ -57,7 +57,7 @@ test("settings are grouped by what the user came to do", () => {
   }
   assert.match(dictation, /id="providerSelect"/);
   const engines = sectionSource("settings-panel-dictation");
-  for (const id of ["providerSelect", "apiKeyGroq", "apiKeyOpenAI", "modelSelect", "nemotronLatencySelect", "localModelItem", "translationPanel"]) {
+  for (const id of ["providerSelect", "apiKeyGroq", "apiKeyOpenAI", "modelSelect", "nemotronLatencySelect", "localModelItem"]) {
     assert.match(engines, new RegExp(`id="${id}"`));
   }
 
@@ -134,20 +134,14 @@ test("a local engine states what it cannot use instead of hiding it", () => {
   }
 });
 
-test("cloud translation stays reachable while a local engine is selected", () => {
-  // The key field used to be hidden outright on a local engine, so a failed
-  // translation pointed at Settings and Settings had nowhere to type a key.
-  assert.match(settingsJs, /apiKeyItem\?\.classList\.remove\("hidden"\)/);
-  assert.match(mainHtml, /id="translateProviderSelect"/);
-  assert.match(mainHtml, /id="translateUploadNote"/);
-  assert.match(mainHtml, /settings\.translateCloud\.title/);
-  assert.match(settingsJs, /translateProvider: document\.getElementById\("translateProviderSelect"\)/);
-  // Backend: an explicit choice, a consent gate, and a code the prompt matches.
-  assert.ok(settingsRs.includes("pub translate_provider: String"));
-  assert.ok(settingsRs.includes("pub translate_consented: bool"));
-  assert.ok(settingsRs.includes("pub fn normalize_translate_provider"));
-  assert.ok(commandsRs.includes("TRANSLATE_NEEDS_CONSENT"));
-  assert.ok(commandsRs.includes("config.translate_consented = existing.translate_consented"));
+test("translate mode is gone end to end", () => {
+  // A local engine needs no key, so the key field hides instead of moving into
+  // a translation panel.
+  assert.match(settingsJs, /apiKeyItem\?\.classList\.toggle\("hidden", isLocal\)/);
+  for (const source of [mainHtml, settingsJs, mainJs, i18nJs, settingsRs, commandsRs]) {
+    assert.doesNotMatch(source, /translateProvider|translate_provider|translateConsent|translate_consent|translateShortcut|translate_shortcut/);
+  }
+  assert.doesNotMatch(commandsRs, /audio\/translations|TRANSLATE_NEEDS_CONSENT/);
 });
 
 test("onboarding, Home, and tray expose Qwen and Nemotron as separate local engines", () => {
@@ -325,10 +319,7 @@ test("engine cards offer both Qwen sizes then OpenAI then Groq then Nemotron", (
   assert.deepEqual(values, ["LOCAL_QWEN_PROVIDER", "LOCAL_QWEN_LARGE_PROVIDER", '"openai"', '"groq"', "LOCAL_NEMOTRON_PROVIDER"]);
 });
 
-test("optional local translation is a separate collapsed panel", () => {
-  assert.match(mainHtml, /<details[^>]*id="translationPanel"[^>]*>/);
-  assert.doesNotMatch(mainHtml.match(/<details[^>]*id="translationPanel"[^>]*>/)?.[0] || "", /\sopen(?:\s|=|>)/);
-  assert.match(mainHtml, /id="translationKeySlot"/);
+test("settings groups keep their spacing", () => {
   assert.match(settingsCss, /#settings-page \.setting-group\s*\{[^}]*margin-bottom:\s*14px/);
 });
 

@@ -8,13 +8,11 @@ const { initI18n, setLanguage, applyI18n, t } = window.SayTypeI18n;
 let isDev = false;
 
 const DEFAULT_RECORD_SHORTCUT = "Ctrl+Shift";
-const DEFAULT_TRANSLATE_SHORTCUT = "Shift+Alt";
 const DEBUG_MICROPHONE_CLEANUP = false;
 // Mirror of commands.rs perform_transcription_request model selection, so the
-// badge shows the model that will ACTUALLY run (incl. the translate-mode
-// override and the empty-model default). Keep in sync with the Rust side.
+// badge shows the model that will ACTUALLY run (incl. the empty-model default).
+// Keep in sync with the Rust side.
 const RECORD_DEFAULT_MODEL = { openai: "gpt-transcribe", groq: "whisper-large-v3-turbo" };
-const TRANSLATE_MODEL = { openai: "whisper-1", groq: "whisper-large-v3" };
 const QWEN_LOCAL_MODEL_ID = "qwen3-asr-0.6b-q8_0";
 const QWEN_LARGE_LOCAL_MODEL_ID = "qwen3-asr-1.7b-q8_0";
 const NEMOTRON_LOCAL_MODEL_ID = "nemotron-3.5-asr-streaming-0.6b-q8_0";
@@ -272,7 +270,6 @@ function nonNegativeMilliseconds(value) {
 function normalizeRecordingStartPayload(payload, receivedAtUnixMs = Date.now()) {
   if (!payload || typeof payload !== "object") {
     return {
-      translateMode: !!payload,
       nativeMs: 0,
       eventDeliveryMs: 0,
     };
@@ -280,7 +277,6 @@ function normalizeRecordingStartPayload(payload, receivedAtUnixMs = Date.now()) 
 
   const dispatchedAtUnixMs = Number(payload.dispatchedAtUnixMs);
   return {
-    translateMode: !!payload.translateMode,
     nativeMs: nonNegativeMilliseconds(Number(payload.nativeMs)),
     eventDeliveryMs: Number.isFinite(dispatchedAtUnixMs)
       ? nonNegativeMilliseconds(receivedAtUnixMs - dispatchedAtUnixMs)
@@ -346,7 +342,6 @@ function textShape(text) {
 class VoiceInputPrompt {
   constructor() {
     this.isRecording = false;
-    this.translateMode = false;
     this.audioContext = null;
     this.mediaStream = null;
     this.mediaRecorder = null;
@@ -379,7 +374,6 @@ class VoiceInputPrompt {
     this.hidePromptTimerId = null;
     this.actualHideTimerId = null;
     this.recordShortcut = DEFAULT_RECORD_SHORTCUT;
-    this.translateShortcut = DEFAULT_TRANSLATE_SHORTCUT;
     this.pageStartedAt = performance.now();
 
     this.promptElement = document.getElementById("inputPrompt");
@@ -392,11 +386,6 @@ class VoiceInputPrompt {
     this.copyBtn = document.getElementById("copyBtn");
     this.copyBtnLabel = document.getElementById("copyBtnLabel");
     this.localModelBtn = document.getElementById("localModelBtn");
-    this.consentActions = document.getElementById("consentActions");
-    this.consentAcceptBtn = document.getElementById("consentAcceptBtn");
-    this.consentDeclineBtn = document.getElementById("consentDeclineBtn");
-    this.translateConsented = false;
-    this.translateProvider = "";
     this.currentProvider = null;
     this.currentModel = "";
     this.currentMicrophone = "default";
@@ -508,10 +497,7 @@ class VoiceInputPrompt {
       if (!payload) {
         return;
       }
-      const recordShortcut = payload.recordShortcut || DEFAULT_RECORD_SHORTCUT;
-      const translateShortcut =
-        payload.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT;
-      this.updateShortcutHint(recordShortcut, translateShortcut);
+      this.updateShortcutHint(payload.recordShortcut || DEFAULT_RECORD_SHORTCUT);
       if (payload.provider !== undefined) this.currentProvider = payload.provider;
       if (payload.model !== undefined) this.currentModel = payload.model;
       this.updateModelBadge();
@@ -523,7 +509,7 @@ class VoiceInputPrompt {
       }
       setLanguage(payload.language);
       applyI18n(document);
-      this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
+      this.updateShortcutHint(this.recordShortcut);
     });
 
     ipc.on("ui-theme-updated", (event, payload) => {
@@ -540,7 +526,6 @@ class VoiceInputPrompt {
       }
       const startupTiming = normalizeRecordingStartPayload(payload);
       this.stopRequested = false;
-      this.translateMode = startupTiming.translateMode;
       this.updateModelBadge();
       await this.startRecording(startupTiming);
     });
@@ -583,7 +568,6 @@ class VoiceInputPrompt {
 
     // Add window beforeunload event to ensure cleanup
     window.addEventListener("beforeunload", () => {
-      this.pendingTranslateConsent?.finish(false);
       const native = this.activeRecordingSession?.nativeCapture;
       if (native && !native.stopped && !native.stopPromise) {
         native.accepting = false;
@@ -617,16 +601,11 @@ class VoiceInputPrompt {
       this.currentProvider = settings.provider || "local";
       this.currentModel = settings.model || "";
       this.currentMicrophone = settings.microphone || "default";
-      this.translateConsented = !!settings.translateConsented;
-      this.translateProvider = settings.translateProvider || "";
-      this.updateShortcutHint(
-        settings.shortcut || DEFAULT_RECORD_SHORTCUT,
-        settings.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT
-      );
+      this.updateShortcutHint(settings.shortcut || DEFAULT_RECORD_SHORTCUT);
       this.updateModelBadge();
     } catch (error) {
       console.error("Failed to load shortcut hint settings:", error);
-      this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
+      this.updateShortcutHint(this.recordShortcut);
     }
   }
 
@@ -644,21 +623,15 @@ class VoiceInputPrompt {
     return isMac ? label.replace(/Alt/g, "Option") : label;
   }
 
-  updateShortcutHint(recordShortcut, translateShortcut) {
+  updateShortcutHint(recordShortcut) {
     if (!this.promptText) {
       return;
     }
     const safeRecordShortcut =
       recordShortcut || this.recordShortcut || DEFAULT_RECORD_SHORTCUT;
-    const safeTranslateShortcut =
-      translateShortcut || this.translateShortcut || DEFAULT_TRANSLATE_SHORTCUT;
     this.recordShortcut = safeRecordShortcut;
-    this.translateShortcut = safeTranslateShortcut;
-    const recordLabel = this.formatShortcutLabel(safeRecordShortcut);
-    const translateLabel = this.formatShortcutLabel(safeTranslateShortcut);
     this.promptText.textContent = t("inputPrompt.hint", {
-      record: recordLabel,
-      translate: translateLabel,
+      record: this.formatShortcutLabel(safeRecordShortcut),
     });
   }
 
@@ -667,22 +640,15 @@ class VoiceInputPrompt {
       return null; // settings not loaded yet
     }
     if (this.currentProvider === "local") {
-      // Translate mode falls back to a cloud Whisper (commands.rs picks the
-      // provider by key presence — the exact one isn't known here).
       const model = this.currentModel === NEMOTRON_LOCAL_MODEL_ID
         ? NEMOTRON_LOCAL_MODEL_ID
         : this.currentModel === QWEN_LARGE_LOCAL_MODEL_ID ? QWEN_LARGE_LOCAL_MODEL_ID : QWEN_LOCAL_MODEL_ID;
-      return this.translateMode ? "Cloud Whisper" : MODEL_LABEL[model];
+      return MODEL_LABEL[model];
     }
     const provider = this.currentProvider === "groq" ? "groq" : "openai";
-    let model;
-    if (this.translateMode) {
-      model = TRANSLATE_MODEL[provider];
-    } else if (!String(this.currentModel || "").trim()) {
-      model = RECORD_DEFAULT_MODEL[provider];
-    } else {
-      model = this.currentModel;
-    }
+    const model = String(this.currentModel || "").trim()
+      ? this.currentModel
+      : RECORD_DEFAULT_MODEL[provider];
     return MODEL_LABEL[model] || model || "";
   }
 
@@ -691,64 +657,6 @@ class VoiceInputPrompt {
       return;
     }
     this.modelBadge.textContent = this.resolveActiveModel() || "";
-  }
-
-  // --- Translate-upload consent ---
-  // Display name for the provider the clip would go to. Mirrors the backend's
-  // normalize_translate_provider fallback (Groq first) so the notice names the
-  // provider that will actually be used.
-  translateProviderLabel() {
-    return this.translateProvider === "openai" ? "OpenAI" : "Groq";
-  }
-
-  // Local dictation never leaves the device; translate mode has to. Ask once,
-  // here rather than in Settings, because this is the moment it actually
-  // matters — the clip exists and is about to be sent. Resolves true to send.
-  askTranslateConsent(providerLabel, recordingSession) {
-    // Late finalization must not overwrite a newer recording's UI.
-    if (!recordingSession || recordingSession.id !== this.recordingSessionId ||
-        this.isRecording || this.starting || this.isSessionCancelled(recordingSession)) {
-      return Promise.resolve(false);
-    }
-    this.pendingTranslateConsent?.finish(false);
-    const lifecycle = this.ensureRecordingSession(recordingSession);
-    if (!this.consentActions || !this.consentAcceptBtn || !this.consentDeclineBtn) {
-      // No UI to ask with: refuse rather than upload unasked.
-      return Promise.resolve(false);
-    }
-    this.clearHidePromptTimer();
-    this.promptElement.classList.remove("recording");
-    this.promptText.textContent = t("inputPrompt.translateConsentTitle", {
-      provider: providerLabel,
-    });
-    this.statusText.textContent = t("inputPrompt.translateConsentHint");
-    this.statusText.style.color = "var(--status-warning)";
-    this.consentAcceptBtn.textContent = t("inputPrompt.translateConsentAccept");
-    this.consentDeclineBtn.textContent = t("inputPrompt.translateConsentDecline");
-    if (this.waveContainer) this.waveContainer.style.display = "none";
-    this.consentActions.hidden = false;
-
-    return new Promise((resolve) => {
-      let settled = false;
-      const cancelWaiter = () => finish(false);
-      const finish = (accepted) => {
-        if (settled) return;
-        settled = true;
-        lifecycle.cancelWaiters.delete(cancelWaiter);
-        this.pendingTranslateConsent = null;
-        this.consentActions.hidden = true;
-        if (this.waveContainer) this.waveContainer.style.display = "";
-        this.consentAcceptBtn.removeEventListener("click", onAccept);
-        this.consentDeclineBtn.removeEventListener("click", onDecline);
-        resolve(accepted);
-      };
-      const onAccept = () => finish(!this.isSessionCancelled(recordingSession));
-      const onDecline = () => finish(false);
-      this.pendingTranslateConsent = { sessionId: recordingSession.id, finish };
-      lifecycle.cancelWaiters.add(cancelWaiter);
-      this.consentAcceptBtn.addEventListener("click", onAccept);
-      this.consentDeclineBtn.addEventListener("click", onDecline);
-    });
   }
 
   // --- Insertion-failure "click to Copy" UI (never an automatic clipboard touch) ---
@@ -1330,9 +1238,9 @@ class VoiceInputPrompt {
     if (!recovery || recovery.waitingRecorder || recovery.saving || recovery.saved ||
       this.isSessionCancelled(session)) return;
     // The regular command rereads current settings. Without a native route
-    // snapshot, late cloud/translation audio must remain in memory: neither
-    // silently send it to a changed provider nor persist it as local raw audio.
-    if (session.provider !== "local" || session.translateMode) {
+    // snapshot, late cloud audio must remain in memory: neither silently send
+    // it to a changed provider nor persist it as local raw audio.
+    if (session.provider !== "local") {
       if (!recovery.routeDeferred) this.reportLifecycle(session, "recovery", "fallback");
       recovery.routeDeferred = true;
       return;
@@ -1542,7 +1450,7 @@ class VoiceInputPrompt {
         this.hidePrompt();
         return;
       }
-      this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
+      this.updateShortcutHint(this.recordShortcut);
       if (insertedAny) {
         // A batch mixed inserted + failed items — brief acknowledgement.
         this.statusText.textContent = t("inputPrompt.textInserted");
@@ -1632,11 +1540,10 @@ class VoiceInputPrompt {
     this.scheduleHidePrompt(15000);
   }
 
-  shouldUseNemotronLive(translateMode = this.translateMode, recordingSession) {
+  shouldUseNemotronLive(recordingSession) {
     return (
       (recordingSession?.provider ?? this.currentProvider) === "local" &&
-      (recordingSession?.captureModel ?? this.currentModel) === NEMOTRON_LOCAL_MODEL_ID &&
-      !translateMode
+      (recordingSession?.captureModel ?? this.currentModel) === NEMOTRON_LOCAL_MODEL_ID
     );
   }
 
@@ -1661,7 +1568,7 @@ class VoiceInputPrompt {
   }
 
   async setupNemotronLive(recordingSession, source) {
-    if (!this.shouldUseNemotronLive(recordingSession.translateMode, recordingSession)) {
+    if (!this.shouldUseNemotronLive(recordingSession)) {
       return;
     }
     if (!this.audioContext?.audioWorklet) {
@@ -1769,11 +1676,10 @@ class VoiceInputPrompt {
   // Fail-open by design: if live capture cannot be set up, `chunked` stays unset
   // and processRecording takes the original whole-clip path.
 
-  shouldUseChunkedLocal(translateMode = this.translateMode, recordingSession) {
+  shouldUseChunkedLocal(recordingSession) {
     return (
       (recordingSession?.provider ?? this.currentProvider) === "local" &&
       (recordingSession?.captureModel ?? this.currentModel) !== NEMOTRON_LOCAL_MODEL_ID &&
-      !translateMode &&
       !!window.SayTypeChunk
     );
   }
@@ -1867,7 +1773,7 @@ class VoiceInputPrompt {
   }
 
   async setupChunkedLocal(recordingSession, source) {
-    if (!this.shouldUseChunkedLocal(recordingSession.translateMode, recordingSession)) {
+    if (!this.shouldUseChunkedLocal(recordingSession)) {
       return;
     }
     let chunked = null;
@@ -1993,7 +1899,7 @@ class VoiceInputPrompt {
         }
         chunked.inFlightChunkIndex = chunkIndex;
         const text = await this.waitForSessionStage(recordingSession, "chunk-ipc", () => {
-          const request = ipc.invoke("transcribe-audio", wav, false, "audio/wav",
+          const request = ipc.invoke("transcribe-audio", wav, "audio/wav",
             chunked.sessionId, chunkIndex, undefined, undefined, recordingSession.provider);
           accounting.submittedSamples += pcm.length;
           accounting.submittedChunks += 1;
@@ -2186,10 +2092,10 @@ class VoiceInputPrompt {
   }
 
   async setupNativeConsumers(recordingSession) {
-    if (this.shouldUseNemotronLive(recordingSession.translateMode, recordingSession)) {
+    if (this.shouldUseNemotronLive(recordingSession)) {
       await this.beginNemotronLive(recordingSession, 16000);
     }
-    if (this.shouldUseChunkedLocal(recordingSession.translateMode, recordingSession)) {
+    if (this.shouldUseChunkedLocal(recordingSession)) {
       this.createChunkedSession(recordingSession, 16000);
     }
   }
@@ -2418,9 +2324,8 @@ class VoiceInputPrompt {
       id: sessionId,
       chunks: [],
       mimeType: "audio/wav",
-      translateMode: this.translateMode,
       qwenSession: captureEngine.provider === "local" &&
-        captureEngine.model !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
+        captureEngine.model !== NEMOTRON_LOCAL_MODEL_ID,
       cancelledShortPress: false,
       provider: captureEngine.provider,
       captureModel: captureEngine.model,
@@ -2509,9 +2414,7 @@ class VoiceInputPrompt {
     this.nativeCapture = capture;
 
     this.promptElement.classList.add("visible", "recording");
-    this.promptText.textContent = this.translateMode
-      ? t("inputPrompt.listeningEnglish")
-      : t("inputPrompt.listening");
+    this.promptText.textContent = t("inputPrompt.listening");
     this.recordingStartedAt = Date.now();
     this.cancelledShortPress = false;
     this.isRecording = true;
@@ -2547,7 +2450,6 @@ class VoiceInputPrompt {
 
   async startRecording(startupTiming = {}) {
     if (this.isRecording || this.starting) return;
-    this.pendingTranslateConsent?.finish(false);
 
     // A prior Escape may have cancelled an older transcription without hiding
     // the prompt yet. A new recording is a fresh operation and must not inherit
@@ -2673,9 +2575,8 @@ class VoiceInputPrompt {
         id: sessionId,
         chunks: [],
         mimeType: mimeType,
-        translateMode: this.translateMode,
         qwenSession: captureEngine.provider === "local" &&
-          captureEngine.model !== NEMOTRON_LOCAL_MODEL_ID && !this.translateMode,
+          captureEngine.model !== NEMOTRON_LOCAL_MODEL_ID,
         cancelledShortPress: false,
         provider: captureEngine.provider,
         captureModel: captureEngine.model,
@@ -2739,11 +2640,7 @@ class VoiceInputPrompt {
       // Reveal the prompt only after every selected engine is ready to receive
       // audio. The visible Listening state therefore never drops first words.
       this.promptElement.classList.add("visible", "recording");
-      if (this.translateMode) {
-        this.promptText.textContent = t("inputPrompt.listeningEnglish");
-      } else {
-        this.promptText.textContent = t("inputPrompt.listening");
-      }
+      this.promptText.textContent = t("inputPrompt.listening");
 
       // No timeslice, and requestData() is never called: the recorder emits
       // exactly one dataavailable, carrying the complete container. Late-audio
@@ -2855,7 +2752,7 @@ class VoiceInputPrompt {
             Date.now() - lifecycle.stopRequestedAt);
         }, RECORDER_STOP_TIMEOUT_MS);
       } else {
-        // Whole-clip (cloud/translate) dictation genuinely needs the recorder's
+        // Whole-clip (cloud) dictation genuinely needs the recorder's
         // finished container, so it still waits: a warning at 2s, failure at 15s.
         lifecycle.stopTimer = setTimeout(() => {
           void this.finalizeRecordingSession(recordingSession, "timeout");
@@ -3077,7 +2974,7 @@ class VoiceInputPrompt {
   // waits its turn rather than jumping ahead — recording order is preserved.
   // Only after the retry also fails does the caller's catch give up (drop the
   // session, surface the failure). Deterministic errors rethrow immediately.
-  async transcribeWithRetry(uploadBuffer, translateMode, uploadMime, sessionId, provider) {
+  async transcribeWithRetry(uploadBuffer, uploadMime, sessionId, provider) {
     const MAX_ATTEMPTS = 2; // original + one retry
     const session = this.recordingSessions?.get(sessionId);
     // Both attempts are the SAME recording, so they must share one History row.
@@ -3090,7 +2987,6 @@ class VoiceInputPrompt {
         const transcribe = () => ipc.invoke(
           "transcribe-audio",
           uploadBuffer,
-          translateMode,
           uploadMime,
           sessionId,
           undefined, // chunk-index: this is the whole-clip path
@@ -3128,7 +3024,6 @@ class VoiceInputPrompt {
       id: sessionId,
       chunks = [],
       mimeType,
-      translateMode,
       cancelledShortPress,
     } = recordingSession;
     // Recomputed at every use, NOT captured once: transcriptions outlive this
@@ -3145,8 +3040,8 @@ class VoiceInputPrompt {
     let uploadMime = mimeType || "audio/webm";
     let releaseLocalTranscriptionSlot = null;
     let audioBlob = null;
-    const useNemotronLive = !!recordingSession.live && !translateMode;
-    const useChunkedLocal = !!recordingSession.chunked && !translateMode;
+    const useNemotronLive = !!recordingSession.live;
+    const useChunkedLocal = !!recordingSession.chunked;
     let terminalState = "completed";
 
     this.transcriptionInProgressCount += 1;
@@ -3192,37 +3087,8 @@ class VoiceInputPrompt {
         return;
       }
 
-      // Translate on a local engine has to reach a cloud provider, so this clip
-      // leaves the device while ordinary dictation never does. Ask before the
-      // upload rather than after a rejection: the recording is already in hand
-      // and, unlike during recording, the user's hands are off the shortcut.
-      if (
-        translateMode &&
-        (recordingSession.provider || this.currentProvider) === "local" &&
-        !this.translateConsented
-      ) {
-        const accepted = await this.askTranslateConsent(this.translateProviderLabel(), recordingSession);
-        if (!accepted) {
-          terminalState = "cancelled";
-          this.removePendingInsertion(sessionId);
-          if (allowUi()) {
-            this.statusText.textContent = t("inputPrompt.translateConsentDeclined");
-            this.statusText.style.color = "var(--status-warning)";
-            this.scheduleHidePrompt(2000);
-          }
-          return;
-        }
-        this.assertSessionActive(recordingSession);
-        // The backend gates the upload on durable consent too. A failed write
-        // must not leave the renderer believing authorization was persisted.
-        await ipc.invoke("set-translate-consent", true);
-        this.assertSessionActive(recordingSession);
-        this.translateConsented = true;
-      }
-
       const useLocalWav =
         (recordingSession.provider || this.currentProvider) === "local" &&
-        !translateMode &&
         !useNemotronLive &&
         !useChunkedLocal;
       if (useLocalWav) {
@@ -3327,7 +3193,6 @@ class VoiceInputPrompt {
 
         transcription = await this.transcribeWithRetry(
           uploadBuffer,
-          translateMode,
           uploadMime,
           sessionId,
           recordingSession.provider
@@ -3381,7 +3246,6 @@ class VoiceInputPrompt {
       // Audio/text recovery is background content custody, never pending FIFO
       // work. Keep source bytes until a real persistence ACK releases them.
       const wantsRecoveryAudio = !isCancelled && recordingSession.provider === "local" &&
-        !translateMode &&
         (useNemotronLive || useChunkedLocal || isRetryableTranscriptionError(message));
       if (wantsRecoveryAudio && (audioBlob || uploadBuffer)) {
         this.preserveRecoveryAudio(recordingSession, {
@@ -3660,7 +3524,7 @@ class VoiceInputPrompt {
     
     this.promptElement.classList.remove("visible", "recording");
     this.clearTranscriptionPreview();
-    this.updateShortcutHint(this.recordShortcut, this.translateShortcut);
+    this.updateShortcutHint(this.recordShortcut);
     this.statusText.textContent = "";
     this.statusText.style.color = "";
 
@@ -3672,10 +3536,6 @@ class VoiceInputPrompt {
     this.cancelledShortPress = false;
     this.cancelInProgress = false;
     this.cancelGateToken = null;
-    // translateMode is set per-session on start-recording and is reset NOWHERE
-    // else; without this the model badge would stick on the translate model
-    // after any Shift+Alt session.
-    this.translateMode = false;
     this.clearInsertFailedUi();
     this.updateModelBadge();
 

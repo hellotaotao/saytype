@@ -86,9 +86,9 @@ test("live completion carries the optional capture integrity flag", async () => 
 test("whole-clip transcription sends capture integrity independently of chunk index", async () => {
   const { bridge, calls } = loadBridge();
   const audio = new Uint8Array([1, 2]);
-  await bridge.invoke("transcribe-audio", audio, false, "audio/wav", 42, undefined, true);
-  await bridge.invoke("transcribe-audio", audio, false, "audio/wav", 43);
-  await bridge.invoke("transcribe-audio", audio, false, "audio/wav", 44, 0, false);
+  await bridge.invoke("transcribe-audio", audio, "audio/wav", 42, undefined, true);
+  await bridge.invoke("transcribe-audio", audio, "audio/wav", 43);
+  await bridge.invoke("transcribe-audio", audio, "audio/wav", 44, 0, false);
   assert.equal(calls[0][1], audio);
   assert.equal(calls[0][2].headers["capture-incomplete"], "true");
   assert.equal(Object.hasOwn(calls[0][2].headers, "chunk-index"), false);

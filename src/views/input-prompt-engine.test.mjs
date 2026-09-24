@@ -69,7 +69,7 @@ function harness(options = {}) {
   });
   vm.runInContext(`${read("./input-prompt.js")}\n;globalThis.Prompt = VoiceInputPrompt;`, context);
   const prompt = Object.assign(Object.create(context.Prompt.prototype), {
-    isRecording: false, starting: false, stopRequested: false, translateMode: false,
+    isRecording: false, starting: false, stopRequested: false,
     recordingSessionId: 0, currentProvider: "local", currentModel: "qwen3-asr-0.6b-q8_0",
     recordingSessions: new Map(), cancelledTranscriptionSessionIds: new Set(),
     activeTranscriptionSessionIds: new Set(), pendingInsertionOrder: [], pendingInsertionsById: new Map(),
@@ -121,7 +121,7 @@ test("web capture keeps its provider across AudioContext resume", async () => {
 test("native consumers use the session provider after settings change", async () => {
   const h = harness();
   h.prompt.currentProvider = "openai";
-  const session = { id: 1, provider: "local", captureModel: "qwen3-asr-0.6b-q8_0", translateMode: false };
+  const session = { id: 1, provider: "local", captureModel: "qwen3-asr-0.6b-q8_0" };
   await h.prompt.setupNativeConsumers(session);
   assert.ok(session.chunked, "the local recording must retain its local capture consumer");
 });
@@ -144,13 +144,13 @@ test("chunk requests carry the recording provider even after settings change", a
   const h = harness();
   h.prompt.currentProvider = "openai";
   h.prompt.encodeChunkWav = async () => new Uint8Array([1]);
-  const session = { id: 1, provider: "local", translateMode: false };
+  const session = { id: 1, provider: "local" };
   const chunked = h.prompt.createChunkedSession(session, 16000);
   h.prompt.enqueueChunkDecode(chunked, new Float32Array(320));
   await chunked.queue;
   const request = h.calls.find(([name]) => name === "transcribe-audio");
-  assert.equal(request?.[8], "local");
-  assert.equal(request?.[5], 0);
+  assert.equal(request?.[7], "local");
+  assert.equal(request?.[4], 0);
 });
 
 test("automatic retries use the explicit provider when the session map no longer has the recording", async () => {
@@ -160,11 +160,11 @@ test("automatic retries use the explicit provider when the session map no longer
     return "words";
   } });
   h.prompt.currentProvider = "openai";
-  assert.equal(await h.prompt.transcribeWithRetry(new Uint8Array([1]), false, "audio/wav", 1, "local"), "words");
+  assert.equal(await h.prompt.transcribeWithRetry(new Uint8Array([1]), "audio/wav", 1, "local"), "words");
   const requests = h.calls.filter(([name]) => name === "transcribe-audio");
   assert.equal(requests.length, 2);
-  assert.deepEqual(requests.map((call) => call[8]), ["local", "local"]);
-  assert.equal(requests[0][7], requests[1][7]);
+  assert.deepEqual(requests.map((call) => call[7]), ["local", "local"]);
+  assert.equal(requests[0][6], requests[1][6]);
 });
 
 test("batch finalization passes the session provider explicitly to automatic retry", async () => {
@@ -173,10 +173,10 @@ test("batch finalization passes the session provider explicitly to automatic ret
   h.prompt.currentProvider = "openai";
   h.prompt.transcribeWithRetry = async (...args) => { received.push(args); return ""; };
   await h.prompt.processRecording({
-    id: 1, provider: "local", translateMode: false, mimeType: "audio/wav",
+    id: 1, provider: "local", mimeType: "audio/wav",
     chunks: [new Blob([new Uint8Array([1])])],
   });
-  assert.equal(received[0]?.[4], "local");
+  assert.equal(received[0]?.[3], "local");
 });
 
 test("missing local model blocks capture with a model-settings action", async () => {
@@ -229,14 +229,14 @@ test("LOCAL_MODEL_MISSING transcription errors reuse the local-model preflight m
   } });
   h.prompt.recordingSessionId = 1;
   await h.prompt.processRecording({
-    id: 1, provider: "local", translateMode: false, mimeType: "audio/wav",
+    id: 1, provider: "local", mimeType: "audio/wav",
     chunks: [new Blob([new Uint8Array([1])])],
   });
   assert.equal(h.prompt.statusText.textContent, "inputPrompt.localModelMissing");
   assert.equal(h.prompt.localModelBtn.hidden, false);
 });
 
-test("raw-audio IPC uses session-provider at argument seven", async () => {
+test("raw-audio IPC uses session-provider at argument six", async () => {
   const calls = [];
   const context = vm.createContext({
     window: { __TAURI__: { core: { invoke: async (...args) => calls.push(args) }, event: { listen() {} } } },
@@ -244,7 +244,7 @@ test("raw-audio IPC uses session-provider at argument seven", async () => {
     Headers, Uint8Array, ArrayBuffer,
   });
   vm.runInContext(read("./ipc-bridge.js"), context);
-  await context.window.__SAYTYPE_IPC__.invoke("transcribe-audio", new Uint8Array([1]), false, "audio/wav", 1, 0, undefined, undefined, "local");
+  await context.window.__SAYTYPE_IPC__.invoke("transcribe-audio", new Uint8Array([1]), "audio/wav", 1, 0, undefined, undefined, "local");
   const headers = calls[0][2].headers;
   const header = (key) => headers instanceof Headers ? headers.get(key) : headers[key];
   assert.equal(header("session-provider"), "local");

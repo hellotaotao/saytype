@@ -310,22 +310,14 @@
               <span id="engineActivationStatus" role="status" aria-live="polite"></span>
             </div>
 
-            <div id="dictationKeySlot" hidden></div>
             <div class="setting-item" id="apiKeyItem">
               <div class="setting-info">
                 <div class="setting-title" id="apiKeyTitle" data-i18n="settings.apiKey.title">API Key</div>
                 <div class="setting-description" id="apiKeyDescription" data-i18n="settings.apiKey.description">
                   Enter your API key for selected provider.
                 </div>
-                <div class="setting-note hidden" id="translateUploadNote" data-i18n="settings.translateCloud.uploadNote">
-                  Only the clip you record with Shift + Alt is uploaded; ordinary dictation stays on this device.
-                </div>
               </div>
               <div class="setting-control">
-                <select class="input provider-select hidden" id="translateProviderSelect" title="Select the provider translation uses" data-i18n="settings.translateCloud.selectTitle" data-i18n-attr="title">
-                  <option value="groq">Groq</option>
-                  <option value="openai">OpenAI</option>
-                </select>
                 <div class="api-key-field hidden" id="apiKeyFieldGroq">
                   <input type="password" class="input api-key-input" id="apiKeyGroq" placeholder="Groq API key" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n="settings.apiKey.groqPlaceholder" data-i18n-attr="placeholder" />
                   <button type="button" class="reveal-btn material-icons" data-target="apiKeyGroq" aria-label="Show key" title="Show key" data-i18n="settings.apiKey.reveal" data-i18n-attr="aria-label,title">visibility</button>
@@ -359,7 +351,7 @@
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.recordingShortcut.title">Recording shortcut</div>
                 <div class="setting-description" data-i18n="settings.recordingShortcut.description">
-                  Choose your preferred hold-to-record shortcut. Translation stays Shift + Alt.
+                  Choose your preferred hold-to-record shortcut.
                 </div>
               </div>
               <div class="setting-control">
@@ -502,7 +494,7 @@
             </div>
           </div>
           <details class="setting-group hidden" id="engineAdvanced">
-            <summary class="translation-summary" data-i18n="settings.advanced">Advanced settings</summary>
+            <summary class="setting-summary" data-i18n="settings.advanced">Advanced settings</summary>
             <div class="setting-item hidden" id="nemotronLatencyItem">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.nemotronLatency.title">Nemotron look-ahead</div>
@@ -546,14 +538,6 @@
                 <button class="btn btn-secondary hidden" id="localModelDeleteBtn" type="button"></button>
               </div>
             </div>
-          </details>
-
-          <details class="setting-group hidden" id="translationPanel">
-            <summary class="translation-summary">
-              <span class="setting-title" data-i18n="settings.translateCloud.title">Cloud translation (optional)</span>
-              <span class="setting-description" data-i18n="settings.translateCloud.description">Local dictation needs no API key. Expand only to set up English translation with Shift + Alt.</span>
-            </summary>
-            <div id="translationKeySlot"></div>
           </details>
 
         </section>

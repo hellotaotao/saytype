@@ -342,12 +342,10 @@ test("start event timing includes native work and renderer delivery delay", () =
   assert.equal(typeof normalize, "function");
   assert.deepEqual(
     JSON.parse(JSON.stringify(normalize({
-      translateMode: true,
       dispatchedAtUnixMs: 1000,
       nativeMs: 80,
     }, 1300))),
     {
-      translateMode: true,
       nativeMs: 80,
       eventDeliveryMs: 300,
     }
@@ -355,7 +353,6 @@ test("start event timing includes native work and renderer delivery delay", () =
   assert.deepEqual(
     JSON.parse(JSON.stringify(normalize(false, 1300))),
     {
-      translateMode: false,
       nativeMs: 0,
       eventDeliveryMs: 0,
     }
@@ -406,7 +403,6 @@ test("recording startup reports native, delivery, microphone, and first-paint ti
   });
   const prompt = createBarePrompt(VoiceInputPrompt, {
     pageStartedAt: 0,
-    translateMode: false,
     cancelInProgress: true,
     stopRequested: false,
     activeRecordingSession: null,
@@ -491,7 +487,6 @@ test("macOS records through native PCM without opening WebKit capture", async ()
     osName: "macos",
     currentMicrophone: "default",
     pageStartedAt: 0,
-    translateMode: false,
     stopRequested: false,
     cancelInProgress: false,
     activeRecordingSession: null,
@@ -574,7 +569,6 @@ test("a new native recording waits for the previous capture to release the devic
     osName: "macos",
     currentMicrophone: "default",
     pageStartedAt: 0,
-    translateMode: false,
     stopRequested: false,
     cancelInProgress: false,
     activeRecordingSession: null,
@@ -679,7 +673,6 @@ test("a macOS native capture failure falls back to WebKit instead of losing the 
     osName: "macos",
     currentMicrophone: "default",
     pageStartedAt: 0,
-    translateMode: false,
     stopRequested: false,
     cancelInProgress: false,
     activeRecordingSession: null,
@@ -734,7 +727,6 @@ test("native PCM drives Qwen chunking at 16 kHz and retains a recovery WAV", asy
     osName: "macos",
     currentProvider: "local",
     currentModel: "qwen3-asr-0.6b-q8_0",
-    translateMode: false,
     enqueueChunkDecode(_chunked, pcm) {
       closedChunk = pcm;
     },
@@ -743,7 +735,6 @@ test("native PCM drives Qwen chunking at 16 kHz and retains a recovery WAV", asy
     id: 11,
     chunks: [],
     mimeType: "audio/wav",
-    translateMode: false,
     provider: "local",
     onsetProbe: null,
     audioContext: null,
@@ -782,13 +773,11 @@ test("native PCM feeds Nemotron's existing binary upload queue", async () => {
     currentProvider: "local",
     currentModel: "nemotron-3.5-asr-streaming-0.6b-q8_0",
     currentLanguage: "auto",
-    translateMode: false,
   });
   const session = {
     id: 12,
     chunks: [],
     mimeType: "audio/wav",
-    translateMode: false,
     provider: "local",
     onsetProbe: null,
     audioContext: null,
@@ -807,7 +796,7 @@ test("native PCM feeds Nemotron's existing binary upload queue", async () => {
   assert.equal(pushed[2], 12);
 });
 
-test("Qwen prewarm eligibility requires an active non-translation recording", async () => {
+test("Qwen prewarm eligibility requires an active recording", async () => {
   const calls = [];
   const VoiceInputPrompt = loadVoiceInputPrompt({
     invoke(command, ...args) {
@@ -924,7 +913,6 @@ test("Qwen prewarm waits for probation after first paint and skips a cancelled r
     pageStartedAt: 0,
     currentProvider: "local",
     currentModel: "qwen3-asr-0.6b-q8_0",
-    translateMode: false,
     cancelInProgress: false,
     stopRequested: false,
     activeRecordingSession: null,
@@ -1046,7 +1034,6 @@ test("a failed old transcription cannot repaint or hide a newer recording", asyn
     id: 1,
     chunks: [new Blob([new Uint8Array([1, 2, 3])])],
     mimeType: "audio/webm",
-    translateMode: false,
     cancelledShortPress: false,
   });
   await invokeStarted.promise;
@@ -1083,12 +1070,11 @@ test("transcription IPC carries the recording session id", async () => {
     id: 7,
     chunks: [new Blob([new Uint8Array([1, 2, 3])])],
     mimeType: "audio/webm",
-    translateMode: false,
     cancelledShortPress: false,
   });
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][3], 7);
+  assert.equal(calls[0][2], 7);
 });
 
 test("Nemotron final is inserted without running the Qwen batch path", async () => {
@@ -1114,7 +1100,6 @@ test("Nemotron final is inserted without running the Qwen batch path", async () 
     id: 9,
     chunks: [new Blob([new Uint8Array([1, 2, 3])])],
     mimeType: "audio/webm",
-    translateMode: false,
     cancelledShortPress: false,
     live: {
       sessionId: 9,
@@ -1181,7 +1166,7 @@ test("a queued local transcription can be cancelled before native IPC", async ()
   const VoiceInputPrompt = loadVoiceInputPrompt({
     invoke(command, ...args) {
       invoked.push([command, ...args]);
-      if (command === "transcribe-audio" && args[3] === 1) {
+      if (command === "transcribe-audio" && args[2] === 1) {
         firstStarted.resolve();
         return firstTranscription.promise;
       }
@@ -1320,7 +1305,6 @@ function processOneRecording(prompt, id = 1) {
     id,
     chunks: [new Blob([new Uint8Array([1, 2, 3])])],
     mimeType: "audio/webm",
-    translateMode: false,
     cancelledShortPress: false,
   });
 }
@@ -1542,7 +1526,7 @@ test("chunks decode in order, one at a time, each tagged with its chunk index", 
     maxInFlight = Math.max(maxInFlight, inFlight);
     await new Promise((resolve) => setTimeout(resolve, 5));
     inFlight -= 1;
-    return `chunk${args[4]}`;
+    return `chunk${args[3]}`;
   });
 
   const prompt = createBarePrompt(VoiceInputPrompt);
@@ -1555,10 +1539,9 @@ test("chunks decode in order, one at a time, each tagged with its chunk index", 
   assert.deepEqual(chunked.results, ["chunk0", "chunk1", "chunk2"]);
   assert.equal(maxInFlight, 1, "decodes must stay serial — one llama worker");
   assert.equal(calls.length, 3);
-  assert.equal(calls[0][1], false, "chunked dictation never runs translate mode");
-  assert.equal(calls[0][2], "audio/wav");
-  assert.equal(calls[0][3], 7, "the recording session id rides along");
-  assert.deepEqual(calls.map((args) => args[4]), [0, 1, 2]);
+  assert.equal(calls[0][1], "audio/wav");
+  assert.equal(calls[0][2], 7, "the recording session id rides along");
+  assert.deepEqual(calls.map((args) => args[3]), [0, 1, 2]);
   assert.ok(calls[0][0].length > 44, "a real WAV, header included, is uploaded");
 });
 
@@ -1566,10 +1549,10 @@ test("a decoded chunk keeps the session worker ready, and the final chunk does n
   const calls = [];
   const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
     calls.push(channel);
-    return channel === "transcribe-audio" ? `chunk${args[4]}` : true;
+    return channel === "transcribe-audio" ? `chunk${args[3]}` : true;
   });
 
-  const recordingSession = { id: 7, translateMode: false, qwenSession: true };
+  const recordingSession = { id: 7, qwenSession: true };
   const prompt = createBarePrompt(VoiceInputPrompt, {
     currentProvider: "local",
     currentModel: "qwen3-asr-0.6b-q8_0",
@@ -1618,10 +1601,10 @@ test("releasing the key mid-decode still warms the worker the final chunk needs"
     if (channel !== "transcribe-audio") return true;
     decodes += 1;
     if (decodes === 1) await firstDecode;
-    return `chunk${args[4]}`;
+    return `chunk${args[3]}`;
   });
 
-  const recordingSession = { id: 7, translateMode: false, qwenSession: true };
+  const recordingSession = { id: 7, qwenSession: true };
   const prompt = createBarePrompt(VoiceInputPrompt, {
     currentProvider: "local",
     currentModel: "qwen3-asr-0.6b-q8_0",
@@ -1652,8 +1635,8 @@ test("releasing the key mid-decode still warms the worker the final chunk needs"
 test("one failed chunk stops queued work and refuses to return a gapped final", async () => {
   const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
     if (channel !== "transcribe-audio") return null;
-    if (args[4] === 1) throw new Error("chunk decode blew up");
-    return `part${args[4]}`;
+    if (args[3] === 1) throw new Error("chunk decode blew up");
+    return `part${args[3]}`;
   });
 
   const prompt = createBarePrompt(VoiceInputPrompt);
@@ -1706,7 +1689,7 @@ test("releasing the key flushes the buffered remainder as the final chunk", () =
 test("cancelling stops dispatching chunks that have not started", async () => {
   const attempted = [];
   const VoiceInputPrompt = loadForChunking(async (channel, ...args) => {
-    if (channel === "transcribe-audio") attempted.push(args[4]);
+    if (channel === "transcribe-audio") attempted.push(args[3]);
     return "text";
   });
 
@@ -1854,7 +1837,7 @@ async function createLifecycleHarness(options = {}) {
     invoke(command, ...args) {
       calls.push([command, ...args]);
       if (options.invoke) return options.invoke(command, ...args);
-      if (command === "transcribe-audio") return Promise.resolve(`final ${args[4]}`);
+      if (command === "transcribe-audio") return Promise.resolve(`final ${args[3]}`);
       if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
       return Promise.resolve(null);
     },
@@ -1876,7 +1859,6 @@ async function createLifecycleHarness(options = {}) {
   const prompt = createBarePrompt(VoiceInputPrompt, {
     currentProvider: "local",
     currentModel: options.model || "qwen3-asr-0.6b-q8_0",
-    translateMode: false,
     cancelInProgress: false,
     stopRequested: false,
     promptElement: { classList: { add() {}, remove() {} } },
@@ -1908,7 +1890,7 @@ async function createLifecycleHarness(options = {}) {
 
 test("letters spanning chunks reach final formatting once and insert its returned text", async () => {
   const h = await createLifecycleHarness({ invoke(command, ...args) {
-    if (command === "transcribe-audio") return Promise.resolve(args[4] === 0 ? "A P" : "I");
+    if (command === "transcribe-audio") return Promise.resolve(args[3] === 0 ? "A P" : "I");
     if (command === "record-assembled-transcription") {
       assert.equal(args[0], "A P I");
       return Promise.resolve("API");
@@ -2155,7 +2137,7 @@ test("an incomplete chunked dictation keeps completed text for Copy and never in
 test("a completed newer session keeps FIFO order behind an older valid session", async () => {
   const first = createDeferred();
   const h = await createLifecycleHarness({ invoke(command, ...args) {
-    if (command === "transcribe-audio") return args[3] === 1 ? first.promise : Promise.resolve("second final");
+    if (command === "transcribe-audio") return args[2] === 1 ? first.promise : Promise.resolve("second final");
     if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
     return Promise.resolve(null);
   } });
@@ -2179,7 +2161,7 @@ test("a completed newer session keeps FIFO order behind an older valid session",
 test("old incomplete text stays hidden after the newer successful recording finishes", async () => {
   const first = createDeferred();
   const h = await createLifecycleHarness({ invoke(command, ...args) {
-    if (command === "transcribe-audio") return args[3] === 1 ? first.promise : Promise.resolve("new final");
+    if (command === "transcribe-audio") return args[2] === 1 ? first.promise : Promise.resolve("new final");
     if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
     return Promise.resolve(null);
   } });
@@ -2464,7 +2446,7 @@ test("startup cancellation keeps its gate through worklet setup and releases it 
   await settlePromises();
   assert.equal(h.prompt.cancelInProgress, false, "completed startup cancellation must release its gate");
   assert.equal(h.prompt.isRecording, false);
-  assert.equal(h.calls.some(([command, ...args]) => command === "transcribe-audio" && args[3] === cancelledSessionId), false);
+  assert.equal(h.calls.some(([command, ...args]) => command === "transcribe-audio" && args[2] === cancelledSessionId), false);
   assert.equal(h.prompt.pendingInsertionOrder.length, 0);
   assert.deepEqual(h.recovered, []);
   h.prompt.cancelRecording();
@@ -2761,8 +2743,8 @@ test("cancelling late WAV encoding prevents a subsequent audio persistence reque
   assert.equal(h.prompt.recoverableAudioSessions.size, 0);
 });
 
-test("late cloud and translation audio stays in memory without raw persistence or rerouting", async () => {
-  for (const route of [{ provider: "openai", translateMode: false }, { provider: "local", translateMode: true }]) {
+test("late cloud audio stays in memory without raw persistence or rerouting", async () => {
+  for (const route of [{ provider: "openai" }, { provider: "groq" }]) {
     const h = await createLifecycleHarness({ batch: true,
       vadGate: { encodeFullWav: async () => { throw new Error("must not encode cloud recovery"); } } });
     Object.assign(h.session, route);
@@ -2826,7 +2808,7 @@ test("native startup errors before the start response cannot enter Listening", a
     },
   });
   const prompt = createBarePrompt(V, {
-    osName: "macos", translateMode: false, stopRequested: false,
+    osName: "macos", stopRequested: false,
     promptElement: { classList: { add() {} } },
     clearTranscriptionPreview() {}, startWaveAnimation() {}, startRecordingTimer() {},
   });
@@ -2883,7 +2865,7 @@ for (const mode of ["batch", "chunked", "live"]) {
     assert.equal(h.calls.some(([command]) => command === "record-assembled-transcription"), false);
     const saved = h.calls.find(([command]) => command === "save-recovered-transcription");
     assert.equal(saved[1].kind, "incomplete");
-    if (mode === "batch") assert.equal(h.calls.find(([command]) => command === "transcribe-audio")[6], true);
+    if (mode === "batch") assert.equal(h.calls.find(([command]) => command === "transcribe-audio")[5], true);
     if (mode === "live") assert.equal(h.calls.find(([command]) => command === "finish-live-transcription")[2], true);
     assert.equal(h.prompt.pendingInsertionOrder.length, 0);
   });
@@ -2927,9 +2909,9 @@ async function createChunkCoverageHarness(options = {}) {
         return Promise.resolve(stats);
       }
       if (command === "transcribe-audio") {
-        if (args[4] === 0 && options.firstDecode) return options.firstDecode.promise;
+        if (args[3] === 0 && options.firstDecode) return options.firstDecode.promise;
         if (options.decodeError) return Promise.reject(new Error("chunk decode failed"));
-        return Promise.resolve(args[4] === 0 ? options.firstText ?? "first words" : options.emptyTail ? "" : "tail words");
+        return Promise.resolve(args[3] === 0 ? options.firstText ?? "first words" : options.emptyTail ? "" : "tail words");
       }
       if (command === "record-assembled-transcription") return Promise.resolve(args[0]);
       if (command === "report-audio-probe" && options.probeThrows) throw new Error("diagnostic unavailable");
@@ -3143,7 +3125,7 @@ test("chunk sample coverage logs fit the backend limit for day-long 192 kHz reco
 
 test("chunk sample coverage compares original 48 kHz samples rather than resampled WAV frames", async () => {
   const reports = [];
-  const V = loadForChunking(async (command, ...args) => command === "transcribe-audio" ? `part${args[4]}` : null);
+  const V = loadForChunking(async (command, ...args) => command === "transcribe-audio" ? `part${args[3]}` : null);
   const prompt = createBarePrompt(V, {
     reportAudioProbe(_session, _stage, detail) { reports.push(Object.fromEntries(detail.split(" ").map((part) => part.split("=")))); },
     async resampleTo16k(pcm, rate) { return new Float32Array(Math.ceil(pcm.length * 16000 / rate)); },
@@ -3218,7 +3200,7 @@ test("native startup cannot fall back while the previous device is still owned",
     return Promise.resolve(null);
   } });
   const prompt = createBarePrompt(V, {
-    osName: "macos", translateMode: false, stopRequested: false,
+    osName: "macos", stopRequested: false,
     clearTranscriptionPreview() {},
   });
   await assert.rejects(prompt.startNativeRecording({}, 0, 0), /reserved/);
@@ -3343,7 +3325,7 @@ for (const stopCode of ["NATIVE_CAPTURE_NOT_ACTIVE", "NATIVE_CAPTURE_STOP_TIMEOU
       if (command === "stop-native-capture") return Promise.reject({ code: stopCode, message: "Diagnostics can change" });
       return Promise.resolve(null);
     } });
-    const prompt = createBarePrompt(V, { translateMode: false, clearTranscriptionPreview() {} });
+    const prompt = createBarePrompt(V, { clearTranscriptionPreview() {} });
     if (stopCode === "NATIVE_CAPTURE_NOT_ACTIVE") {
       assert.equal(await prompt.startNativeRecording({}, 0, 0), false);
     } else {
@@ -3357,7 +3339,7 @@ test("startup timeout retains its specific error after successful device cleanup
     if (command === "start-native-capture") return Promise.reject({ code: "NATIVE_CAPTURE_START_TIMEOUT", message: "Diagnostic text" });
     return Promise.resolve(null);
   } });
-  const prompt = createBarePrompt(V, { translateMode: false, clearTranscriptionPreview() {} });
+  const prompt = createBarePrompt(V, { clearTranscriptionPreview() {} });
   await assert.rejects(prompt.startNativeRecording({}, 0, 0), (error) => error.code === "NATIVE_CAPTURE_START_TIMEOUT");
 });
 
@@ -3382,7 +3364,7 @@ test("failed native setup can fall back after the backend confirms device releas
     }
     return Promise.resolve(null);
   } });
-  const prompt = createBarePrompt(V, { translateMode: false, clearTranscriptionPreview() {} });
+  const prompt = createBarePrompt(V, { clearTranscriptionPreview() {} });
   assert.equal(await prompt.startNativeRecording({}, 0, 0), false);
 });
 
@@ -3412,63 +3394,6 @@ for (const failure of ["consumer", "wav"]) {
       report.detail.includes("incomplete=true")));
   });
 }
-
-function consentButton() {
-  const listeners = new Set();
-  return {
-    addEventListener(_event, listener) { listeners.add(listener); },
-    removeEventListener(_event, listener) { listeners.delete(listener); },
-    click() { for (const listener of [...listeners]) listener(); },
-    listeners,
-  };
-}
-
-function consentPrompt() {
-  const VoiceInputPrompt = loadVoiceInputPrompt();
-  return createBarePrompt(VoiceInputPrompt, {
-    consentActions: { hidden: true },
-    consentAcceptBtn: consentButton(),
-    consentDeclineBtn: consentButton(),
-    promptElement: { classList: { remove() {} } },
-    waveContainer: { style: {} },
-    cancelNemotronLive() {},
-    finishQwenWorkerSession: async () => {},
-  });
-}
-
-test("translation consent settles and removes listeners when its session is cancelled", async () => {
-  const prompt = consentPrompt();
-  const session = { id: 1 };
-  prompt.recordingSessionId = 1;
-  const result = prompt.askTranslateConsent("Groq", session);
-  prompt.cancelRecordingSession(session);
-  assert.equal(prompt.consentActions.hidden, true);
-  assert.equal(prompt.consentAcceptBtn.listeners.size, 0);
-  assert.equal(await result, false);
-});
-
-test("translation consent belongs only to the newest session", async () => {
-  const prompt = consentPrompt();
-  prompt.recordingSessionId = 1;
-  const first = prompt.askTranslateConsent("Groq", { id: 1 });
-  prompt.recordingSessionId = 2;
-  const second = prompt.askTranslateConsent("OpenAI", { id: 2 });
-  assert.equal(prompt.consentAcceptBtn.listeners.size, 1);
-  prompt.consentAcceptBtn.click();
-  assert.equal(await first, false);
-  assert.equal(await second, true);
-  assert.equal(prompt.consentAcceptBtn.listeners.size, 0);
-});
-
-test("a stale translation session cannot paint a consent prompt over a new recording", async () => {
-  const prompt = consentPrompt();
-  prompt.recordingSessionId = 2;
-  prompt.isRecording = true;
-  const result = prompt.askTranslateConsent("Groq", { id: 1 });
-  assert.equal(prompt.consentActions.hidden, true);
-  assert.equal(await result, false);
-});
-
 
 test("large Qwen retains its badge and chunked worker lifecycle", async () => {
   const h = await createLifecycleHarness({ model: "qwen3-asr-1.7b-q8_0" });

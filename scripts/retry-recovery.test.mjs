@@ -66,7 +66,7 @@ test("automatic retry sends the recording provider snapshot through the real IPC
   for (const provider of ["local", "groq"]) {
     receiver.currentProvider = provider === "local" ? "groq" : "local";
     receiver.recordingSessions = new Map([[1, { provider, captureIncomplete: true }]]);
-    assert.equal(await receiver.transcribeWithRetry(new Uint8Array([1]), false, "audio/wav", 1, provider), "words");
+    assert.equal(await receiver.transcribeWithRetry(new Uint8Array([1]), "audio/wav", 1, provider), "words");
     const first = calls.at(-2)[2].headers;
     const second = calls.at(-1)[2].headers;
     const header = (headers, name) => headers instanceof Headers ? headers.get(name) : headers[name];

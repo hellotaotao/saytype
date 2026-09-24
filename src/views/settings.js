@@ -42,9 +42,6 @@ let currentThemePref = "elegant";
 //     full-width ，。 and segments it into two. scrub.rs does no width
 //     normalization, so that lands in the user's document verbatim. The 33%
 //     saving is ~$0.68/month at 15 min/day of real audio — not worth it.
-// whisper-1 is NOT gone from the code: OpenAI's /audio/translations endpoint
-// accepts only whisper-1, so it stays hardcoded for translate mode
-// (commands.rs) and keeps its MODEL_LABEL entry for history rendering.
 const modelOptions = {
   groq: [
     { value: "whisper-large-v3-turbo", labelKey: "settings.model.options.whisperLargeV3Turbo", recommended: true },
@@ -539,7 +536,6 @@ function applyNemotronAvailability() {
 }
 
 // Reuse the same key inputs so switching modes never loses an unsaved key.
-// Local translation lives in a separate, collapsed panel, not in dictation.
 function toggleProviderFields(providerChoice) {
   const provider = localModelForProvider(providerChoice) ? "local" : providerChoice;
   const isLocal = provider === "local";
@@ -558,21 +554,8 @@ function toggleProviderFields(providerChoice) {
 
   const title = document.getElementById("apiKeyTitle");
   const description = document.getElementById("apiKeyDescription");
-  const uploadNote = document.getElementById("translateUploadNote");
-  const translateSelect = document.getElementById("translateProviderSelect");
-  const translationPanel = document.getElementById("translationPanel");
-  const translationSlot = document.getElementById("translationKeySlot");
-  const dictationSlot = document.getElementById("dictationKeySlot");
-  if (apiKeyItem && translationPanel && translationSlot && dictationSlot) {
-    const wasLocal = apiKeyItem.parentElement === translationSlot;
-    if (wasLocal !== isLocal) translationPanel.open = false;
-    if (isLocal && apiKeyItem.parentElement !== translationSlot) translationSlot.appendChild(apiKeyItem);
-    translationPanel.classList.toggle("hidden", !isLocal);
-  }
   if (title) title.textContent = translate("settings.apiKey.title");
   if (description) description.textContent = translate("settings.apiKey.description");
-  uploadNote?.classList.toggle("hidden", !isLocal);
-  translateSelect?.classList.toggle("hidden", !isLocal);
 
   // Language is a shared setting for the active engine, not the inspected card.
   // Qwen ignores it; Nemotron and cloud requests carry the saved value.
@@ -586,7 +569,8 @@ function toggleProviderFields(providerChoice) {
   document.getElementById("languageDescription")?.classList.toggle("hidden", isQwen);
   document.getElementById("languageControl")?.classList.toggle("hidden", isQwen);
 
-  apiKeyItem?.classList.remove("hidden");
+  // A local engine needs no key.
+  apiKeyItem?.classList.toggle("hidden", isLocal);
   modelItem?.classList.toggle("hidden", isLocal);
   const configurationProvider = inspectedLocalModel
     ? providerForSettings({ provider: "local", model: inspectedLocalModel })
@@ -600,9 +584,8 @@ function toggleProviderFields(providerChoice) {
       "hidden",
       !gpuRuntimeSupported || ![LOCAL_QWEN_PROVIDER, LOCAL_QWEN_LARGE_PROVIDER].includes(configurationProvider)
     );
-  const keyProvider = isLocal ? translateSelect?.value || "groq" : provider;
-  fieldGroq.classList.toggle("hidden", keyProvider !== "groq");
-  fieldOpenAI.classList.toggle("hidden", keyProvider !== "openai");
+  fieldGroq.classList.toggle("hidden", provider !== "groq");
+  fieldOpenAI.classList.toggle("hidden", provider !== "openai");
   syncEngineDrawer();
 }
 
@@ -1239,11 +1222,6 @@ function setSelectValue(element, value, fallback) {
   element.value = hasOption ? value : fallback;
 }
 
-function handleTranslateProviderChange() {
-  toggleProviderFields(document.getElementById("providerSelect")?.value || "groq");
-  commitNow();
-}
-
 function inspectEngine(providerChoice, { toggle = false } = {}) {
   const select = document.getElementById("providerSelect");
   if (!select || !Array.from(select.options).some((option) => option.value === providerChoice)) return;
@@ -1352,9 +1330,6 @@ function bindEventHandlers() {
 
   providerSelect?.addEventListener("change", handleProviderChange);
   document.getElementById("modelSelect")?.addEventListener("change", handleModelChange);
-  document
-    .getElementById("translateProviderSelect")
-    ?.addEventListener("change", handleTranslateProviderChange);
   checkPermissionButton?.addEventListener("click", () => {
     void requestMicrophonePermission();
   });
@@ -1855,13 +1830,6 @@ async function loadSettings() {
       "auto"
     );
     applyNemotronAvailability();
-    // Seed before toggleProviderFields: on a local engine it decides which key
-    // field is on screen.
-    setSelectValue(
-      document.getElementById("translateProviderSelect"),
-      currentSettings.translateProvider || "groq",
-      "groq"
-    );
     inspectedLocalModel = null;
     engineCloudDrafts.clear();
     setSelectValue(providerSelect, providerChoice, "groq");
@@ -2124,7 +2092,6 @@ async function persistSettings(intent = null) {
         ?? currentSettings.mergeSpelledLetters !== false,
       provider: target.provider,
       localCompute: document.getElementById("localComputeSelect")?.value || "auto",
-      translateProvider: document.getElementById("translateProviderSelect")?.value || "",
       nemotronLatencyMs: Number(
         document.getElementById("nemotronLatencySelect")?.value || 560
       ),

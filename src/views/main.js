@@ -316,7 +316,6 @@ async function refreshReadiness() {
     micOk,
     axOk,
     recordShortcut: cachedSettings?.shortcut || "Ctrl+Shift",
-    translateShortcut: cachedSettings?.translateShortcut || "Shift+Alt",
   });
 }
 
@@ -497,7 +496,7 @@ function renderHomeLocalReadiness() {
   label.textContent = `${t("readiness.localModel")} · ${obDownloadLabel(cachedSettings.model, engineAvailability.get(selectedEngineValue()))}`;
 }
 
-function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcut }) {
+function renderReadiness({ hasKey, micOk, axOk, recordShortcut }) {
   const card = document.getElementById("readiness-card");
   if (!card) {
     return;
@@ -539,7 +538,6 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut, translateShortcu
   shortcuts.className = "readiness-shortcuts";
   [
     { label: t("home.dictate"), shortcut: recordShortcut },
-    { label: t("home.english"), shortcut: translateShortcut },
   ].forEach(({ label, shortcut }) => {
     const group = document.createElement("span");
     group.className = "shortcut-group";

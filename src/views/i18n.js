@@ -18,7 +18,6 @@
         readyHint: "Hold the shortcut in any app and start speaking",
         setupHint: "Add what's missing below, then you're ready",
         dictate: "Dictate",
-        english: "English",
         readyBadge: "Ready",
         setupBadge: "Setup",
         recentTitle: "Recent",
@@ -257,12 +256,11 @@
         section: {
           dictation: "Dictation Settings",
           app: "App Settings",
-          engines: "Engines & Translation",
         },
         recordingShortcut: {
           title: "Recording shortcut",
           description:
-            "Choose your preferred hold-to-record shortcut. Translation uses Shift + Alt.",
+            "Choose your preferred hold-to-record shortcut.",
           selectTitle: "Select recording shortcut",
         },
         accessibility: {
@@ -422,14 +420,6 @@
           reveal: "Show key",
           hide: "Hide key",
         },
-        translateCloud: {
-          title: "Cloud translation (optional)",
-          description:
-            "Local dictation needs no API key. Expand only to set up English translation with Shift + Alt.",
-          uploadNote:
-            "Translation sends your recording to the selected cloud provider. Ordinary dictation stays on this device.",
-          selectTitle: "Select the provider translation uses",
-        },
         model: {
           title: "Model",
           description: "Select transcription model.",
@@ -523,10 +513,9 @@
       },
       inputPrompt: {
         title: "Voice Input",
-        hint: "Hold {record} to dictate, {translate} for English",
+        hint: "Hold {record} to dictate",
         starting: "Starting recording...",
         listening: "Listening...",
-        listeningEnglish: "Listening (English output)...",
         recording: "Recording",
         cancelled: "Cancelled",
         processing: "Processing...",
@@ -560,12 +549,6 @@
         checkMicrophone: "Please check your microphone settings",
         textInserted: "Text inserted",
         insertFailed: "Insertion failed — copy it from History",
-        translateConsentTitle: "Send this clip to {provider}?",
-        translateConsentHint:
-          "Translation cannot run locally. Ordinary dictation stays on this device.",
-        translateConsentAccept: "Upload & translate",
-        translateConsentDecline: "Not now",
-        translateConsentDeclined: "Not sent — nothing left this device.",
         insertFailedTitle: "Insertion failed",
         insertFailedHint: "Click Copy, then paste it yourself",
         copyButton: "Copy",
@@ -587,7 +570,6 @@
         readyHint: "在任意应用中按住快捷键即可开始讲话",
         setupHint: "补齐下方缺失项后即可使用",
         dictate: "听写",
-        english: "英文",
         readyBadge: "就绪",
         setupBadge: "待设置",
         recentTitle: "最近",
@@ -821,12 +803,11 @@
         section: {
           dictation: "听写设置",
           app: "应用设置",
-          engines: "引擎与翻译",
         },
         recordingShortcut: {
           title: "录音快捷键",
           description:
-            "选择你偏好的按住录音快捷键。翻译使用 Shift + Alt。",
+            "选择你偏好的按住录音快捷键。",
           selectTitle: "选择录音快捷键",
         },
         accessibility: {
@@ -985,14 +966,6 @@
           reveal: "显示密钥",
           hide: "隐藏密钥",
         },
-        translateCloud: {
-          title: "云端翻译（可选）",
-          description:
-            "本地听写无需 API 密钥。只有需要用 Shift + Alt 翻译成英文时，才需展开配置。",
-          uploadNote:
-            "翻译会将录音上传至所选云端服务商，普通听写仍在本机完成。",
-          selectTitle: "选择翻译使用的服务商",
-        },
         model: {
           title: "模型",
           description: "选择转录模型。",
@@ -1083,10 +1056,9 @@
       },
       inputPrompt: {
         title: "语音输入",
-        hint: "按住 {record} 进行听写，{translate} 翻译成英文",
+        hint: "按住 {record} 进行听写",
         starting: "正在开始录音...",
         listening: "正在聆听...",
-        listeningEnglish: "正在聆听（英文输出）...",
         recording: "录音中",
         cancelled: "已取消",
         processing: "处理中...",
@@ -1120,11 +1092,6 @@
         checkMicrophone: "请检查麦克风设置",
         textInserted: "文本已插入",
         insertFailed: "插入失败，可在历史记录中复制",
-        translateConsentTitle: "把这段发给 {provider}？",
-        translateConsentHint: "翻译跑不了本地。平时的听写不出这台电脑。",
-        translateConsentAccept: "上传并翻译",
-        translateConsentDecline: "这次不用",
-        translateConsentDeclined: "没有发出去，音频留在本机。",
         insertFailedTitle: "插入失败",
         insertFailedHint: "点「复制」，自己粘贴一下",
         copyButton: "复制",

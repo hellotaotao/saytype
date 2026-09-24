@@ -135,15 +135,9 @@ test("drawer content starts where the row's title does", () => {
   assert.equal(drawerBorder + drawerPadding, titleInset);
 });
 
-test("a cloud drawer keeps its key, model and notice in order after a local drawer borrowed some of them", () => {
+test("a cloud drawer keeps its key, model and notice in order after a local drawer was opened", () => {
   const h = harness();
-  const translationSlot = container("translationKeySlot");
-  // As in toggleProviderFields: inspecting a local engine parks the key field
-  // in the translation panel, while the model card stays in the old drawer.
-  h.context.toggleProviderFields = (choice) => {
-    if (h.context.localModelForProvider(choice)) translationSlot.appendChild(h.nodes.apiKeyItem);
-    h.context.syncEngineDrawer();
-  };
+  h.context.toggleProviderFields = () => h.context.syncEngineDrawer();
   for (const choice of ["groq", "local-qwen-large", "groq"]) h.context.inspectEngine(choice);
   const order = h.nodes["engine-drawer-groq"].children.map((node) => node.id);
   assert.deepEqual(order, ["apiKeyItem", "modelItem", "engineActivation"]);

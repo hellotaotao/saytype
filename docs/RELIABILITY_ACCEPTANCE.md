@@ -24,7 +24,7 @@ Current priority and scope: [Product pathway](PRODUCT_PATHWAY.md).
 | R08 | Induce an engine failure in an isolated test environment | Bounded failure; explicit incomplete state, retained recoverable content, working retry, no duplicate History result |
 | R09 | Test recovery save failure using automated injection; retry after restoring storage | No false saved acknowledgement or silent discard; stable recovery identity |
 | R10 | Fresh settings, model not ready, denied permissions, then resolve | User can identify and resolve each blocker without developer instructions |
-| R11 | Local dictation with no cloud credentials; separately request cloud translation without consent | Local remains usable; translation requires explicit setup/consent; no silent cloud fallback |
+| R11 | Local dictation with no cloud credentials | Local remains usable; no silent cloud fallback |
 
 Run relevant cases on both engines and supported target hardware; Qwen chunk accounting is not a Nemotron requirement. Do not disrupt the maintainer's active recording or permissions to automate these cases. Fault injection belongs in tests or a separate test instance.
 

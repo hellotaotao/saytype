@@ -701,31 +701,19 @@
   color: var(--pill-warn-text);
 }
 
-.translation-summary {
+.setting-summary {
   padding: 14px 20px;
   cursor: pointer;
 }
 
-.translation-summary .setting-description {
+.setting-summary .setting-description {
   display: block;
   margin-top: 6px;
 }
 
-.translation-summary:focus-visible {
+.setting-summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -3px;
-}
-
-#translationPanel .setting-item {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 12px;
-  border-top: 1px solid var(--panel-border);
-}
-
-#translationPanel .setting-control {
-  flex-wrap: wrap;
-  width: 100%;
 }
 
 .permission-recheck-feedback:not(:empty) {

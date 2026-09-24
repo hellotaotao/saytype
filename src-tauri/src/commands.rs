@@ -2,7 +2,7 @@ use crate::retry_error::{RetryError, RetryFailure};
 use crate::hotkey;
 use crate::history;
 use crate::platform::{self, InsertResult};
-use crate::settings::{self, AppConfig, SettingsPayload, TRANSLATE_SHORTCUT};
+use crate::settings::{self, AppConfig, SettingsPayload};
 use crate::state::{ActiveTranscription, AppState, LocalModelDownload};
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -574,11 +574,6 @@ pub fn save_settings(
     // field deserializes to false — without this line every settings save would
     // re-trigger the onboarding wizard.
     config.onboarding_completed = existing.onboarding_completed;
-    // Same reason as the two above: consent is a one-off decision made at the
-    // prompt, not a form field. Without this every settings save would silently
-    // revoke it and the next translation would ask again.
-    config.translate_consented = existing.translate_consented;
-    config.translate_shortcut = TRANSLATE_SHORTCUT.into();
     config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
     config.nemotron_latency_ms =
       settings::normalize_nemotron_latency_ms(config.nemotron_latency_ms);
@@ -740,20 +735,6 @@ pub(crate) fn sync_local_runtime(app: &AppHandle, config: &AppConfig) {
 pub fn set_provider(app: AppHandle, provider: String) -> Result<bool, String> {
   log::info!("command:set_provider provider={provider}");
   apply_provider_change(&app, &provider)?;
-  Ok(true)
-}
-
-/// Record (or withdraw) the acknowledgement that translate mode uploads audio.
-/// Kept out of `save_settings` on purpose: this is a decision the user makes at
-/// the prompt, right after speaking, not a field on the settings form.
-#[tauri::command]
-pub fn set_translate_consent(consented: bool) -> Result<bool, String> {
-  log::info!("command:set_translate_consent consented={consented}");
-  settings::mutate_config(move |config| {
-    config.translate_consented = consented;
-    Ok(())
-  })
-  .map_err(stringify_error)?;
   Ok(true)
 }
 
@@ -1073,8 +1054,8 @@ pub async fn transcribe_audio(
   request: tauri::ipc::Request<'_>,
 ) -> Result<String, String> {
   // The audio arrives as the raw IPC body (Tauri's octet-stream fast path), not
-  // a JSON number array — see ipc-bridge.js (tauriRawBody). translate_mode /
-  // mime_type ride along as headers. NOTE: this requires input-prompt.html's CSP
+  // a JSON number array — see ipc-bridge.js (tauriRawBody). mime_type and the
+  // session fields ride along as headers. NOTE: this requires input-prompt.html's CSP
   // to allow `ipc:` on macOS/Linux and `http://ipc.localhost` on Windows.
   // Without it Tauri falls back to the postMessage transport, which JSON-encodes
   // the bytes → body() is Json, not Raw → the error below.
@@ -1085,11 +1066,6 @@ pub async fn transcribe_audio(
     }
   };
   let headers = request.headers();
-  let translate_mode = headers
-    .get("translate-mode")
-    .and_then(|value| value.to_str().ok())
-    .map(|value| value == "true")
-    .unwrap_or(false);
   let capture_incomplete = headers
     .get("capture-incomplete")
     .and_then(|value| value.to_str().ok())
@@ -1147,9 +1123,9 @@ pub async fn transcribe_audio(
   // re-transcribes. Route resolution runs before any request is built, so
   // returning straight out of it would drop the clip the retry needs. Guards
   // match the failure arm below: the frontend owns recovery for chunked and
-  // local, non-translation capture-incomplete sessions.
+  // local capture-incomplete sessions.
   let frontend_owns_recovery = frontend_owns_audio_recovery(
-    session_provider, translate_mode, chunk_index, capture_incomplete,
+    session_provider, chunk_index, capture_incomplete,
   );
   let route_result: Result<_, String> = (|| {
     let provider = validate_session_provider(session_provider)?;
@@ -1157,7 +1133,7 @@ pub async fn transcribe_audio(
       log::warn!("transcription could not read settings: {error:#}");
       RetryError::SettingsRead.code().to_owned()
     })?;
-    let route = resolve_transcription_route_for(provider, &config, translate_mode)?;
+    let route = resolve_transcription_route_for(provider, &config)?;
     Ok((transcription_config_for_provider(&config, provider), route))
   })();
   let (config, route) = match route_result {
@@ -1170,7 +1146,6 @@ pub async fn transcribe_audio(
           &error,
           &audio_buffer,
           &mime,
-          translate_mode,
         );
       }
       return Err(error);
@@ -1215,7 +1190,6 @@ pub async fn transcribe_audio(
             provider,
             api_key,
             audio_buffer,
-            translate_mode,
             mime.clone(),
           ).await
         }
@@ -1265,15 +1239,15 @@ pub async fn transcribe_audio(
         return Err("TRANSCRIPTION_CANCELLED".into());
       }
 
-      // Only local, non-translation recovery is persisted by the frontend.
-      if !frontend_owns_hang_recovery(&error, session_provider, translate_mode) && !frontend_owns_recovery {
+      // Only local recovery is persisted by the frontend.
+      if !frontend_owns_hang_recovery(&error, session_provider) && !frontend_owns_recovery {
         if let Some(audio) = audio_for_recovery.as_deref() {
           record_failed_transcription(
-            &app, failure_id.as_deref(), &error.to_string(), audio, &mime, translate_mode,
+            &app, failure_id.as_deref(), &error.to_string(), audio, &mime,
           );
         } else {
           log::error!("recovery audio missing for a backend-owned failure");
-          let message = transcription_failure_message(translate_mode, &error.to_string());
+          let message = transcription_failure_message(&error.to_string());
           if let Err(write_error) = append_activity(&message, false, Some(error.to_string())) {
             log::warn!("failed to record transcription error: {write_error:#}");
           }
@@ -1799,7 +1773,6 @@ fn broadcast_settings_updates(app: &AppHandle, config: &AppConfig) -> Result<()>
     "shortcut-updated",
     json!({
       "recordShortcut": config.shortcut,
-      "translateShortcut": config.translate_shortcut,
       // Piggyback provider+model so the input-prompt's model badge updates live
       // on save without a dedicated event (non-secret, unlike the API keys).
       "provider": config.provider,
@@ -1849,10 +1822,9 @@ fn record_failed_transcription(
   error: &str,
   audio: &[u8],
   mime: &str,
-  translate: bool,
 ) {
-  let message = transcription_failure_message(translate, error);
-  match history::append_failed_audio(failure_id, &message, error, audio, mime, translate) {
+  let message = transcription_failure_message(error);
+  match history::append_failed_audio(failure_id, &message, error, audio, mime) {
     Ok(saved) => {
       for audio_id in saved.dropped_audio_ids {
         let _ = history::delete_debug_audio(&audio_id);
@@ -1870,9 +1842,8 @@ fn record_failed_transcription(
   let _ = app.emit("activity-updated", ());
 }
 
-fn transcription_failure_message(translate: bool, error: &str) -> String {
-  let mode = if translate { "Translation" } else { "Transcription" };
-  format!("{mode} failed: {error}")
+fn transcription_failure_message(error: &str) -> String {
+  format!("Transcription failed: {error}")
 }
 
 // Re-records why a stored clip still has no text, after EVERY failure that gets
@@ -1886,13 +1857,12 @@ fn transcription_failure_message(translate: bool, error: &str) -> String {
 fn refresh_failed_row(
   app: &AppHandle,
   id: &str,
-  translate: bool,
   failure: RetryFailure<'_>,
   retryable: bool,
 ) -> String {
   let (message, error) = match failure {
     RetryFailure::BuiltIn(error) => (error.code().to_owned(), error.code()),
-    RetryFailure::Engine(error) => (transcription_failure_message(translate, error), error),
+    RetryFailure::Engine(error) => (transcription_failure_message(error), error),
   };
   if let Err(write_error) = history::refresh_pending_failure(
     id, &message, error, retryable,
@@ -1987,9 +1957,8 @@ pub async fn save_pending_transcription(
 // configured NOW rather than the one that failed: the usual reason a clip is
 // sitting here is a missing key, a dead network or an absent model, so the retry
 // belongs on the settings the user has just fixed. Pinning the row to its
-// original provider would instead lock the clip to the thing that broke.
-// `translate` rides on the row because it is a mode, not an engine — honouring
-// it keeps the user's intent without that lock-in. On success the entry becomes
+// original provider would instead lock the clip to the thing that broke. On
+// success the entry becomes
 // a normal text entry in place (position preserved) and its audio is deleted; on
 // failure the entry stays pending, its recorded reason refreshed, so the user can
 // try again (a re-hang is bounded by the same watchdog).
@@ -2008,8 +1977,6 @@ pub async fn retranscribe_pending(
   if entry["pending"] != true {
     return Err(RetryError::NotPending.code().into());
   }
-  let translate = entry.get("translate").and_then(Value::as_bool).unwrap_or(false);
-
   let (bytes, mime) = match history::read_debug_audio(&id) {
     Ok(audio) => audio,
     Err(error) => {
@@ -2024,7 +1991,6 @@ pub async fn retranscribe_pending(
       return Err(refresh_failed_row(
         &app,
         &id,
-        translate,
         RetryFailure::BuiltIn(reason),
         !missing,
       ));
@@ -2034,12 +2000,12 @@ pub async fn retranscribe_pending(
     Ok(config) => config,
     Err(error) => {
       log::warn!("re-transcribe could not read settings: {error:#}");
-      return Err(refresh_failed_row(&app, &id, translate, RetryFailure::BuiltIn(RetryError::SettingsRead), true))
+      return Err(refresh_failed_row(&app, &id, RetryFailure::BuiltIn(RetryError::SettingsRead), true))
     }
   };
-  let route = match resolve_transcription_route(&config, translate) {
+  let route = match resolve_transcription_route(&config) {
     Ok(route) => route,
-    Err(error) => return Err(refresh_failed_row(&app, &id, translate, RetryFailure::Engine(&error), true)),
+    Err(error) => return Err(refresh_failed_row(&app, &id, RetryFailure::Engine(&error), true)),
   };
   // Name the setting to change instead of letting mtmd's decoder fail on a
   // container it cannot read. Only reachable on Windows/Linux — macOS captures
@@ -2048,7 +2014,6 @@ pub async fn retranscribe_pending(
     return Err(refresh_failed_row(
       &app,
       &id,
-      translate,
       RetryFailure::BuiltIn(RetryError::AudioFormat),
       true,
     ));
@@ -2065,7 +2030,6 @@ pub async fn retranscribe_pending(
         provider,
         api_key,
         bytes,
-        translate,
         mime.clone(),
       )
       .await
@@ -2074,7 +2038,7 @@ pub async fn retranscribe_pending(
   let raw = match result {
     Ok(raw) => raw,
     Err(error) => {
-      return Err(refresh_failed_row(&app, &id, translate, RetryFailure::Engine(&error.to_string()), true))
+      return Err(refresh_failed_row(&app, &id, RetryFailure::Engine(&error.to_string()), true))
     }
   };
   let text = prepare_final_transcription(&raw);
@@ -2149,10 +2113,10 @@ fn build_transcription_prompt(model: &str, language: &str, dictionary: &str) -> 
 }
 
 fn frontend_owns_audio_recovery(
-  provider: &str, translate: bool, chunk_index: Option<u32>, capture_incomplete: bool,
+  provider: &str, chunk_index: Option<u32>, capture_incomplete: bool,
 ) -> bool {
   chunk_index.is_some()
-    || (capture_incomplete && provider == crate::local_asr::LOCAL_PROVIDER && !translate)
+    || (capture_incomplete && provider == crate::local_asr::LOCAL_PROVIDER)
 }
 
 #[derive(Debug)]
@@ -2164,10 +2128,6 @@ pub enum TranscriptionRoute {
   },
 }
 
-/// Returned when translate mode is requested on a local engine before the user
-/// has accepted that the clip will be uploaded. The frontend matches on this
-/// exact string to show the notice instead of a generic failure.
-pub const TRANSLATE_NEEDS_CONSENT: &str = "TRANSLATE_NEEDS_CONSENT";
 pub const SESSION_PROVIDER_INVALID: &str = "SESSION_PROVIDER_INVALID";
 
 fn validate_session_provider(provider: &str) -> Result<&'static str, String> {
@@ -2192,49 +2152,19 @@ fn transcription_config_for_provider(config: &AppConfig, provider: &str) -> AppC
   session_config
 }
 
-/// Decide where this transcription goes. A cloud provider handles both
-/// transcription and translation with its own key. A local provider transcribes
-/// locally; translate mode is the exception, since the local engines only
-/// transcribe: it needs `translate_consented` and uses the cloud provider picked
-/// by `normalize_translate_provider` (Groq first when none was ever chosen).
-pub fn resolve_transcription_route(
-  config: &AppConfig,
-  translate_mode: bool,
-) -> Result<TranscriptionRoute, String> {
-  resolve_transcription_route_for(&config.provider, config, translate_mode)
+/// Decide where this transcription goes: the local engine stays on the device,
+/// a cloud provider uses its own key.
+pub fn resolve_transcription_route(config: &AppConfig) -> Result<TranscriptionRoute, String> {
+  resolve_transcription_route_for(&config.provider, config)
 }
 
 pub fn resolve_transcription_route_for(
   provider: &str,
   config: &AppConfig,
-  translate_mode: bool,
 ) -> Result<TranscriptionRoute, String> {
   let provider = validate_session_provider(provider)?;
   if provider == crate::local_asr::LOCAL_PROVIDER {
-    if !translate_mode {
-      return Ok(TranscriptionRoute::Local);
-    }
-    // Translate on a local engine is the one path where audio leaves the
-    // device, so it is gated on an explicit acknowledgement. The frontend keeps
-    // the recording, shows the notice, and retries once accepted — hence a
-    // distinguishable code rather than free-form prose.
-    if !config.translate_consented {
-      return Err(TRANSLATE_NEEDS_CONSENT.into());
-    }
-    return match crate::settings::normalize_translate_provider(config) {
-      "groq" if !config.api_key_groq.trim().is_empty() => Ok(TranscriptionRoute::Cloud {
-        provider: "groq",
-        api_key: config.api_key_groq.trim().into(),
-      }),
-      "openai" if !config.api_key_openai.trim().is_empty() => Ok(TranscriptionRoute::Cloud {
-        provider: "openai",
-        api_key: config.api_key_openai.trim().into(),
-      }),
-      _ => Err(
-        "Translation needs a cloud API key for the selected provider. Add its API key in Settings."
-          .into(),
-      ),
-    };
+    return Ok(TranscriptionRoute::Local);
   }
   let api_key = settings::selected_api_key(&transcription_config_for_provider(config, provider));
   if api_key.trim().is_empty() {
@@ -2298,7 +2228,6 @@ async fn perform_transcription_request(
   provider: &str,
   api_key: &str,
   audio_buffer: Vec<u8>,
-  translate_mode: bool,
   mime_type: String,
 ) -> Result<String> {
   let endpoint_root = if provider == "groq" {
@@ -2306,18 +2235,8 @@ async fn perform_transcription_request(
   } else {
     "https://api.openai.com/v1"
   };
-  let endpoint = if translate_mode {
-    format!("{endpoint_root}/audio/translations")
-  } else {
-    format!("{endpoint_root}/audio/transcriptions")
-  };
-  let model = if translate_mode {
-    if provider == "groq" {
-      "whisper-large-v3".to_string()
-    } else {
-      "whisper-1".to_string()
-    }
-  } else if config.model.trim().is_empty() {
+  let endpoint = format!("{endpoint_root}/audio/transcriptions");
+  let model = if config.model.trim().is_empty() {
     if provider == "groq" {
       "whisper-large-v3-turbo".to_string()
     } else {
@@ -2342,24 +2261,19 @@ async fn perform_transcription_request(
     .text("model", model.clone())
     .text("response_format", "text");
 
-  if !translate_mode {
-    if config.language != "auto" && !config.language.trim().is_empty() {
-      form = form.text("language", config.language.clone());
-    }
-    if let Some(prompt) =
-      build_transcription_prompt(&model, &config.language, &config.dictionary)
-    {
-      form = form.text("prompt", prompt);
-    }
+  if config.language != "auto" && !config.language.trim().is_empty() {
+    form = form.text("language", config.language.clone());
+  }
+  if let Some(prompt) =
+    build_transcription_prompt(&model, &config.language, &config.dictionary)
+  {
+    form = form.text("prompt", prompt);
   }
 
-  // Diagnostic: record which model ACTUALLY hits the API. Translate mode is
-  // hardcoded to whisper-1 above (OpenAI's /audio/translations endpoint only
-  // supports whisper-1), so the selected model is ignored there — this line is
-  // the only reliable way to see the real model behind any given request. No API
-  // key or transcribed text is logged (see the log setup note in lib.rs).
+  // Diagnostic: record which model ACTUALLY hits the API. No API key or
+  // transcribed text is logged (see the log setup note in lib.rs).
   log::info!(
-    "transcribe: model={model} translate_mode={translate_mode} provider={provider} language={}",
+    "transcribe: model={model} provider={provider} language={}",
     config.language
   );
 
@@ -2404,12 +2318,12 @@ fn is_hang_error(error: &anyhow::Error) -> bool {
 /// A session captured with the local provider is auto-retried; on final give-up
 /// saves a single "pending audio" entry (`save_pending_transcription`); a row per
 /// attempt here would double-log one recording. That hand-off is local-only —
-/// the frontend's recovery gate requires `provider === "local" && !translateMode`
-/// — use its recording-start snapshot even if Settings changed during capture.
+/// the frontend's recovery gate requires `provider === "local"` — use its
+/// recording-start snapshot even if Settings changed during capture.
 /// A cloud-origin session that times out is nobody else's to record and must be
 /// kept here like any other failure, or it would vanish from History entirely.
-fn frontend_owns_hang_recovery(error: &anyhow::Error, recovery_provider: &str, translate: bool) -> bool {
-  is_hang_error(error) && recovery_provider == crate::local_asr::LOCAL_PROVIDER && !translate
+fn frontend_owns_hang_recovery(error: &anyhow::Error, recovery_provider: &str) -> bool {
+  is_hang_error(error) && recovery_provider == crate::local_asr::LOCAL_PROVIDER
 }
 
 fn accessibility_status(prompt: bool) -> AccessibilityStatus {
@@ -2453,12 +2367,9 @@ mod tests {
   #[test]
   fn incomplete_audio_recovery_matches_the_frontend_persistence_gate() {
     for provider in ["local", "groq", "openai"] {
-      for translate in [false, true] {
-        assert_eq!(frontend_owns_audio_recovery(provider, translate, None, true),
-          provider == "local" && !translate);
-        assert!(!frontend_owns_audio_recovery(provider, translate, None, false));
-        assert!(frontend_owns_audio_recovery(provider, translate, Some(0), true));
-      }
+      assert_eq!(frontend_owns_audio_recovery(provider, None, true), provider == "local");
+      assert!(!frontend_owns_audio_recovery(provider, None, false));
+      assert!(frontend_owns_audio_recovery(provider, Some(0), true));
     }
   }
 
@@ -2718,14 +2629,13 @@ mod tests {
     let timeout = anyhow::anyhow!("error sending request: operation timed out");
     let refused = anyhow::anyhow!("API key not configured");
 
-    assert!(frontend_owns_hang_recovery(&hang, "local", false));
-    assert!(frontend_owns_hang_recovery(&timeout, "local", false));
-    assert!(!frontend_owns_hang_recovery(&timeout, "groq", false));
-    assert!(!frontend_owns_hang_recovery(&hang, "groq", false));
-    assert!(!frontend_owns_hang_recovery(&refused, "local", false));
-    assert!(!frontend_owns_hang_recovery(&refused, "groq", false));
-    assert!(!frontend_owns_hang_recovery(&timeout, "local", true));
-    assert!(!frontend_owns_hang_recovery(&timeout, "", false));
+    assert!(frontend_owns_hang_recovery(&hang, "local"));
+    assert!(frontend_owns_hang_recovery(&timeout, "local"));
+    assert!(!frontend_owns_hang_recovery(&timeout, "groq"));
+    assert!(!frontend_owns_hang_recovery(&hang, "groq"));
+    assert!(!frontend_owns_hang_recovery(&refused, "local"));
+    assert!(!frontend_owns_hang_recovery(&refused, "groq"));
+    assert!(!frontend_owns_hang_recovery(&timeout, ""));
   }
 
   // --- Engine switch: model reset + config preservation ---
@@ -2949,9 +2859,7 @@ mod tests {
   fn unknown_provider_cannot_resolve_a_cloud_route() {
     let mut config = config_with("unexpected", "gsk", "osk");
     config.api_key = "legacy".into();
-    for translate in [false, true] {
-      assert_eq!(resolve_transcription_route(&config, translate).unwrap_err(), "SESSION_PROVIDER_INVALID");
-    }
+    assert_eq!(resolve_transcription_route(&config).unwrap_err(), "SESSION_PROVIDER_INVALID");
   }
 
   #[test]
@@ -2968,11 +2876,9 @@ mod tests {
   #[test]
   fn invalid_session_provider_errors_keep_backend_audio_unless_chunked() {
     for provider in ["", "invalid"] {
-      for translate in [false, true] {
-        for incomplete in [false, true] {
-          assert!(!frontend_owns_audio_recovery(provider, translate, None, incomplete));
-          assert!(frontend_owns_audio_recovery(provider, translate, Some(0), incomplete));
-        }
+      for incomplete in [false, true] {
+        assert!(!frontend_owns_audio_recovery(provider, None, incomplete));
+        assert!(frontend_owns_audio_recovery(provider, Some(0), incomplete));
       }
     }
   }
@@ -2981,7 +2887,7 @@ mod tests {
   fn local_session_stays_local_after_settings_switches_to_cloud() {
     for provider in ["groq", "openai"] {
       let config = config_with(provider, "gsk", "osk");
-      assert!(matches!(resolve_transcription_route_for("local", &config, false).unwrap(), TranscriptionRoute::Local));
+      assert!(matches!(resolve_transcription_route_for("local", &config).unwrap(), TranscriptionRoute::Local));
       let local = transcription_config_for_provider(&config, "local");
       assert_eq!(local.provider, "local");
       assert_eq!(local.model, crate::local_asr::QWEN_MODEL_ID);
@@ -2994,7 +2900,7 @@ mod tests {
       let mut config = config_with(selected, "gsk", "osk");
       config.model = default_model_for(selected).into();
       for (session, expected_key) in [("groq", "gsk"), ("openai", "osk")] {
-        match resolve_transcription_route_for(session, &config, false).unwrap() {
+        match resolve_transcription_route_for(session, &config).unwrap() {
           TranscriptionRoute::Cloud { provider, api_key } => {
             assert_eq!(provider, session);
             assert_eq!(api_key, expected_key);
@@ -3010,14 +2916,7 @@ mod tests {
   fn switched_session_cannot_reuse_another_providers_legacy_key() {
     let mut config = config_with("groq", "gsk", "");
     config.api_key = "gsk".into();
-    assert!(resolve_transcription_route_for("openai", &config, false).is_err());
-  }
-
-  #[test]
-  fn session_snapshot_keeps_local_translation_consent_after_cloud_switch() {
-    let config = config_with("openai", "gsk", "osk");
-    assert_eq!(resolve_transcription_route_for("local", &config, true).unwrap_err(), TRANSLATE_NEEDS_CONSENT);
-    assert!(matches!(resolve_transcription_route(&config, true).unwrap(), TranscriptionRoute::Cloud { provider: "openai", .. }));
+    assert!(resolve_transcription_route_for("openai", &config).is_err());
   }
 
   #[test]
@@ -3044,91 +2943,20 @@ mod tests {
 
   #[test]
   fn local_provider_routes_to_local_for_normal_dictation() {
-    let route = resolve_transcription_route(&config_with("local", "", ""), false).unwrap();
+    let route = resolve_transcription_route(&config_with("local", "", "")).unwrap();
     assert!(matches!(route, TranscriptionRoute::Local));
-  }
-
-  /// Translate on a local engine, with the upload already acknowledged.
-  fn consented(provider: &str, groq: &str, openai: &str) -> AppConfig {
-    let mut c = config_with(provider, groq, openai);
-    c.translate_consented = true;
-    c
-  }
-
-  #[test]
-  fn local_translate_falls_back_to_a_cloud_key_groq_first() {
-    match resolve_transcription_route(&consented("local", "gsk", "osk"), true).unwrap() {
-      TranscriptionRoute::Cloud { provider, api_key } => {
-        assert_eq!(provider, "groq");
-        assert_eq!(api_key, "gsk");
-      }
-      other => panic!("expected cloud, got {other:?}"),
-    }
-    match resolve_transcription_route(&consented("local", "", "osk"), true).unwrap() {
-      TranscriptionRoute::Cloud { provider, api_key } => {
-        assert_eq!(provider, "openai");
-        assert_eq!(api_key, "osk");
-      }
-      other => panic!("expected cloud, got {other:?}"),
-    }
-  }
-
-  #[test]
-  fn local_translate_honours_an_explicit_provider_choice() {
-    // Both keys present: the stored choice decides, not the Groq-first order.
-    let mut c = consented("local", "gsk", "osk");
-    c.translate_provider = "openai".into();
-    match resolve_transcription_route(&c, true).unwrap() {
-      TranscriptionRoute::Cloud { provider, api_key } => {
-        assert_eq!(provider, "openai");
-        assert_eq!(api_key, "osk");
-      }
-      other => panic!("expected openai, got {other:?}"),
-    }
-  }
-
-  #[test]
-  fn local_translate_rejects_an_explicit_provider_without_its_key() {
-    for (provider, groq, openai) in [("openai", "gsk", ""), ("groq", "", "osk")] {
-      let mut c = consented("local", groq, openai);
-      c.translate_provider = provider.into();
-      let err = resolve_transcription_route(&c, true).unwrap_err();
-      assert!(err.contains("API key"), "{err}");
-      let payload = settings::SettingsPayload::from_config(&c);
-      assert_eq!(payload.translate_provider, provider);
-    }
-  }
-
-  #[test]
-  fn local_translate_blocks_until_the_upload_is_acknowledged() {
-    // A key alone is not enough — the clip only leaves the device on consent.
-    let err = resolve_transcription_route(&config_with("local", "gsk", ""), true).unwrap_err();
-    assert_eq!(err, TRANSLATE_NEEDS_CONSENT);
-  }
-
-  #[test]
-  fn plain_local_dictation_never_needs_consent() {
-    // Consent gates translate only; ordinary dictation stays on-device.
-    let route = resolve_transcription_route(&config_with("local", "", ""), false).unwrap();
-    assert!(matches!(route, TranscriptionRoute::Local));
-  }
-
-  #[test]
-  fn local_translate_without_any_cloud_key_errors_clearly() {
-    let err = resolve_transcription_route(&consented("local", "", ""), true).unwrap_err();
-    assert!(err.contains("cloud API key"), "{err}");
   }
 
   #[test]
   fn cloud_providers_route_unchanged_and_require_a_key() {
-    match resolve_transcription_route(&config_with("groq", "gsk", ""), false).unwrap() {
+    match resolve_transcription_route(&config_with("groq", "gsk", "")).unwrap() {
       TranscriptionRoute::Cloud { provider, api_key } => {
         assert_eq!(provider, "groq");
         assert_eq!(api_key, "gsk");
       }
       other => panic!("{other:?}"),
     }
-    assert!(resolve_transcription_route(&config_with("openai", "", ""), false).is_err());
+    assert!(resolve_transcription_route(&config_with("openai", "", "")).is_err());
   }
 
   #[test]

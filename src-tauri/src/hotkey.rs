@@ -1,4 +1,4 @@
-use crate::settings::{DEFAULT_RECORD_SHORTCUT, TRANSLATE_SHORTCUT};
+use crate::settings::DEFAULT_RECORD_SHORTCUT;
 use rdev::Key;
 use serde::Serialize;
 #[cfg(target_os = "macos")]
@@ -23,7 +23,6 @@ const SLOW_NATIVE_STARTUP: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecordingStartEvent {
-  translate_mode: bool,
   dispatched_at_unix_ms: u64,
   native_ms: u64,
 }
@@ -149,7 +148,7 @@ impl ModifierState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-  Start { translate_mode: bool },
+  Start,
   Stop,
   Cancel,
 }
@@ -182,7 +181,6 @@ impl HotkeyHandle {
 pub struct HotkeyState {
   modifiers: ModifierState,
   record_shortcut: Shortcut,
-  translate_shortcut: Shortcut,
   is_recording: bool,
   record_started_at: Option<Instant>,
   stop_deadline: Option<Instant>,
@@ -190,11 +188,10 @@ pub struct HotkeyState {
 }
 
 impl HotkeyState {
-  pub fn new(record_shortcut: Shortcut, translate_shortcut: Shortcut) -> Self {
+  pub fn new(record_shortcut: Shortcut) -> Self {
     Self {
       modifiers: ModifierState::default(),
       record_shortcut,
-      translate_shortcut,
       is_recording: false,
       record_started_at: None,
       stop_deadline: None,
@@ -202,14 +199,8 @@ impl HotkeyState {
     }
   }
 
-  fn active_mode(&self) -> Option<bool> {
-    if self.modifiers.matches(&self.record_shortcut) {
-      Some(false)
-    } else if self.modifiers.matches(&self.translate_shortcut) {
-      Some(true)
-    } else {
-      None
-    }
+  fn combo_held(&self) -> bool {
+    self.modifiers.matches(&self.record_shortcut)
   }
 
   pub fn handle_event(&mut self, event: KeyEvent, now: Instant) {
@@ -241,7 +232,7 @@ impl HotkeyState {
           return;
         }
 
-        if self.is_recording && self.active_mode().is_some() {
+        if self.is_recording && self.combo_held() {
           // Combo re-formed (e.g. a modifier re-pressed) — keep recording.
           self.stop_deadline = None;
           return;
@@ -249,13 +240,11 @@ impl HotkeyState {
 
         // Combo just completed: start recording immediately — no startup gate.
         // Mis-triggers are handled after the fact (short release / combo key).
-        if !self.is_recording && self.active_mode().is_some() {
-          if let Some(translate_mode) = self.active_mode() {
-            self.is_recording = true;
-            self.record_started_at = Some(now);
-            self.stop_deadline = None;
-            self.pending.push(Action::Start { translate_mode });
-          }
+        if !self.is_recording && self.combo_held() {
+          self.is_recording = true;
+          self.record_started_at = Some(now);
+          self.stop_deadline = None;
+          self.pending.push(Action::Start);
         }
       }
       KeyEvent::Release(key) => {
@@ -264,7 +253,7 @@ impl HotkeyState {
           return;
         }
 
-        if self.active_mode().is_some() {
+        if self.combo_held() {
           // Still a valid combo (an unrelated modifier lifted) — keep recording.
           self.stop_deadline = None;
         } else if self.is_recording && self.stop_deadline.is_none() {
@@ -304,7 +293,7 @@ impl HotkeyState {
     if let Some(deadline) = self.stop_deadline {
       if now >= deadline {
         self.stop_deadline = None;
-        if self.is_recording && self.active_mode().is_none() {
+        if self.is_recording && !self.combo_held() {
           self.is_recording = false;
           self.record_started_at = None;
           self.pending.push(Action::Stop);
@@ -560,8 +549,7 @@ fn run_state_thread(app: AppHandle, rx: Receiver<HotkeyMsg>, initial_shortcut: S
   let record_shortcut = Shortcut::parse(&initial_shortcut)
     .or_else(|| Shortcut::parse(DEFAULT_RECORD_SHORTCUT))
     .expect("default record shortcut must parse");
-  let translate_shortcut = Shortcut::parse(TRANSLATE_SHORTCUT).expect("translate shortcut must parse");
-  let mut state = HotkeyState::new(record_shortcut, translate_shortcut);
+  let mut state = HotkeyState::new(record_shortcut);
 
   loop {
     let timeout = state
@@ -603,9 +591,9 @@ fn is_input_prompt_visible(app: &AppHandle) -> bool {
 
 fn dispatch_action(app: &AppHandle, action: Action) {
   match action {
-    Action::Start { translate_mode } => {
+    Action::Start => {
       let startup_started = Instant::now();
-      log::info!("hotkey:dispatch start translate_mode={translate_mode}");
+      log::info!("hotkey:dispatch start");
       // No worker step here, and so no worker_ms below: Qwen worker ownership
       // begins in the frontend once this recording has a session id, and native
       // hotkey dispatch must not extend a previous session.
@@ -622,7 +610,6 @@ fn dispatch_action(app: &AppHandle, action: Action) {
       let position_elapsed = position_started.elapsed().saturating_sub(show_elapsed);
       let native_elapsed = startup_started.elapsed();
       let payload = RecordingStartEvent {
-        translate_mode,
         dispatched_at_unix_ms: SystemTime::now()
           .duration_since(UNIX_EPOCH)
           .unwrap_or_default()
@@ -835,22 +822,17 @@ mod tests {
   use super::*;
 
   fn fresh_state() -> HotkeyState {
-    HotkeyState::new(
-      Shortcut::parse(DEFAULT_RECORD_SHORTCUT).unwrap(),
-      Shortcut::parse(TRANSLATE_SHORTCUT).unwrap(),
-    )
+    HotkeyState::new(Shortcut::parse(DEFAULT_RECORD_SHORTCUT).unwrap())
   }
 
   #[test]
   fn recording_start_event_uses_camel_case_wire_fields() {
     let event = RecordingStartEvent {
-      translate_mode: true,
       dispatched_at_unix_ms: 1_000,
       native_ms: 80,
     };
     let wire = serde_json::to_value(event).unwrap();
 
-    assert_eq!(wire["translateMode"], true);
     assert_eq!(wire["dispatchedAtUnixMs"], 1_000);
     assert_eq!(wire["nativeMs"], 80);
   }
@@ -964,7 +946,7 @@ mod tests {
     state.handle_event(KeyEvent::Press(Key::ControlLeft), start);
     state.handle_event(KeyEvent::Press(Key::ShiftLeft), start);
     // No debounce/tick: recording starts the instant the combo is down.
-    assert_eq!(state.drain_actions(), vec![Action::Start { translate_mode: false }]);
+    assert_eq!(state.drain_actions(), vec![Action::Start]);
   }
 
   #[test]

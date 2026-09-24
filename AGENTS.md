@@ -20,7 +20,7 @@ overturning a rule.
 | Local engines: Qwen/Nemotron, llama.cpp worker, chunking, GPU | `docs/local-asr.md` |
 | Audio capture per platform, WebKit findings, no NS/AGC | `docs/audio-capture.md` |
 | Failure, retry and recovery rules | `docs/dictation-recovery.md` |
-| Cloud models, punctuation research, translation | `docs/cloud-transcription.md` |
+| Cloud models, punctuation research | `docs/cloud-transcription.md` |
 | Third-party components and their licenses | `THIRD_PARTY_NOTICES.md` |
 | Upstream llama.cpp worker-reuse bug | `vendor/llama.cpp/README.md` |
 | Past feature designs (each starts with a status line) | `docs/superpowers/specs/` |
@@ -112,8 +112,8 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
     - A failed transcription writes **one** History row carrying both reason and clip
       (`record_failed_transcription`, `pending: true`), in release builds too. Three cases belong to
       the frontend instead, and the backend must not write them: chunked dictation, a local
-      non-translation `capture_incomplete` session, and a hang or timeout in a local-origin,
-      non-translation session (`frontend_owns_hang_recovery`).
+      `capture_incomplete` session, and a hang or timeout in a local-origin session
+      (`frontend_owns_hang_recovery`).
     - Automatic retries of one recording share a `failure-id`; a later success converts that row in
       place. Never create a second row or clip for the same recording.
     - `retranscribe_pending` uses the engine configured **now**, not the one that failed. Updates
@@ -132,7 +132,7 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   - Chunks stay ≤ 75 s so every chunk maps to ctx 2048 and one worker serves the whole session.
   - Drain stdout and stderr concurrently. Partial text is visible progress, not streaming ASR.
   - Trust an extracted runtime only when its `.saytype-runtime-sha256` stamp matches.
-  - Qwen gets neither the language setting nor the dictionary, and translation never runs locally.
+  - Qwen gets neither the language setting nor the dictionary.
   - GPU (Windows) is a separate Vulkan pack and `auto` resolves to CPU. A failing GPU worker
     disables GPU for the process and the same recording retries on CPU.
 - `nemotron_asr.rs` — Nemotron 3.5 streaming engine (NVIDIA `nemo-speech` sidecar), available only
@@ -149,11 +149,11 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   `tauri.updater-e2e.conf.json` (localhost harness), so local builds never need the key. Design:
   `docs/superpowers/specs/2026-07-13-auto-update-design.md`.
 - `hotkey.rs` — global hold-to-record: a CGEventTap on macOS (only when Accessibility is trusted),
-  `rdev::listen` elsewhere. Parses the modifier-only shortcuts (default `Ctrl+Shift`, translate
-  `Shift+Alt`) and emits start/stop/cancel events. `STOP_DEBOUNCE` (250 ms) absorbs an accidental
+  `rdev::listen` elsewhere. Parses the modifier-only record shortcut (default `Ctrl+Shift`) and
+  emits start/stop/cancel events. `STOP_DEBOUNCE` (250 ms) absorbs an accidental
   release; keep it.
 - `settings.rs` — JSON config in the app data dir, shortcut normalization, auto-launch, model
-  defaults, API keys and translate-provider selection.
+  defaults and API keys.
 - `history.rs` — the History store (`{ "activities": [...] }`, 200-entry `HISTORY_CAP`, atomic
   writes), including pending audio.
 - `retry_error.rs` — typed registry of the persisted `RETRY_*` codes.
@@ -193,7 +193,7 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
 - Dictation requests use the recording-start `session-provider` (`local`, `groq`, or `openai`),
   including chunks and automatic retries. Missing or unknown providers are rejected; never infer
   a cloud destination from the latest settings. Explicit History retranscription still uses the
-  current configuration, and translation retains its provider/consent rules.
+  current configuration.
 - Local engines may be selected before assets are ready. `engineReady` / `engineBlocker` describe
   readiness independently from provider/model intent; download completion must not switch engines.
 - New-install defaults come from `settings::fresh_config_for` and cached hardware tiers, only when
@@ -267,9 +267,8 @@ permission changes and platform-specific behavior explicitly.
 
 ## Development Notes
 
-- Hold `Ctrl+Shift` to record and `Shift+Alt` to translate; Escape cancels. Translation always goes
-  to a cloud provider: a cloud engine translates with its own provider and key, and only a local
-  engine uses `translate_provider` plus `translate_consented` (`resolve_transcription_route`).
+- Hold `Ctrl+Shift` to record; Escape cancels. There is no translate mode; the Shift+Alt
+  translation was removed on 2026-09-25 as unused.
 - Rust unit tests sit beside the code. A few tests that need real model assets are `#[ignore]` and
   run manually.
 - Lifecycle logs (the `saytype_lifecycle` target) never contain transcript text;

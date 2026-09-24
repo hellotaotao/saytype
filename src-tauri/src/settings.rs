@@ -9,7 +9,6 @@ pub const APP_IDENTIFIER: &str = "com.tao.saytype";
 pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const HISTORY_FILE_NAME: &str = "transcription-history.json";
 pub const DEFAULT_RECORD_SHORTCUT: &str = "Ctrl+Shift";
-pub const TRANSLATE_SHORTCUT: &str = "Shift+Alt";
 pub const DEFAULT_NEMOTRON_LATENCY_MS: u32 = 560;
 pub const NEMOTRON_ACCURACY_LATENCY_MS: u32 = 1_120;
 
@@ -68,25 +67,8 @@ pub fn normalize_local_compute(value: &str) -> &'static str {
   crate::local_asr::ComputePreference::parse(value).as_str()
 }
 
-/// Keep an explicit upload destination even when its key is missing. Only an
-/// unconfigured install inherits the historical Groq-then-OpenAI default.
-/// Key validation belongs to the route resolver, not the settings payload.
-pub fn normalize_translate_provider(config: &AppConfig) -> &'static str {
-  match config.translate_provider.trim() {
-    "groq" => "groq",
-    "openai" => "openai",
-    "" if !config.api_key_groq.trim().is_empty() => "groq",
-    "" if !config.api_key_openai.trim().is_empty() => "openai",
-    _ => "",
-  }
-}
-
 fn default_shortcut() -> String {
   DEFAULT_RECORD_SHORTCUT.into()
-}
-
-fn default_translate_shortcut() -> String {
-  TRANSLATE_SHORTCUT.into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,8 +82,6 @@ pub struct AppConfig {
   pub api_key_openai: String,
   #[serde(default = "default_shortcut")]
   pub shortcut: String,
-  #[serde(default = "default_translate_shortcut")]
-  pub translate_shortcut: String,
   #[serde(default = "default_language")]
   pub language: String,
   #[serde(default = "default_merge_spelled_letters")]
@@ -128,18 +108,6 @@ pub struct AppConfig {
   /// See local_asr::ComputePreference; "auto" resolves to CPU today.
   #[serde(default = "default_local_compute")]
   pub local_compute: String,
-  /// Which cloud provider serves translate mode ("groq" | "openai"). Local
-  /// engines only transcribe, so Shift+Alt has to leave the device; this makes
-  /// that a deliberate choice instead of "whichever key happens to exist".
-  /// Empty means the user has not chosen — the route falls back to the old
-  /// Groq-then-OpenAI order.
-  #[serde(default)]
-  pub translate_provider: String,
-  /// Whether the user has acknowledged that translate mode uploads audio.
-  /// False blocks the cloud round-trip on a local engine: the recording is kept
-  /// and the prompt asks first, so the upload is never a surprise.
-  #[serde(default)]
-  pub translate_consented: bool,
   #[serde(default)]
   pub onboarding_completed: bool,
 }
@@ -151,7 +119,6 @@ impl Default for AppConfig {
       api_key_groq: String::new(),
       api_key_openai: String::new(),
       shortcut: default_shortcut(),
-      translate_shortcut: default_translate_shortcut(),
       language: default_language(),
       merge_spelled_letters: default_merge_spelled_letters(),
       ui_language: default_ui_language(),
@@ -164,8 +131,6 @@ impl Default for AppConfig {
       dictionary: String::new(),
       nemotron_latency_ms: default_nemotron_latency_ms(),
       local_compute: default_local_compute(),
-      translate_provider: String::new(),
-      translate_consented: false,
       onboarding_completed: false,
     }
   }
@@ -180,7 +145,6 @@ pub struct SettingsPayload {
   pub engine_ready: bool,
   pub engine_blocker: &'static str,
   pub shortcut: String,
-  pub translate_shortcut: String,
   pub language: String,
   pub merge_spelled_letters: bool,
   pub ui_language: String,
@@ -193,12 +157,6 @@ pub struct SettingsPayload {
   pub nemotron_latency_ms: u32,
   /// Which backend the local engine runs on: "auto" | "cpu" | "gpu".
   pub local_compute: String,
-  /// The cloud provider translate mode routes to ("groq" | "openai"), or empty
-  /// when the user has not picked one.
-  pub translate_provider: String,
-  /// Whether the audio-leaves-the-device notice for translate mode has been
-  /// accepted. The input prompt asks before the first cloud translation.
-  pub translate_consented: bool,
   /// The OS the backend runs on ("macos" | "windows" | "linux"), so the frontend
   /// can choose OS-correct copy and modifier glyphs instead of relying on the
   /// deprecated navigator.platform.
@@ -242,7 +200,6 @@ impl SettingsPayload {
       engine_ready: engine_blocker.is_empty(),
       engine_blocker,
       shortcut: config.shortcut.clone(),
-      translate_shortcut: config.translate_shortcut.clone(),
       language: config.language.clone(),
       merge_spelled_letters: config.merge_spelled_letters,
       ui_language: config.ui_language.clone(),
@@ -254,8 +211,6 @@ impl SettingsPayload {
       provider: config.provider.clone(),
       nemotron_latency_ms: normalize_nemotron_latency_ms(config.nemotron_latency_ms),
       local_compute: normalize_local_compute(&config.local_compute).into(),
-      translate_provider: normalize_translate_provider(config).into(),
-      translate_consented: config.translate_consented,
       gpu_runtime_supported: crate::local_asr::gpu_runtime_supported(),
       os: std::env::consts::OS.to_string(),
       is_dev: cfg!(debug_assertions),
@@ -404,14 +359,6 @@ pub fn normalize_record_shortcut(value: &str) -> String {
     return DEFAULT_RECORD_SHORTCUT.into();
   }
 
-  // The translate combo is Shift+Alt. Any record shortcut containing BOTH Shift
-  // and Alt collides with it: you can't physically form a superset like
-  // Ctrl+Shift+Alt without passing through Shift+Alt first, which fires the
-  // translate trigger mid-press. So reject the whole family (exact match OR
-  // superset), not just the exact match, and fall back to the safe default.
-  if modifiers.contains("Shift") && modifiers.contains("Alt") {
-    return DEFAULT_RECORD_SHORTCUT.into();
-  }
   ordered.join("+")
 }
 
@@ -477,7 +424,6 @@ mod tests {
     assert_eq!(config.provider, "openai");
     assert_eq!(config.model, "gpt-transcribe");
     assert_eq!(config.shortcut, DEFAULT_RECORD_SHORTCUT);
-    assert_eq!(config.translate_shortcut, TRANSLATE_SHORTCUT);
     assert_eq!(config.nemotron_latency_ms, DEFAULT_NEMOTRON_LATENCY_MS);
   }
 
@@ -513,10 +459,8 @@ mod tests {
   #[test]
   fn normalize_invalid_shortcuts_falls_back() {
     assert_eq!(normalize_record_shortcut("Ctrl"), DEFAULT_RECORD_SHORTCUT);
-    assert_eq!(normalize_record_shortcut("Shift+Alt"), DEFAULT_RECORD_SHORTCUT);
-    // Superset of the translate combo (Shift+Alt) must also fall back — it would
-    // otherwise mis-fire into translate mode mid-keypress.
-    assert_eq!(normalize_record_shortcut("Ctrl+Shift+Alt"), DEFAULT_RECORD_SHORTCUT);
+    assert_eq!(normalize_record_shortcut("Shift+Alt"), "Shift+Alt");
+    assert_eq!(normalize_record_shortcut("Ctrl+Shift+Alt"), "Ctrl+Shift+Alt");
     assert_eq!(normalize_record_shortcut("control + option"), "Ctrl+Alt");
   }
 

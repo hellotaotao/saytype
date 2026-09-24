@@ -62,7 +62,7 @@ test("unknown microphone does not block practice, while denial and permission pr
   for(const state of ["prompt","not-determined","denied","restricted"]) {context.obMicState=state;assert.equal(context.obStepSatisfied("microphone"),false);}
 });
 
-test("practice gives feedback and History fallback without promoting translation", () => {
+test("practice gives feedback and a History fallback", () => {
   assert.match(html,/id="obTryFeedback"[^>]*aria-live="polite"/);
   assert.match(html,/onboarding.try.historyHint/);
   assert.match(source,/obTryInput"\)\?\.addEventListener\("input"/);
@@ -204,7 +204,7 @@ test("ready practice hides the checklist and focuses without scrolling away the 
     onboardingVisible:()=>true,obCurrent:"practice",obTryFocused:false,obPracticeActivity:false,
     obEngineState:()=>({ready:true}),obStepSatisfied:()=>true,obSteps:()=>["engine","microphone","accessibility","practice"],obAxGranted:true,
     cachedSettings:{provider:"local",model:"qwen"},obMicState:"granted",engineAvailability:new Map(),
-    onboardingPolicy:{onboardingTranslationReady:()=>false},t:key=>key,
+    t:key=>key,
     document:{getElementById:id=>nodes[id]||null,querySelector:()=>page,createElement:testNode},
     makeIcon:name=>({...testNode(),textContent:name}),obDownloadLabel:()=>"Ready",
   });
