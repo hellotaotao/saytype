@@ -198,23 +198,18 @@
       },
       dictionary: {
         title: "Dictionary",
-        subtitle: "Add custom words and phrases to improve transcription accuracy",
-        label: "Custom Dictionary Prompt:",
-        placeholder:
-          "Enter custom words, phrases, or context to help improve transcription accuracy. For example: 'Technical terms: API, JSON, OAuth, WebSocket'",
-        save: "Save Dictionary",
-        saved: "Saved!",
-        helpTitle: "How to use the Dictionary",
-        helpItem1: "Add technical terms, proper nouns, or domain-specific vocabulary",
-        helpItem2: "Include context or examples for better recognition",
-        helpItem3: "Use clear, descriptive language",
-        helpItem4:
-          "This content will be sent as a prompt to improve transcription accuracy",
-        localNote:
-          "The local engine does not receive the dictionary — it goes out as a prompt parameter, which only the cloud APIs accept. Your entries are kept and apply again on Groq or OpenAI.",
+        subtitle: "Names, brands and terms you want transcribed correctly.",
+        placeholder: "Add a word, press Enter",
+        remove: "Remove {entry}",
+        saved: "Saved",
+        count: "{count} entries",
+        countOne: "1 entry",
+        aboutTitle: "How the dictionary is used",
+        aboutWhat: "Type a word and press Enter, or paste a list separated by commas. Changes save automatically.",
+        aboutHow: "When you use a cloud engine, these words go to the model as a reference. They are more likely to come out right, but not every time.",
+        localNote: "The dictionary has no effect on the local engine. It works when you use a cloud engine (Groq or OpenAI).",
         punctuationTitle: "Automatic punctuation for Chinese",
-        punctuationDesc:
-          "When transcribing Chinese with a Whisper model, SayType automatically appends the fixed example below after your dictionary so punctuation comes out reliably. It contains no personal data, and is not added for GPT models or other languages.",
+        punctuationDesc: "When a Whisper model transcribes Chinese, SayType adds the sentence below after your dictionary so the result comes back with punctuation. The sentence is fixed and holds none of your data. GPT models and other languages don't get it.",
         saveError: "Error saving dictionary: {message}",
       },
       activity: {
@@ -746,22 +741,18 @@
       },
       dictionary: {
         title: "词典",
-        subtitle: "添加自定义词语和短语以提升转录准确率",
-        label: "自定义词典提示：",
-        placeholder:
-          "输入自定义词语、短语或上下文以提高转录准确率。例如：'技术术语：API、JSON、OAuth、WebSocket'",
-        save: "保存词典",
-        saved: "已保存！",
-        helpTitle: "如何使用词典",
-        helpItem1: "添加技术术语、专有名词或领域相关词汇",
-        helpItem2: "提供上下文或示例以提升识别效果",
-        helpItem3: "使用清晰、具体的描述",
-        helpItem4: "此内容将作为提示发送，以提升转录准确率",
-        localNote:
-          "本地引擎收不到词典——词典是作为 prompt 参数发出去的，只有云端 API 认。词条不会丢，换回 Groq 或 OpenAI 就继续生效。",
+        subtitle: "添加容易被写错的人名、品牌和术语，让转写把它们写对。",
+        placeholder: "输入一个词，按回车添加",
+        remove: "删除 {entry}",
+        saved: "已保存",
+        count: "{count} 个词条",
+        countOne: "1 个词条",
+        aboutTitle: "词典怎么起作用",
+        aboutWhat: "输入一个词按回车添加，也可以粘贴一串用逗号隔开的词。改动会自动保存。",
+        aboutHow: "用云端引擎转写时，这些词会一起发给模型作参考。加进来的词更容易写对，但不保证每次都对。",
+        localNote: "本地引擎用不上词典。切换到云端引擎（Groq 或 OpenAI）后，词典才会起作用。",
         punctuationTitle: "中文标点自动优化",
-        punctuationDesc:
-          "使用 Whisper 模型转录中文时，SayType 会在你的词典之后自动追加下面这句固定示例，让标点稳定输出。它不含任何隐私内容；GPT 系列模型和其它语言不会追加。",
+        punctuationDesc: "用 Whisper 模型转写中文时，SayType 会在你的词典后面自动加上下面这句话，让转写结果带上标点。这句话是固定的，不含你的任何信息。GPT 模型和其他语言不会加。",
         saveError: "保存词典出错：{message}",
       },
       activity: {

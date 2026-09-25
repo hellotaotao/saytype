@@ -218,45 +218,42 @@
     <!-- Dictionary Page -->
     <div id="dictionary-page" class="page">
       <div class="welcome">
-        <h1 data-i18n="dictionary.title">Dictionary</h1>
-        <p data-i18n="dictionary.subtitle">Add custom words and phrases to improve transcription accuracy</p>
+        <h1 id="dictionaryTitle" data-i18n="dictionary.title">Dictionary</h1>
+        <p data-i18n="dictionary.subtitle">Names, brands and terms you want transcribed correctly.</p>
       </div>
 
-      <div class="dictionary-section">
-        <div class="dictionary-local-note hidden" id="dictionaryLocalNote" data-i18n="dictionary.localNote">
-          The local engine does not receive the dictionary — it is sent as a prompt parameter, which only the cloud APIs accept. Your entries are kept and apply again on Groq or OpenAI.
-        </div>
-        <div class="dictionary-form">
-          <label for="dictionary-text" data-i18n="dictionary.label">Custom Dictionary Prompt:</label>
-          <textarea
-            id="dictionary-text"
-            placeholder="Enter custom words, phrases, or context to help improve transcription accuracy. For example: 'Technical terms: API, JSON, OAuth, WebSocket'"
-            data-i18n="dictionary.placeholder"
-            data-i18n-attr="placeholder"
-            rows="8"
-          ></textarea>
-          <div class="dictionary-actions">
-            <button class="btn" onclick="saveDictionary()" data-i18n="dictionary.save">Save Dictionary</button>
-          </div>
-        </div>
+      <div class="dictionary-local-note hidden" id="dictionaryLocalNote">
+        <span class="material-icons" aria-hidden="true">info_outline</span>
+        <span data-i18n="dictionary.localNote">The dictionary has no effect on the local engine. It works when you use a cloud engine (Groq or OpenAI).</span>
+      </div>
 
-        <div class="dictionary-help">
-          <h3 data-i18n="dictionary.helpTitle">How to use the Dictionary</h3>
-          <ul>
-            <li data-i18n="dictionary.helpItem1">Add technical terms, proper nouns, or domain-specific vocabulary</li>
-            <li data-i18n="dictionary.helpItem2">Include context or examples for better recognition</li>
-            <li data-i18n="dictionary.helpItem3">Use clear, descriptive language</li>
-            <li data-i18n="dictionary.helpItem4">This content will be sent as a prompt to improve transcription accuracy</li>
-          </ul>
-        </div>
+      <div class="dictionary-editor" id="dictionaryEditor" role="list" aria-labelledby="dictionaryTitle">
+        <input
+          type="text"
+          id="dictionaryInput"
+          placeholder="Add a word, press Enter"
+          data-i18n="dictionary.placeholder"
+          data-i18n-attr="placeholder,aria-label"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <div class="dictionary-meta">
+        <span id="dictionaryCount"></span>
+        <span id="dictionaryStatus" role="status" aria-live="polite"></span>
+      </div>
 
-        <div class="dictionary-help">
+      <details class="dictionary-about">
+        <summary data-i18n="dictionary.aboutTitle">How the dictionary is used</summary>
+        <div class="dictionary-about-body">
+          <p data-i18n="dictionary.aboutWhat">Type a word and press Enter, or paste a list separated by commas. Changes save automatically.</p>
+          <p data-i18n="dictionary.aboutHow">When you use a cloud engine, these words go to the model as a reference. They are more likely to come out right, but not every time.</p>
           <h3 data-i18n="dictionary.punctuationTitle">Automatic punctuation for Chinese</h3>
-          <p class="punctuation-desc" data-i18n="dictionary.punctuationDesc">When transcribing Chinese with a Whisper model, SayType automatically appends the fixed example below after your dictionary so punctuation comes out reliably. It contains no personal data, and is not added for GPT models or other languages.</p>
+          <p data-i18n="dictionary.punctuationDesc">When a Whisper model transcribes Chinese, SayType adds the sentence below after your dictionary so the result comes back with punctuation. The sentence is fixed and holds none of your data. GPT models and other languages don't get it.</p>
           <!-- Read-only display. Mirrors SEED_ZH in src-tauri/src/commands.rs — keep the two in sync. -->
           <pre class="punctuation-seed" id="punctuation-seed">以下是一段简体中文语音的转写记录。你好，欢迎使用听写工具。今天的会议进展如何？太好了，我们继续！</pre>
         </div>
-      </div>
+      </details>
     </div>
 
     <!-- Settings Page -->

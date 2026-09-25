@@ -238,6 +238,7 @@ function bindEvents() {
     await refreshReadiness();
     renderRecent();
     renderHistory();
+    renderDictionary();
     if (onboardingVisible()) {
       renderOnboarding();
     }
@@ -2201,35 +2202,147 @@ async function clearHistory() {
 
 /* ---------- Dictionary ---------- */
 
-async function loadDictionary() {
-  try {
-    const dictionary = await ipc.invoke("get-dictionary");
-    document.getElementById("dictionary-text").value = dictionary || "";
-  } catch (error) {
-    console.error("Error loading dictionary:", error);
+// Entries are short words, so the page edits them as chips and stores them as
+// one comma-separated string: the transcription prompt the cloud APIs take.
+const DICTIONARY_SEPARATORS = /[,\n，、;；]+/;
+let dictionaryEntries = [];
+let dictionarySaveChain = Promise.resolve();
+let dictionaryStatusTimer = null;
+
+function parseDictionaryEntries(text) {
+  return String(text || "").split(DICTIONARY_SEPARATORS).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function renderDictionary() {
+  const editor = document.getElementById("dictionaryEditor");
+  const input = document.getElementById("dictionaryInput");
+  if (!editor || !input) return;
+  editor.querySelectorAll(".dictionary-chip").forEach((chip) => chip.remove());
+  dictionaryEntries.forEach((entry, index) => {
+    const chip = document.createElement("span");
+    chip.className = "dictionary-chip";
+    chip.setAttribute("role", "listitem");
+    const label = document.createElement("span");
+    label.textContent = entry;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "dictionary-chip-remove";
+    remove.setAttribute("aria-label", t("dictionary.remove", { entry }));
+    remove.innerHTML = '<span class="material-icons" aria-hidden="true">close</span>';
+    // Keep focus in the input so its blur-commit doesn't re-render the chips
+    // out from under this click.
+    remove.addEventListener("mousedown", (event) => event.preventDefault());
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      removeDictionaryEntry(index);
+    });
+    chip.append(label, remove);
+    editor.insertBefore(chip, input);
+  });
+  const count = dictionaryEntries.length;
+  document.getElementById("dictionaryCount").textContent =
+    count === 0 ? "" : count === 1 ? t("dictionary.countOne") : t("dictionary.count", { count });
+}
+
+// Saves are chained so rapid adds and removes reach the disk in order.
+function persistDictionary() {
+  const text = dictionaryEntries.join(", ");
+  dictionarySaveChain = dictionarySaveChain
+    .then(() => ipc.invoke("save-dictionary", text))
+    .then(() => {
+      const status = document.getElementById("dictionaryStatus");
+      status.textContent = t("dictionary.saved");
+      clearTimeout(dictionaryStatusTimer);
+      dictionaryStatusTimer = setTimeout(() => {
+        status.textContent = "";
+      }, 1500);
+    })
+    .catch((error) => {
+      console.error("Error saving dictionary:", error);
+      alert(t("dictionary.saveError", { message: error.message }));
+    });
+}
+
+function addDictionaryEntries(text) {
+  const known = new Set(dictionaryEntries.map((entry) => entry.toLowerCase()));
+  let added = false;
+  for (const entry of parseDictionaryEntries(text)) {
+    if (known.has(entry.toLowerCase())) continue;
+    known.add(entry.toLowerCase());
+    dictionaryEntries.push(entry);
+    added = true;
   }
-  // The dictionary rides along as the transcription request's `prompt`, which
-  // only the cloud APIs take — the local CLI invocation has no such argument.
-  // Say so on the page instead of letting entries look active when they aren't.
+  if (!added) return;
+  renderDictionary();
+  persistDictionary();
+}
+
+function removeDictionaryEntry(index) {
+  dictionaryEntries.splice(index, 1);
+  renderDictionary();
+  persistDictionary();
+  document.getElementById("dictionaryInput").focus();
+}
+
+function commitDictionaryInput() {
+  const input = document.getElementById("dictionaryInput");
+  const text = input.value;
+  input.value = "";
+  addDictionaryEntries(text);
+}
+
+// The dictionary rides along as the transcription request's `prompt`, which
+// only the cloud APIs take — the local CLI invocation has no such argument.
+// Say so on the page instead of letting entries look active when they aren't.
+// Re-read on every visit: the engine may have changed in Settings since load.
+async function refreshDictionaryLocalNote() {
+  try {
+    cachedSettings = await ipc.invoke("get-settings");
+  } catch (error) {
+    console.error("Failed to load settings:", error);
+  }
   document
     .getElementById("dictionaryLocalNote")
     ?.classList.toggle("hidden", cachedSettings?.provider !== "local");
 }
 
-async function saveDictionary() {
-  const text = document.getElementById("dictionary-text").value;
+async function loadDictionary() {
+  const editor = document.getElementById("dictionaryEditor");
+  const input = document.getElementById("dictionaryInput");
   try {
-    await ipc.invoke("save-dictionary", text);
-    const button = document.querySelector(".dictionary-actions .btn");
-    const originalText = button.textContent;
-    button.textContent = t("dictionary.saved");
-    setTimeout(() => {
-      button.textContent = originalText;
-    }, 2000);
+    dictionaryEntries = [];
+    const known = new Set();
+    for (const entry of parseDictionaryEntries(await ipc.invoke("get-dictionary"))) {
+      if (known.has(entry.toLowerCase())) continue;
+      known.add(entry.toLowerCase());
+      dictionaryEntries.push(entry);
+    }
   } catch (error) {
-    console.error("Error saving dictionary:", error);
-    alert(t("dictionary.saveError", { message: error.message }));
+    console.error("Error loading dictionary:", error);
   }
+  editor.addEventListener("click", () => input.focus());
+  input.addEventListener("keydown", (event) => {
+    // Enter during IME composition picks a candidate; it must not commit.
+    if (event.isComposing) return;
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      commitDictionaryInput();
+    }
+  });
+  // A pasted list, or a full-width comma typed through an IME, commits every
+  // finished entry and leaves the unfinished tail in the field.
+  input.addEventListener("input", (event) => {
+    if (event.isComposing || !DICTIONARY_SEPARATORS.test(input.value)) return;
+    const parts = input.value.split(DICTIONARY_SEPARATORS);
+    input.value = parts.pop().trimStart();
+    addDictionaryEntries(parts.join(","));
+  });
+  input.addEventListener("compositionend", () => input.dispatchEvent(new Event("input")));
+  input.addEventListener("blur", commitDictionaryInput);
+  document
+    .getElementById("dictionaryLocalNote")
+    ?.classList.toggle("hidden", cachedSettings?.provider !== "local");
+  renderDictionary();
 }
 
 /* ---------- Navigation & misc ---------- */
@@ -2248,6 +2361,9 @@ async function showPage(pageId, options = {}) {
   });
   if (pageId === "history") {
     renderHistory();
+  }
+  if (pageId === "dictionary") {
+    void refreshDictionaryLocalNote();
   }
   if (pageId === "settings") {
     await window.SayTypeSettings?.show?.(options.settingsTarget || null);
@@ -2320,5 +2436,4 @@ function showNotification(message, type = "info") {
 }
 
 window.showPage = showPage;
-window.saveDictionary = saveDictionary;
 window.openSettings = openSettings;
