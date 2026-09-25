@@ -64,6 +64,7 @@
     "set-local-model": "set_local_model",
     "open-local-model-panel": "open_local_model_panel",
     "download-local-model": "download_local_model",
+    "get-local-speed": "get_local_speed",
     "cancel-local-model-download": "cancel_local_model_download",
     "get-local-model-status": "get_local_model_status",
     "delete-local-model": "delete_local_model",
@@ -115,7 +116,7 @@
     "open-release-page": [["version"]],
     "set-local-model": [["model"]],
     "open-local-model-panel": [["model"]],
-    "download-local-model": [["model"]],
+    "download-local-model": [["model"], ["switchWhenReady", "switch_when_ready"]],
     "get-local-model-status": [["model"]],
     "delete-local-model": [["model"]],
   };

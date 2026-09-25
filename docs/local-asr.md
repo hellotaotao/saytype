@@ -42,22 +42,36 @@ more accurate on real dictation has not been measured.
 
 ## Hardware tiers and fresh defaults
 
-The onboarding policy added on 2026-09-14 uses a cached hardware profile, not a runtime benchmark.
+The fresh-install policy uses a cached hardware profile, not a runtime benchmark.
 `hardware::tier_for` is pure; `settings::fresh_config_for` applies its result only when the config
 file does not exist. Existing configs and serde defaults retain their compatibility behavior.
 
 | Profile | Tier | Fresh engine / onboarding placement |
 |---|---|---|
 | Known memory below 8 GiB or fewer than 4 logical cores | `cloud-default` | OpenAI `gpt-transcribe`; 0.6B remains available with a speed warning |
-| Apple M5 or newer, macOS arm64, at least 16 GiB | `qwen-large-prominent` | 0.6B default and recommended; 1.7B prominently alongside it |
-| Apple M4, macOS arm64, at least 16 GiB | `qwen-large-offered` | 0.6B default and recommended; 1.7B offered with the measured comparison above |
-| Other hardware, including Intel Mac, Windows and Linux | `qwen` | 0.6B; 1.7B under more options |
+| Everything else | `qwen` | Qwen 0.6B |
 | Hardware detection fails | `qwen` | 0.6B; failure never selects cloud by itself |
 
-These are presentation/default heuristics, not performance guarantees. Windows 1.7B tier rules
-remain pending CPU/Vulkan measurements on target machines. Downloads start only after an explicit
-user action and never activate an engine on completion. Groq and supported Nemotron builds remain
-in onboarding's more options.
+Onboarding never offers 1.7B; first run only chooses local or cloud. Groq and supported Nemotron
+builds sit under "more" in onboarding, Home and Settings.
+
+## Suggesting 1.7B from measured speed
+
+Until 2026-09-25 the 1.7B placement came from the chip name (Apple M4 with 16 GiB offered it, M5 put
+it forward). That was a guess, and it said nothing about Windows, where CPU, integrated and discrete
+GPUs differ by an order of magnitude. Settings now suggests 1.7B from this machine's own dictations:
+
+- `local_speed.rs` keeps the last 20 resident decodes per Qwen model as decode seconds per second of
+  audio (clips under 2 s are skipped), in `local-speed.json` in the app data dir. Only timings.
+- 1.7B is estimated at 2.2x the 0.6B time, from the M4 measurements above (2.16x on the 30.55 s
+  clip, 2.37x on the 6.13 s one). The factor is unmeasured on other runtimes.
+- After at least 10 samples, if 1.7B would answer a 15-second sentence within 1.5 s, the Qwen drawer
+  suggests it. On an M4 (0.6B at 0.031 s per second of audio) the estimate is about 1.0 s; on the
+  Windows i5-7400 CPU (about 0.4) it is about 13 s, so no suggestion.
+- Once 1.7B is in use, its own samples decide: 5 samples above 3 s for 15 s of speech suggest going
+  back to 0.6B.
+- "Download 1.7B" keeps 0.6B working during the download and switches when it finishes, unless the
+  engine was changed meanwhile (`download_local_model`'s `switch_when_ready`).
 
 ## Why a llama.cpp subprocess
 

@@ -701,6 +701,86 @@
   color: var(--pill-warn-text);
 }
 
+/* "More engines": a row of the list, quieter than the engines themselves. */
+.engine-more-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 15px;
+  border: 0;
+  background: var(--list-row-bg);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.engine-more-toggle:hover { background: var(--nav-item-hover-bg); color: var(--app-text); }
+.engine-more-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.engine-more-toggle .material-icons { font-size: 18px; transition: transform 0.15s; }
+.engine-more-toggle[aria-expanded="true"] .material-icons { transform: rotate(90deg); }
+.engine-more-label { font-weight: 600; }
+.engine-more-names { color: var(--text-soft); font-size: 12px; }
+
+/* Qwen's two sizes, side by side inside the Qwen drawer. */
+.qwen-size-picker { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.qwen-size-label { font-size: 12px; color: var(--text-soft); }
+.qwen-size-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.qwen-size-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 9px;
+  background: var(--panel-bg-subtle);
+  color: var(--app-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.qwen-size-option:hover { border-color: var(--panel-border-strong); }
+.qwen-size-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.qwen-size-option[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.qwen-size-option:disabled { cursor: default; opacity: 0.7; }
+.qwen-size-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.qwen-size-head strong { font-size: 14.5px; }
+.qwen-size-note { font-size: 12px; color: var(--text-soft); }
+.qwen-size-badge {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+.qwen-size-option.in-use .qwen-size-badge { background: var(--pill-ok-bg); color: var(--pill-ok-text); }
+.qwen-size-specs { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1px 10px; margin: 0; font-size: 12px; }
+.qwen-size-specs dt { color: var(--text-soft); }
+.qwen-size-specs dd { margin: 0; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.qwen-size-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--input-border-focus);
+  border-radius: 9px;
+  background: var(--accent-soft-bg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.qwen-size-hint p { flex: 1 1 16em; margin: 0; }
+.qwen-size-hint.slow { border-color: var(--pill-warn-text); background: var(--pill-warn-bg); }
+@media (max-width: 560px) {
+  .qwen-size-options { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .engine-more-toggle .material-icons { transition: none; }
+}
+
 .setting-summary {
   padding: 14px 20px;
   cursor: pointer;

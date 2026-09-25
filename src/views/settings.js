@@ -300,13 +300,91 @@ function updateModelOptions(provider) {
 // The engine list, in the order it is offered. Cloud rows carry the key state,
 // local rows the download state — the two things that decide whether a choice
 // is usable at all, which a bare dropdown could not show.
+// Qwen is one row whose two sizes are picked inside its drawer, so the 1.7B
+// entry has no row of its own ("size"). Groq and Nemotron sit behind "More
+// engines" unless one of them is in use.
 const ENGINE_CARDS = [
-  { value: LOCAL_QWEN_PROVIDER, local: true, icon: "memory", recommended: true },
-  { value: LOCAL_QWEN_LARGE_PROVIDER, local: true, icon: "memory", experimental: true, detail: true },
-  { value: "openai", local: false, icon: "cloud" },
-  { value: "groq", local: false, icon: "cloud" },
-  { value: LOCAL_NEMOTRON_PROVIDER, local: true, icon: "memory", experimental: true },
+  { value: LOCAL_QWEN_PROVIDER, local: true, icon: "memory", recommended: true, group: "main" },
+  { value: LOCAL_QWEN_LARGE_PROVIDER, local: true, icon: "memory", group: "size" },
+  { value: "openai", local: false, icon: "cloud", group: "main" },
+  { value: "groq", local: false, icon: "cloud", group: "more" },
+  { value: LOCAL_NEMOTRON_PROVIDER, local: true, icon: "memory", experimental: true, group: "more" },
 ];
+const QWEN_CHOICES = [LOCAL_QWEN_PROVIDER, LOCAL_QWEN_LARGE_PROVIDER];
+const QWEN_SIZE_SPECS = {
+  [LOCAL_QWEN_PROVIDER]: { label: "0.6B", noteKey: "settings.engine.qwenSize.smallNote", download: "~1.0 GB", memory: "~1.4 GB" },
+  [LOCAL_QWEN_LARGE_PROVIDER]: { label: "1.7B", noteKey: "settings.engine.qwenSize.largeNote", download: "~2.5 GB", memory: "~2.9 GB" },
+};
+// The 1.7B suggestion is based on how fast 0.6B actually runs here, not on
+// the chip name. 1.7B decodes about 2.2x slower than 0.6B (M4 measurements
+// in docs/local-asr.md). The wait is quoted for one 15-second sentence.
+const QWEN_LARGE_SLOWDOWN = 2.2;
+const QWEN_SENTENCE_SECONDS = 15;
+const QWEN_SUGGEST_MAX_WAIT_SECONDS = 1.5;
+const QWEN_SLOW_WAIT_SECONDS = 3;
+const QWEN_MIN_SMALL_SAMPLES = 10;
+const QWEN_MIN_LARGE_SAMPLES = 5;
+let engineMoreExpanded = false;
+// Measured decode speed per model: { [model]: { samples, medianRtf } }.
+let qwenSpeed = {};
+
+function isQwenChoice(choice) {
+  return QWEN_CHOICES.includes(choice);
+}
+
+// The row (and drawer) an engine choice lives in.
+function engineRowFor(choice) {
+  return isQwenChoice(choice) ? LOCAL_QWEN_PROVIDER : choice;
+}
+
+// The Qwen size the Qwen row stands for right now: the one open in its
+// drawer, else the one in use, else the one used last.
+function qwenChoice() {
+  if (isQwenChoice(expandedEngineProvider)) return expandedEngineProvider;
+  const active = providerForSettings(currentSettings);
+  if (isQwenChoice(active)) return active;
+  return currentSettings.qwenModel === QWEN_LARGE_LOCAL_MODEL ? LOCAL_QWEN_LARGE_PROVIDER : LOCAL_QWEN_PROVIDER;
+}
+
+function rowChoice(entry) {
+  return entry.value === LOCAL_QWEN_PROVIDER ? qwenChoice() : entry.value;
+}
+
+// Seconds to wait after releasing the key for one 15-second sentence, from
+// this machine's own dictations. A size with too few samples of its own is
+// estimated from the other one; null until there is enough to go on.
+function qwenWaitEstimate(speed, model) {
+  const small = speed?.[QWEN_LOCAL_MODEL];
+  const large = speed?.[QWEN_LARGE_LOCAL_MODEL];
+  const enough = (entry, minimum) => entry && entry.samples >= minimum && Number.isFinite(entry.medianRtf);
+  let rtf = null;
+  if (model === QWEN_LARGE_LOCAL_MODEL) {
+    if (enough(large, QWEN_MIN_LARGE_SAMPLES)) rtf = large.medianRtf;
+    else if (enough(small, QWEN_MIN_SMALL_SAMPLES)) rtf = small.medianRtf * QWEN_LARGE_SLOWDOWN;
+  } else if (enough(small, QWEN_MIN_SMALL_SAMPLES)) {
+    rtf = small.medianRtf;
+  } else if (enough(large, QWEN_MIN_LARGE_SAMPLES)) {
+    rtf = large.medianRtf / QWEN_LARGE_SLOWDOWN;
+  }
+  return rtf === null ? null : rtf * QWEN_SENTENCE_SECONDS;
+}
+
+// "suggest": 0.6B is in use, 1.7B is not downloaded, and 1.7B would still
+// answer quickly here. "slow": 1.7B is in use and keeps people waiting.
+function qwenSizeAdvice(speed, activeModel, largeState) {
+  if (activeModel === QWEN_LOCAL_MODEL && !["ready", "downloading"].includes(largeState)) {
+    const small = speed?.[QWEN_LOCAL_MODEL];
+    const wait = small?.samples >= QWEN_MIN_SMALL_SAMPLES ? qwenWaitEstimate(speed, QWEN_LARGE_LOCAL_MODEL) : null;
+    if (wait !== null && wait <= QWEN_SUGGEST_MAX_WAIT_SECONDS) return "suggest";
+  }
+  if (activeModel === QWEN_LARGE_LOCAL_MODEL) {
+    const large = speed?.[QWEN_LARGE_LOCAL_MODEL];
+    if (large?.samples >= QWEN_MIN_LARGE_SAMPLES && large.medianRtf * QWEN_SENTENCE_SECONDS > QWEN_SLOW_WAIT_SECONDS) {
+      return "slow";
+    }
+  }
+  return "";
+}
 
 function engineStatus(entry) {
   if (entry.local) {
@@ -345,6 +423,11 @@ async function chooseSettingsEngine(choice) {
   await activateEngine(inspectedEngineTarget());
 }
 
+// The copy key for a row: the Qwen row names the engine, not one size.
+function rowCopyKey(entry) {
+  return entry.value === LOCAL_QWEN_PROVIDER ? "qwen" : camelKey(entry.value);
+}
+
 function renderEngineCards() {
   renderSettingChoices();
   const host = document.getElementById("engineCards");
@@ -354,20 +437,20 @@ function renderEngineCards() {
   }
   const offered = new Set(Array.from(select.options).map((option) => option.value));
   const selected = providerForSettings(currentSettings);
+  const rows = ENGINE_CARDS.filter((entry) => entry.group !== "size" && offered.has(entry.value));
 
-  ENGINE_CARDS.filter((entry) => offered.has(entry.value)).forEach((entry) => {
-      const active = entry.value === selected;
+  rows.forEach((entry) => {
+      const active = engineRowFor(selected) === entry.value;
+      const statusEntry = { ...entry, value: rowChoice(entry) };
       const existing = document.getElementById(`engine-choice-${entry.value}`);
       if (existing) {
         existing.parentElement.classList.toggle("active", active);
         updateEngineChoice(existing, active);
         document.getElementById(`engine-disclosure-${entry.value}`)?.setAttribute(
-          "aria-label", translate("settings.engine.details", { model: translate(`settings.engine.${camelKey(entry.value)}.name`) }));
-        existing.querySelector(".engine-card-name > span").textContent = translate(`settings.engine.${camelKey(entry.value)}.name`);
-        existing.querySelector(".engine-card-desc").textContent = translate(`settings.engine.${camelKey(entry.value)}.description`);
-        const detail = document.getElementById(`engine-drawer-${entry.value}`)?.querySelector(".engine-drawer-detail");
-        if (detail) detail.textContent = translate(`settings.engine.${camelKey(entry.value)}.detail`);
-        const status = engineStatus(entry);
+          "aria-label", translate("settings.engine.details", { model: translate(`settings.engine.${rowCopyKey(entry)}.name`) }));
+        existing.querySelector(".engine-card-name > span").textContent = translate(`settings.engine.${rowCopyKey(entry)}.name`);
+        existing.querySelector(".engine-card-desc").textContent = translate(`settings.engine.${rowCopyKey(entry)}.description`);
+        const status = engineStatus(statusEntry);
         const badge = existing.querySelector(".engine-card-status");
         badge.textContent = active ? translate("settings.engine.activeModel", { model: engineTargetLabel(currentSettings) }) : translate(status.key);
         badge.className = `engine-card-status engine-status-${status.tone}`;
@@ -401,7 +484,7 @@ function renderEngineCards() {
       const nameRow = document.createElement("div");
       nameRow.className = "engine-card-name";
       const name = document.createElement("span");
-      name.textContent = translate(`settings.engine.${camelKey(entry.value)}.name`);
+      name.textContent = translate(`settings.engine.${rowCopyKey(entry)}.name`);
       nameRow.appendChild(name);
       if (entry.recommended) {
         const tag = document.createElement("span");
@@ -417,17 +500,17 @@ function renderEngineCards() {
       }
       const desc = document.createElement("div");
       desc.className = "engine-card-desc";
-      desc.textContent = translate(`settings.engine.${camelKey(entry.value)}.description`);
+      desc.textContent = translate(`settings.engine.${rowCopyKey(entry)}.description`);
       body.appendChild(nameRow);
       body.appendChild(desc);
 
-      const status = engineStatus(entry);
+      const status = engineStatus(statusEntry);
       const statusEl = document.createElement("span");
       statusEl.className = `engine-card-status${status.tone ? ` engine-status-${status.tone}` : ""}`;
       statusEl.textContent = active ? translate("settings.engine.activeModel", { model: engineTargetLabel(currentSettings) }) : translate(status.key);
 
       card.append(check, icon, body, statusEl);
-      card.addEventListener("click", () => void chooseSettingsEngine(entry.value));
+      card.addEventListener("click", () => void chooseSettingsEngine(rowChoice(entry)));
 
       const chevron = document.createElement("span");
       chevron.className = "engine-card-chevron material-icons";
@@ -440,10 +523,10 @@ function renderEngineCards() {
       disclosure.setAttribute("aria-controls", `engine-drawer-${entry.value}`);
       disclosure.setAttribute("aria-label", translate("settings.engine.details", { model: name.textContent }));
       disclosure.appendChild(chevron);
-      disclosure.addEventListener("click", () => inspectEngine(entry.value, { toggle: true }));
+      disclosure.addEventListener("click", () => inspectEngine(rowChoice(entry), { toggle: true }));
       // The row's own padding counts as the row, not as a dead strip.
       row.addEventListener("click", (event) => {
-        if (event.target === row) void chooseSettingsEngine(entry.value);
+        if (event.target === row) void chooseSettingsEngine(rowChoice(entry));
       });
       const drawer = document.createElement("div");
       drawer.id = `engine-drawer-${entry.value}`;
@@ -451,29 +534,197 @@ function renderEngineCards() {
       drawer.hidden = true;
       drawer.setAttribute("role", "region");
       drawer.setAttribute("aria-labelledby", card.id);
-      if (entry.detail) {
-        const detail = document.createElement("p");
-        detail.className = "engine-drawer-detail";
-        detail.textContent = translate(`settings.engine.${camelKey(entry.value)}.detail`);
-        drawer.appendChild(detail);
+      if (entry.value === LOCAL_QWEN_PROVIDER) {
+        const picker = document.createElement("div");
+        picker.id = "qwenSizePicker";
+        picker.className = "qwen-size-picker";
+        drawer.appendChild(picker);
       }
       row.append(card, disclosure);
       host.append(row, drawer);
     });
+  arrangeEngineRows(host, rows, selected);
+  renderQwenSizePicker();
   syncEngineDrawer();
   renderEngineActivation();
 }
 
+// Main rows first, then "More engines" and the rows behind it. An engine in
+// use from the more group is shown with the main rows, so it is never hidden.
+function arrangeEngineRows(host, rows, selected) {
+  const inUse = engineRowFor(selected);
+  const main = rows.filter((entry) => entry.group === "main" || entry.value === inUse);
+  const more = rows.filter((entry) => !main.includes(entry));
+  let toggle = document.getElementById("engineMoreToggle");
+  if (!toggle) {
+    toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.id = "engineMoreToggle";
+    toggle.className = "engine-more-toggle";
+    toggle.addEventListener("click", () => {
+      engineMoreExpanded = !engineMoreExpanded;
+      if (!engineMoreExpanded && ENGINE_CARDS.find((card) => card.value === engineRowFor(expandedEngineProvider))?.group === "more") {
+        expandedEngineProvider = null;
+      }
+      renderEngineCards();
+    });
+  }
+  const desired = [];
+  const place = (entry, hidden) => {
+    const row = document.getElementById(`engine-choice-${entry.value}`)?.parentElement;
+    const drawer = document.getElementById(`engine-drawer-${entry.value}`);
+    if (!row || !drawer) return;
+    row.hidden = hidden;
+    if (hidden) drawer.hidden = true;
+    desired.push(row, drawer);
+  };
+  main.forEach((entry) => place(entry, false));
+  toggle.hidden = more.length === 0;
+  toggle.setAttribute("aria-expanded", String(engineMoreExpanded));
+  const caret = document.createElement("span");
+  caret.className = "material-icons";
+  caret.setAttribute("aria-hidden", "true");
+  caret.textContent = "chevron_right";
+  const label = document.createElement("span");
+  label.className = "engine-more-label";
+  label.textContent = translate("settings.engine.more");
+  const names = document.createElement("span");
+  names.className = "engine-more-names";
+  names.textContent = more.map((entry) => translate(`settings.engine.${rowCopyKey(entry)}.name`)).join(" · ");
+  toggle.replaceChildren(caret, label, names);
+  desired.push(toggle);
+  more.forEach((entry) => place(entry, !engineMoreExpanded));
+  // Move only what is out of place: re-inserting a drawer that holds the
+  // focused key field would blur it mid-typing.
+  desired.forEach((node, index) => {
+    if (host.children[index] !== node) host.insertBefore(node, host.children[index] || null);
+  });
+}
+
+function qwenSizeBadge(choice) {
+  const status = localModelStatuses.get(localModelForProvider(choice));
+  if (choice === providerForSettings(currentSettings)) return translate("settings.engine.qwenSize.inUse");
+  if (status?.state === "ready") return translate("settings.engine.qwenSize.ready");
+  if (status?.state === "downloading") {
+    const percent = status.totalBytes ? Math.floor(100 * (status.downloadedBytes || 0) / status.totalBytes) : 0;
+    return translate("settings.engine.qwenSize.downloading", { percent });
+  }
+  return translate("settings.engine.qwenSize.absent");
+}
+
+function formatWait(seconds) {
+  return seconds === null
+    ? translate("settings.engine.qwenSize.waitUnknown")
+    : translate("settings.engine.qwenSize.waitValue", { seconds: seconds < 10 ? seconds.toFixed(1) : Math.round(seconds) });
+}
+
+// The two Qwen sizes inside the Qwen drawer, with what each costs here and,
+// when this machine is fast enough, a nudge towards 1.7B.
+function renderQwenSizePicker() {
+  const picker = document.getElementById("qwenSizePicker");
+  if (!picker) return;
+  const active = providerForSettings(currentSettings);
+  const inspected = qwenChoice();
+  const label = document.createElement("div");
+  label.className = "qwen-size-label";
+  label.textContent = translate("settings.engine.qwenSize.label");
+  const options = document.createElement("div");
+  options.className = "qwen-size-options";
+  QWEN_CHOICES.forEach((choice) => {
+    const spec = QWEN_SIZE_SPECS[choice];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = `qwen-size-${choice}`;
+    button.className = `qwen-size-option${choice === active ? " in-use" : ""}`;
+    button.setAttribute("aria-pressed", String(choice === inspected));
+    button.disabled = engineSwitchPending;
+    const head = document.createElement("span");
+    head.className = "qwen-size-head";
+    const name = document.createElement("strong");
+    name.textContent = spec.label;
+    const note = document.createElement("span");
+    note.className = "qwen-size-note";
+    note.textContent = translate(spec.noteKey);
+    const badge = document.createElement("span");
+    badge.className = "qwen-size-badge";
+    badge.textContent = qwenSizeBadge(choice);
+    head.append(name, note, badge);
+    const specs = document.createElement("dl");
+    specs.className = "qwen-size-specs";
+    [
+      ["settings.engine.qwenSize.download", spec.download],
+      ["settings.engine.qwenSize.memory", spec.memory],
+      ["settings.engine.qwenSize.wait", formatWait(qwenWaitEstimate(qwenSpeed, localModelForProvider(choice)))],
+    ].forEach(([key, value]) => {
+      const term = document.createElement("dt");
+      term.textContent = translate(key);
+      const detail = document.createElement("dd");
+      detail.textContent = value;
+      specs.append(term, detail);
+    });
+    button.append(head, specs);
+    button.addEventListener("click", () => void chooseQwenSize(choice));
+    options.appendChild(button);
+  });
+  const children = [label, options];
+  const activeModel = isQwenChoice(active) ? localModelForProvider(active) : "";
+  const advice = qwenSizeAdvice(qwenSpeed, activeModel, localModelStatuses.get(QWEN_LARGE_LOCAL_MODEL)?.state);
+  if (advice) {
+    const hint = document.createElement("div");
+    hint.className = `qwen-size-hint${advice === "slow" ? " slow" : ""}`;
+    const text = document.createElement("p");
+    text.textContent = advice === "slow"
+      ? translate("settings.engine.qwenSize.slow", { seconds: formatSeconds(qwenWaitEstimate(qwenSpeed, QWEN_LARGE_LOCAL_MODEL)) })
+      : translate("settings.engine.qwenSize.suggest");
+    const action = document.createElement("button");
+    action.type = "button";
+    action.id = "qwenSizeHintAction";
+    action.className = "btn";
+    action.disabled = engineSwitchPending;
+    action.textContent = translate(advice === "slow" ? "settings.engine.qwenSize.slowAction" : "settings.engine.qwenSize.suggestAction");
+    action.addEventListener("click", () => void chooseQwenSize(advice === "slow" ? LOCAL_QWEN_PROVIDER : LOCAL_QWEN_LARGE_PROVIDER));
+    hint.append(text, action);
+    children.push(hint);
+  }
+  picker.replaceChildren(...children);
+}
+
+function formatSeconds(seconds) {
+  return seconds === null ? "?" : seconds < 10 ? seconds.toFixed(1) : String(Math.round(seconds));
+}
+
+// Picking a size. A downloaded size switches at once while Qwen is in use,
+// like a cloud engine's model pick; otherwise it waits for the row click. A
+// missing size starts downloading and, when Qwen is in use, takes over once
+// the download finishes (unless another engine was chosen meanwhile).
+async function chooseQwenSize(choice) {
+  if (engineSwitchPending) return;
+  const model = localModelForProvider(choice);
+  const state = localModelStatuses.get(model)?.state;
+  const active = providerForSettings(currentSettings);
+  const qwenInUse = isQwenChoice(active);
+  inspectEngine(choice);
+  if (state === "ready") {
+    if (qwenInUse && choice !== active) await activateEngine({ provider: "local", model });
+    return;
+  }
+  if (state === "absent" || state === "partial") {
+    await handleLocalModelAction({ switchWhenReady: qwenInUse });
+  }
+}
+
 function syncEngineDrawer() {
   const expanded = expandedEngineProvider;
+  // Both Qwen sizes open the Qwen row's drawer.
+  const expandedRow = engineRowFor(expanded);
   for (const entry of ENGINE_CARDS) {
     const panel = document.getElementById(`engine-drawer-${entry.value}`);
-    if (panel) panel.hidden = entry.value !== expanded;
+    if (panel) panel.hidden = entry.value !== expandedRow;
     document.getElementById(`engine-disclosure-${entry.value}`)
-      ?.setAttribute("aria-expanded", String(entry.value === expanded));
+      ?.setAttribute("aria-expanded", String(entry.value === expandedRow));
   }
   const local = !!localModelForProvider(expanded);
-  const drawer = document.getElementById(`engine-drawer-${expanded}`);
+  const drawer = document.getElementById(`engine-drawer-${expandedRow}`);
   if (!drawer) return;
   // These nodes are shared by every drawer and follow whichever one is open.
   // Each goes in before a later one already here, so their order never depends
@@ -682,6 +933,10 @@ function renderLocalModelPanel(status) {
 
 async function refreshLocalModelStatus() {
   if (!ipc) return;
+  void ipc.invoke("get-local-speed").then((speed) => {
+    qwenSpeed = speed || {};
+    renderQwenSizePicker();
+  }).catch(() => {});
   const models = new Set([selectedLocalModel()]);
   for (const option of document.getElementById("providerSelect")?.options || []) {
     const model = localModelForProvider(option.value);
@@ -704,7 +959,7 @@ async function refreshLocalModelStatus() {
   renderEngineCards();
 }
 
-async function handleLocalModelAction() {
+async function handleLocalModelAction({ switchWhenReady = false } = {}) {
   try {
     if (localModelState === "downloading") {
       localModelDownloadStartedHere = "";
@@ -717,7 +972,7 @@ async function handleLocalModelAction() {
     localModelDownloadStartedHere = model;
     renderLocalModelPanel({ state: "downloading", downloadedBytes: 0, totalBytes: 1 });
     void refreshLocalModelStatus();
-    await ipc.invoke("download-local-model", model);
+    await ipc.invoke("download-local-model", model, switchWhenReady);
   } catch (error) {
     console.error("Local model download failed:", error);
   }
@@ -755,6 +1010,11 @@ function setupLocalModelSync() {
       renderEngineCards();
     } else {
       void refreshLocalModelStatus();
+    }
+    if (payload.state === "ready") {
+      // A download requested with "use it when ready" has switched the engine
+      // in the backend just before this event; show the engine now in use.
+      void queueSettingsOperation(refreshSettingsSnapshot).then(renderEngineCards, () => {});
     }
     if (payload.model && payload.model !== selectedLocalModel()) {
       return;
@@ -1235,6 +1495,7 @@ function inspectEngine(providerChoice, { toggle = false } = {}) {
   }
   if (expandedEngineProvider !== providerChoice) engineActivationMessage = "";
   expandedEngineProvider = providerChoice;
+  if (ENGINE_CARDS.find((card) => card.value === providerChoice)?.group === "more") engineMoreExpanded = true;
   const previousChoice = select.value;
   const modelSelect = document.getElementById("modelSelect");
   if (modelOptions[previousChoice]?.some((option) => option.value === modelSelect?.value)) {
@@ -1939,6 +2200,8 @@ function renderEngineActivation() {
 function engineReadinessHint() {
   const choice = document.getElementById("providerSelect")?.value;
   if (!choice || choice === providerForSettings(currentSettings)) return "";
+  // With Qwen in use, the size picker already shows what the other size needs.
+  if (isQwenChoice(choice) && isQwenChoice(providerForSettings(currentSettings))) return "";
   const entry = ENGINE_CARDS.find((card) => card.value === choice);
   if (!entry) return "";
   const status = engineStatus(entry);
@@ -2150,6 +2413,14 @@ async function showSettings(target = null) {
     if (typeof target === "string" && target.startsWith("engine:")) {
       activateSettingsTab("dictation");
       inspectEngine(target.slice("engine:".length));
+      return;
+    }
+
+    if (target === "engines-more") {
+      activateSettingsTab("dictation");
+      engineMoreExpanded = true;
+      renderEngineCards();
+      document.getElementById("engineMoreToggle")?.scrollIntoView({ block: "center" });
       return;
     }
 

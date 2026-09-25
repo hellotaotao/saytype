@@ -122,7 +122,7 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
       available. Filesystem paths stay in logs, never in History or toasts.
     - `RETRY_*` codes (`retry_error.rs`) are persisted in users' History: keep old translations when
       retiring a code, and migrate stored rows before renaming or reusing one.
-- `local_asr.rs` — local Qwen3-ASR (0.6B default, 1.7B experimental) through upstream llama.cpp
+- `local_asr.rs` — local Qwen3-ASR (0.6B default, 1.7B optional) through upstream llama.cpp
   `b9960`'s `llama-mtmd-cli`: assets and downloader, resident worker, stdout parser. **Invariants**
   (reasons and measurements: `docs/local-asr.md`):
   - Always pass an explicit `-c` sized by `ctx_size_for_wav` (otherwise ~7 GiB of KV cache) and
@@ -195,7 +195,13 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   a cloud destination from the latest settings. Explicit History retranscription still uses the
   current configuration.
 - Local engines may be selected before assets are ready. `engineReady` / `engineBlocker` describe
-  readiness independently from provider/model intent; download completion must not switch engines.
+  readiness independently from provider/model intent. Download completion does not switch engines,
+  with one exception: a download requested with `switchWhenReady` (Settings' "Download 1.7B" while
+  Qwen is in use) switches to that model only if the engine is still the one in use at the request.
+- Qwen is one engine with two sizes. Home and Settings show Qwen and OpenAI; Groq and Nemotron sit
+  behind "More" unless one is in use. `qwenModel` (config `qwen_model`) remembers the last Qwen size,
+  so returning to Qwen restores it. The 1.7B suggestion comes from this machine's measured 0.6B
+  decode speed (`local_speed.rs`, `get_local_speed`), never from the chip name.
 - New-install defaults come from `settings::fresh_config_for` and cached hardware tiers, only when
   the config file is absent. Do not change `AppConfig::default` or serde defaults to implement this
   policy; existing installations must retain their selected engine.

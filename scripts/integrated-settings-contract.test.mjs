@@ -111,8 +111,8 @@ test("the engine is chosen from cards that show what a label cannot", () => {
   // The select survives as the value holder and the keyboard path, so every
   // existing listener keeps working — cards drive it rather than replace it.
   assert.match(mainHtml, /id="providerSelect"/);
-  assert.match(settingsJs, /card\.addEventListener\("click", \(\) => void chooseSettingsEngine\(entry\.value\)\)/);
-  assert.match(settingsJs, /disclosure\.addEventListener\("click", \(\) => inspectEngine\(entry\.value, \{ toggle: true \}\)\)/);
+  assert.match(settingsJs, /card\.addEventListener\("click", \(\) => void chooseSettingsEngine\(rowChoice\(entry\)\)\)/);
+  assert.match(settingsJs, /disclosure\.addEventListener\("click", \(\) => inspectEngine\(rowChoice\(entry\), \{ toggle: true \}\)\)/);
   assert.match(settingsCss, /\.setting-control-fallback/);
   assert.doesNotMatch(settingsCss, /\.setting-control-fallback\s*\{[^}]*display:\s*none/);
   for (const key of ["needsKey", "keySet", "needsDownload"]) {
@@ -165,7 +165,8 @@ test("Nemotron is hidden wherever no wired runtime exists", () => {
   assert.ok(settingsJs.includes("currentSettings.nemotronSupported"));
   assert.ok(settingsJs.includes('#providerSelect option[value="${LOCAL_NEMOTRON_PROVIDER}"]'));
   assert.ok(mainJs.includes("cachedSettings?.nemotronSupported"));
-  assert.ok(mainJs.includes("availableEngineOptions().forEach"));
+  assert.ok(mainJs.includes("const available = availableEngineOptions();"));
+  assert.ok(mainJs.includes("return availableEngineOptions().filter("));
   assert.ok(trayRs.includes("fn available_engines()"));
   assert.ok(trayRs.includes("for (id, label, provider, model) in available_engines()"));
   assert.ok(trayRs.includes("crate::nemotron_asr::supported()"));
@@ -388,10 +389,11 @@ test("the Home update card links to the release notes for the waiting version", 
   assert.ok(i18nJs.includes(`whatsNew: "What's new"`));
 });
 
-test("engines switch from their row with no separate Use button; 1.7B's measured costs sit in its drawer", () => {
+test("engines switch from their row with no separate Use button; Qwen's sizes and their costs sit in its drawer", () => {
   assert.doesNotMatch(mainHtml, /engineUseBtn/);
-  assert.match(settingsJs, /experimental: true, detail: true/);
-  assert.match(settingsJs, /detail\.className = "engine-drawer-detail"/);
+  assert.match(settingsJs, /value: LOCAL_QWEN_LARGE_PROVIDER, local: true, icon: "memory", group: "size"/);
+  assert.match(settingsJs, /picker\.id = "qwenSizePicker"/);
+  assert.match(settingsJs, /\[LOCAL_QWEN_LARGE_PROVIDER\]: \{ label: "1\.7B", noteKey: "settings\.engine\.qwenSize\.largeNote", download: "~2\.5 GB", memory: "~2\.9 GB" \}/);
   assert.match(settingsCss, /\.engine-card-row\.experimental:not\(\.active\) \{\s*opacity: 0\.75;/);
   assert.doesNotMatch(settingsCss, /\.engine-card-row\.experimental \{[^}]*opacity/);
   const check = settingsCss.match(/\.engine-check::before \{([^}]+)\}/)[1];

@@ -4,17 +4,15 @@ export function onboardingSteps(os) {
 }
 
 export function onboardingEngineLayout(localTier, nemotronSupported) {
+  // Qwen 1.7B is a size inside the Qwen engine, offered from Settings once the
+  // machine has shown it is fast enough; first-run only chooses local or cloud.
   const small = { value: "local-qwen", recommended: true };
-  const large = { value: "local-qwen-large", prominent: localTier === "qwen-large-prominent" };
   const openai = { value: "openai" };
-  const extras = [{ value: "groq" }, ...(nemotronSupported ? [{ value: "local-nemotron" }] : [])];
+  const more = [{ value: "groq" }, ...(nemotronSupported ? [{ value: "local-nemotron" }] : [])];
   if (localTier === "cloud-default") {
-    return { main: [{ ...openai, note: "cloudDefault" }, { ...small, note: "localSlow" }], more: [{ ...large, note: "largeSlow" }, ...extras] };
+    return { main: [{ ...openai, note: "cloudDefault" }, { ...small, note: "localSlow" }], more };
   }
-  if (localTier === "qwen-large-offered" || localTier === "qwen-large-prominent") {
-    return { main: [small, { ...large, note: "largeComparison" }, openai], more: extras };
-  }
-  return { main: [small, openai], more: [{ ...large, note: "largeSlow" }, ...extras] };
+  return { main: [small, openai], more };
 }
 
 export function onboardingEngineState(settings, statuses) {

@@ -5,6 +5,7 @@ mod hardware;
 mod retry_error;
 mod hotkey;
 mod local_asr;
+mod local_speed;
 mod microphone;
 mod native_capture;
 mod nemotron_asr;
@@ -250,6 +251,7 @@ pub fn run() {
       commands::download_local_model,
       commands::cancel_local_model_download,
       commands::get_local_model_status,
+      commands::get_local_speed,
       commands::delete_local_model,
       commands::get_gpu_runtime_status,
       commands::download_gpu_runtime,

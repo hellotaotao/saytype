@@ -39,6 +39,8 @@ function harness(options = {}) {
     ENGINE_CARDS: ["local-qwen", "local-qwen-large", "groq", "openai"].map(value => ({ value, local: value.startsWith("local") })),
     engineStatus: entry => options.notReady?.includes(entry.value) ? { key: "needs", tone: "warn" } : { key: "ready", tone: "ok" },
     camelKey: value => value,
+    isQwenChoice: value => value === "local-qwen" || value === "local-qwen-large",
+    engineRowFor: value => value === "local-qwen-large" ? "local-qwen" : value,
     toggleProviderFields() {}, updateModelOptions() {}, renderSettingChoices() {}, refreshLocalModelStatus: async () => {},
   });
   vm.runInContext(activationSource + "\n" + section("function inspectEngine", "function handleThemeChange"), context);
@@ -212,11 +214,15 @@ test("an opened engine that is not usable yet says it is not in use and what the
   assert.equal(h.fields.engineActivationStatus.textContent, "settings.engine.notReadyKey");
   h.fields.providerSelect.value = "local-qwen-large";
   h.context.renderEngineActivation();
-  assert.equal(h.fields.engineActivation.hidden, false);
-  assert.equal(h.fields.engineActivationStatus.textContent, "settings.engine.notReadyDownload");
+  assert.equal(h.fields.engineActivation.hidden, true, "with Qwen in use, its size picker says what 1.7B needs");
   h.fields.providerSelect.value = "local-qwen";
   h.context.renderEngineActivation();
   assert.equal(h.fields.engineActivation.hidden, true, "the engine in use needs no hint");
+  h.context.currentSettings = { provider: "groq", model: "whisper-large-v3-turbo" };
+  h.fields.providerSelect.value = "local-qwen-large";
+  h.context.renderEngineActivation();
+  assert.equal(h.fields.engineActivation.hidden, false);
+  assert.equal(h.fields.engineActivationStatus.textContent, "settings.engine.notReadyDownload");
 });
 
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(resolve => setImmediate(resolve)); };

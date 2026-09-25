@@ -128,3 +128,27 @@ test("home mutations are dispatched through the Settings shared save queue", asy
   assert.equal(dispatched, true);
   assert.equal(h.pages.length, 0);
 });
+
+test("home shows Qwen as one engine at its current or last size, OpenAI, the engine in use, and More", () => {
+  const home = source.slice(source.indexOf("const QWEN_SIZE_LABELS"), source.indexOf("function renderEngineCard()"));
+  const options = [
+    { value: "local-qwen", model: "small" }, { value: "local-qwen-large", model: "large" },
+    { value: "openai", label: "OpenAI" }, { value: "groq", label: "Groq" }, { value: "local-nemotron", labelKey: "nemo", model: "nemo" },
+  ];
+  const run = (selected, qwenModel) => {
+    const context = vm.createContext({
+      QWEN_LARGE_LOCAL_MODEL: "large", t: key => key,
+      cachedSettings: { qwenModel }, selectedEngineValue: () => selected, availableEngineOptions: () => options,
+    });
+    vm.runInContext(home, context);
+    return JSON.parse(JSON.stringify({
+      shown: context.homeEngineOptions().map(option => option.value),
+      more: context.homeMoreOptions().map(option => option.value),
+      label: context.homeEngineLabel(options[1]),
+    }));
+  };
+  assert.deepEqual(run("local-qwen", ""), { shown: ["local-qwen", "openai"], more: ["groq", "local-nemotron"], label: "home.engineLocalQwen 1.7B" });
+  assert.deepEqual(run("local-qwen-large", "large").shown, ["local-qwen-large", "openai"]);
+  assert.deepEqual(run("openai", "large").shown, ["local-qwen-large", "openai"], "returning to Qwen goes back to the size used last");
+  assert.deepEqual(run("groq", ""), { shown: ["local-qwen", "openai", "groq"], more: ["local-nemotron"], label: "home.engineLocalQwen 1.7B" });
+});

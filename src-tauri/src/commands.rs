@@ -574,6 +574,8 @@ pub fn save_settings(
     // field deserializes to false — without this line every settings save would
     // re-trigger the onboarding wizard.
     config.onboarding_completed = existing.onboarding_completed;
+    // Not a form field either; remember_qwen_model updates it after this save.
+    config.qwen_model = existing.qwen_model.clone();
     config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
     config.nemotron_latency_ms =
       settings::normalize_nemotron_latency_ms(config.nemotron_latency_ms);
@@ -674,7 +676,11 @@ fn switch_provider(config: &mut AppConfig, provider: &str) {
     return;
   }
   config.provider = provider.to_string();
-  config.model = default_model_for(provider).into();
+  config.model = if provider == crate::local_asr::LOCAL_PROVIDER {
+    settings::preferred_qwen_model(config).into()
+  } else {
+    default_model_for(provider).into()
+  };
   if provider != crate::local_asr::LOCAL_PROVIDER {
     config.api_key = settings::selected_api_key(config);
   }
@@ -1584,9 +1590,14 @@ pub async fn download_local_model(
   app: AppHandle,
   state: State<'_, AppState>,
   model: Option<String>,
+  switch_when_ready: Option<bool>,
 ) -> Result<bool, String> {
   let model = crate::local_asr::normalize_local_model_id(model.as_deref().unwrap_or(""));
-  log::info!("command:download_local_model model={model}");
+  let switch_when_ready = switch_when_ready.unwrap_or(false);
+  log::info!("command:download_local_model model={model} switch_when_ready={switch_when_ready}");
+  // "Download and use it" is a request made against the engine in use now. A
+  // different engine chosen while it downloads is the later decision and wins.
+  let engine_at_request = settings::read_config().ok().map(|config| (config.provider, config.model));
   let cancel = CancellationToken::new();
   {
     let mut slot = state.local_model_download.lock().unwrap();
@@ -1605,6 +1616,20 @@ pub async fn download_local_model(
   let status = crate::local_asr::model_status_for(model, false);
   match result {
     Ok(()) => {
+      // Switch before announcing "ready", so a window that re-reads settings on
+      // that event already sees the new engine.
+      if switch_when_ready {
+        let engine_now = settings::read_config().ok().map(|config| (config.provider, config.model));
+        if engine_unchanged_since_request(&engine_at_request, &engine_now) {
+          if let Err(error) = apply_local_model_change(&app, model) {
+            log::warn!("command:download_local_model could not switch to {model}: {error}");
+          } else {
+            log::info!("command:download_local_model switched to {model}");
+          }
+        } else {
+          log::info!("command:download_local_model engine changed during download; not switching");
+        }
+      }
       let _ = app.emit(
         "local-model-download-progress",
         json!({ "model": model, "state": "ready", "downloadedBytes": status.downloaded_bytes, "totalBytes": status.total_bytes }),
@@ -1626,6 +1651,19 @@ pub async fn download_local_model(
       Err(err)
     }
   }
+}
+
+fn engine_unchanged_since_request(
+  at_request: &Option<(String, String)>,
+  now: &Option<(String, String)>,
+) -> bool {
+  at_request.is_some() && at_request == now
+}
+
+/// Measured decode speed per local Qwen model (see local_speed.rs).
+#[tauri::command]
+pub fn get_local_speed() -> std::collections::BTreeMap<String, crate::local_speed::ModelSpeed> {
+  crate::local_speed::summary()
 }
 
 #[tauri::command]
@@ -2650,6 +2688,28 @@ mod tests {
     assert_eq!(config.model, "qwen3-asr-0.6b-q8_0");
     switch_provider(&mut config, "openai");
     assert_eq!(config.model, "gpt-transcribe");
+  }
+
+  #[test]
+  fn switching_back_to_local_returns_to_the_last_qwen_size() {
+    let mut config = AppConfig::default();
+    config.provider = "local".into();
+    config.model = crate::local_asr::QWEN_LARGE_MODEL_ID.into();
+    settings::remember_qwen_model(&mut config);
+    switch_provider(&mut config, "openai");
+    assert_eq!(settings::preferred_qwen_model(&config), crate::local_asr::QWEN_LARGE_MODEL_ID);
+    switch_provider(&mut config, "local");
+    assert_eq!(config.model, crate::local_asr::QWEN_LARGE_MODEL_ID);
+  }
+
+  #[test]
+  fn a_requested_switch_applies_only_if_the_engine_is_unchanged() {
+    let small = Some(("local".to_string(), crate::local_asr::QWEN_MODEL_ID.to_string()));
+    let groq = Some(("groq".to_string(), "whisper-large-v3-turbo".to_string()));
+    assert!(engine_unchanged_since_request(&small, &small.clone()));
+    assert!(!engine_unchanged_since_request(&small, &groq));
+    assert!(!engine_unchanged_since_request(&None, &None));
+    assert!(!engine_unchanged_since_request(&small, &None));
   }
 
   #[test]

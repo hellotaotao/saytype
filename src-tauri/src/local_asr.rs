@@ -1599,6 +1599,7 @@ async fn transcribe_wav_inner_for(
     ).await {
       Ok(Ok(text)) => {
         let resident_decode_ms = resident_started.elapsed().as_millis();
+        crate::local_speed::record(model, wav_bytes.len(), resident_decode_ms);
         let worker_runtime = worker.runtime.label();
         progress.enter("park-worker");
         park_resident_worker(worker);

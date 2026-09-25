@@ -606,7 +606,7 @@ const ENGINE_OPTIONS = [
     model: QWEN_LOCAL_MODEL,
     recommended: true,
   },
-  { value: "local-qwen-large", labelKey: "home.engineLocalQwenLarge", experimental: true, model: QWEN_LARGE_LOCAL_MODEL },
+  { value: "local-qwen-large", labelKey: "home.engineLocalQwenLarge", model: QWEN_LARGE_LOCAL_MODEL },
   { value: "openai", label: "OpenAI" },
   { value: "groq", label: "Groq" },
   {
@@ -846,6 +846,35 @@ function engineReadinessLabel(option) {
   return t(option.model ? "home.engineNeedsDownload" : "home.engineNeedsSetup");
 }
 
+const QWEN_SIZE_LABELS = { "local-qwen": "0.6B", "local-qwen-large": "1.7B" };
+
+// Home shows Qwen as one engine, labelled with its size: the one in use, else
+// the one used last, which is also where clicking it returns to.
+function homeQwenValue() {
+  const selected = selectedEngineValue();
+  if (QWEN_SIZE_LABELS[selected]) return selected;
+  return cachedSettings?.qwenModel === QWEN_LARGE_LOCAL_MODEL ? "local-qwen-large" : "local-qwen";
+}
+
+// Qwen and OpenAI, plus the engine in use when it lives under "More".
+function homeEngineOptions() {
+  const selected = selectedEngineValue();
+  const values = [homeQwenValue(), "openai"];
+  if (!values.includes(selected)) values.push(selected);
+  const available = availableEngineOptions();
+  return values.map((value) => available.find((option) => option.value === value)).filter(Boolean);
+}
+
+function homeMoreOptions() {
+  const shown = new Set(homeEngineOptions().map((option) => option.value));
+  return availableEngineOptions().filter((option) => !shown.has(option.value) && !QWEN_SIZE_LABELS[option.value]);
+}
+
+function homeEngineLabel(option) {
+  if (QWEN_SIZE_LABELS[option.value]) return `${t("home.engineLocalQwen")} ${QWEN_SIZE_LABELS[option.value]}`;
+  return option.labelKey ? t(option.labelKey) : option.label;
+}
+
 function renderEngineCard() {
   const card = document.getElementById("engine-card");
   if (!card) {
@@ -868,9 +897,7 @@ function renderEngineCard() {
   seg.className = "engine-seg";
   seg.setAttribute("role", "group");
   seg.setAttribute("aria-label", t("home.engineLabel"));
-  availableEngineOptions().forEach(option => {
-    const { value, label, labelKey, recommended, experimental } = option;
-    const active = selectedEngine === value;
+  const button = (value, name, tagText, statusText, active, onClick) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `engine-seg-btn${active ? " active" : ""}`;
@@ -879,26 +906,60 @@ function renderEngineCard() {
     btn.setAttribute("aria-disabled", String(engineSwitchPending));
     const text = document.createElement("span");
     text.className = "engine-name";
-    text.textContent = labelKey ? t(labelKey) : label;
+    text.textContent = name;
     const tag = document.createElement("span");
-    tag.className = `engine-tag${recommended || experimental ? "" : " engine-tag-empty"}`;
-    tag.textContent = recommended ? t("home.engineRecommended") : experimental ? t("home.engineExperimental") : "\u00a0";
+    tag.className = `engine-tag${tagText ? "" : " engine-tag-empty"}`;
+    tag.textContent = tagText || "\u00a0";
     const status = document.createElement("span");
     status.className = "engine-readiness";
-    status.textContent = engineReadinessLabel(option);
+    status.textContent = statusText;
     btn.append(text, tag, status);
-    btn.addEventListener("click", () => void selectEngine(value));
-    seg.appendChild(btn);
+    btn.addEventListener("click", onClick);
+    return btn;
+  };
+  homeEngineOptions().forEach(option => {
+    const active = selectedEngine === option.value;
+    const tagText = option.recommended || QWEN_SIZE_LABELS[option.value] ? t("home.engineRecommended")
+      : option.experimental ? t("home.engineExperimental") : "";
+    seg.appendChild(button(option.value, homeEngineLabel(option), tagText, engineReadinessLabel(option), active,
+      () => void selectEngine(option.value)));
   });
+  const more = homeMoreOptions();
+  if (more.length) {
+    seg.appendChild(button("more", t("home.engineMore"), "", more.map(homeEngineLabel).join(" · "), false,
+      () => void showPage("settings", { settingsTarget: "engines-more" })));
+  }
+  const children = [header, seg];
+  // Both sizes downloaded: switch between them right here.
+  const sizes = ["local-qwen", "local-qwen-large"];
+  if (QWEN_SIZE_LABELS[selectedEngine] && sizes.every((value) => engineAvailability.get(value)?.state === "ready")) {
+    const sizeSeg = document.createElement("div");
+    sizeSeg.className = "engine-size-seg";
+    sizeSeg.setAttribute("role", "group");
+    sizeSeg.setAttribute("aria-label", t("home.engineQwenSize"));
+    sizes.forEach((value) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `engine-size-btn${selectedEngine === value ? " active" : ""}`;
+      btn.setAttribute("data-engine", `size-${value}`);
+      btn.setAttribute("aria-pressed", String(selectedEngine === value));
+      btn.setAttribute("aria-disabled", String(engineSwitchPending));
+      btn.textContent = QWEN_SIZE_LABELS[value];
+      btn.addEventListener("click", () => void selectEngine(value));
+      sizeSeg.appendChild(btn);
+    });
+    children.push(sizeSeg);
+  }
   const sub = document.createElement("div");
   sub.className = "engine-sub";
   sub.setAttribute("aria-live", "polite");
   const captionKey = ENGINE_CAPTION_KEY[selectedEngine];
   sub.textContent = captionKey ? t(captionKey) : "";
-  card.replaceChildren(header, seg, sub);
+  children.push(sub);
+  card.replaceChildren(...children);
   seg.scrollLeft = scrollLeft;
   if (focusedValue) {
-    seg.querySelector(`[data-engine="${focusedValue}"]`)?.focus({ preventScroll: true });
+    card.querySelector(`[data-engine="${focusedValue}"]`)?.focus({ preventScroll: true });
   }
 }
 
@@ -1366,34 +1427,6 @@ function renderObLocalCard(card, model) {
   else desc.textContent = t("onboarding.key.localAbsent", { total: status?.totalBytes ? obFormatGB(status.totalBytes) : model === QWEN_LARGE_LOCAL_MODEL ? "~2.5 GB" : "~1.0 GB" });
 }
 
-function renderObComparison(show) {
-  const container = document.getElementById("obModelComparison");
-  if (!container) return;
-  container.hidden = !show;
-  if (!show) return;
-  const table = document.createElement("table");
-  const rows = [
-    ["", "Qwen 0.6B", "Qwen 1.7B"],
-    [t("onboarding.key.comparisonDownload"), "~1.0 GB", "~2.5 GB"],
-    [t("onboarding.key.comparisonMemory"), "~1.4 GB", "~2.9 GB"],
-    [t("onboarding.key.comparisonTime"), "0.96 s", "2.07 s"],
-  ];
-  rows.forEach((cells, index) => {
-    const row = document.createElement("tr");
-    cells.forEach((value, column) => {
-      const cell = document.createElement(index === 0 || column === 0 ? "th" : "td");
-      if (index === 0) cell.scope = "col";
-      else if (column === 0) cell.scope = "row";
-      cell.textContent = value;
-      row.appendChild(cell);
-    });
-    table.appendChild(row);
-  });
-  const note = document.createElement("p");
-  note.textContent = t("onboarding.key.comparisonNote");
-  container.replaceChildren(table, note);
-}
-
 function renderObLocal() {
   if (!onboardingVisible()) return;
   const main = document.getElementById("obEngineMain");
@@ -1409,7 +1442,6 @@ function renderObLocal() {
     obLayoutSignature = signature;
     main.replaceChildren(...available(layout.main).map(obEngineCard));
     more.replaceChildren(...available(layout.more).map(obEngineCard));
-    renderObComparison(capable && ["qwen-large-offered", "qwen-large-prominent"].includes(tier));
   }
   const title = document.getElementById("obKeyTitle");
   if (title) title.textContent = t("onboarding.key.titleLocalFirst");

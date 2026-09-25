@@ -76,12 +76,11 @@ test("required settings and Qwen 1.7B copy is translated, with bounded local pri
   const context=vm.createContext({window:{},document:{documentElement:{setAttribute(){}}},navigator:{language:"en"}});
   vm.runInContext(readFileSync(new URL("./i18n.js",import.meta.url),"utf8"),context);
   const {setLanguage,t}=context.window.SayTypeI18n;
-  for(const key of ["settings.pageSubtitle","settings.engine.active","settings.engine.activeModel","settings.engine.details","settings.engine.notReadyKey","settings.engine.notReadyDownload","settings.engine.switchFailed","settings.engine.invalidModel","settings.engine.keyRequired","settings.engine.cloudNotice","settings.engine.localQwenLarge.description","settings.engine.localQwenLarge.detail","home.engineCaptionLocalQwenLarge","settings.apiProvider.localQwenLarge"]) {
+  for(const key of ["settings.pageSubtitle","settings.engine.active","settings.engine.activeModel","settings.engine.details","settings.engine.notReadyKey","settings.engine.notReadyDownload","settings.engine.switchFailed","settings.engine.invalidModel","settings.engine.keyRequired","settings.engine.cloudNotice","settings.engine.qwen.description","settings.engine.more","settings.engine.qwenSize.suggest","settings.engine.qwenSize.slow","home.engineMore","home.engineCaptionLocalQwenLarge","settings.apiProvider.localQwenLarge"]) {
     setLanguage("en");const en=t(key);setLanguage("zh");assert.notEqual(t(key),en,key);assert.match(t(key),/[\u4e00-\u9fff]/,key);
   }
   assert.match(t("onboarding.privacy.title"),/本地听写/);
   assert.doesNotMatch(t("onboarding.key.groqDesc"),/大多数|免费随便/);
-  assert.match(t("onboarding.key.comparisonNote"),/还不确定.*更准/);
 });
 
 test("engine advance is scheduled before a long model download resolves", async () => {

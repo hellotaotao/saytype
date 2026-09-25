@@ -24,7 +24,8 @@ function container(id) {
 function harness() {
   const choices = ["local-qwen", "local-qwen-large", "groq", "openai"];
   const nodes = {};
-  for (const choice of choices) {
+  // Both Qwen sizes share the Qwen row's drawer; 1.7B has no row of its own.
+  for (const choice of choices.filter(choice => choice !== "local-qwen-large")) {
     nodes[`engine-drawer-${choice}`] = container(`engine-drawer-${choice}`);
     nodes[`engine-disclosure-${choice}`] = { attributes: {}, setAttribute(key, value) { this.attributes[key] = value; } };
   }
@@ -33,7 +34,10 @@ function harness() {
   nodes.modelSelect = { value: "groq-model", options: [{ value: "groq-model" }] };
   const context = vm.createContext({
     document: { getElementById: id => nodes[id] },
-    ENGINE_CARDS: choices.map(value => ({ value })),
+    ENGINE_CARDS: choices.map(value => ({ value, group: value === "local-qwen-large" ? "size" : value === "groq" ? "more" : "main" })),
+    engineMoreExpanded: false,
+    isQwenChoice: value => value === "local-qwen" || value === "local-qwen-large",
+    engineRowFor: value => value === "local-qwen-large" ? "local-qwen" : value,
     expandedEngineProvider: "local-qwen", inspectedLocalModel: null,
     engineCloudDrafts: new Map(), currentSettings: { provider: "local", model: "small" },
     localModelForProvider: choice => choice === "local-qwen" ? "small" : choice === "local-qwen-large" ? "large" : "",
@@ -56,7 +60,7 @@ test("engine card click opens, closes, and reopens without changing the active e
   assert.equal(h.nodes["engine-drawer-local-qwen"].hidden, true);
   assert.equal(h.nodes.apiKeyItem.parentElement, h.nodes["engine-drawer-groq"]);
   h.context.inspectEngine("groq", { toggle: true });
-  assert.ok(h.choices.every(choice => h.nodes[`engine-drawer-${choice}`].hidden));
+  assert.ok(h.choices.every(choice => h.nodes[`engine-drawer-${choice}`]?.hidden ?? true));
   assert.equal(h.nodes["engine-disclosure-groq"].attributes["aria-expanded"], "false");
   h.context.syncEngineDrawer();
   assert.equal(h.nodes["engine-drawer-groq"].hidden, true, "status refresh must not reopen a collapsed drawer");
@@ -70,17 +74,24 @@ test("explicit deep link opens local details even when its card is already expan
   const h = harness();
   h.context.inspectEngine("local-qwen-large");
   h.context.inspectEngine("local-qwen-large");
-  assert.equal(h.nodes["engine-drawer-local-qwen-large"].hidden, false);
-  assert.equal(h.nodes.engineAdvanced.parentElement, h.nodes["engine-drawer-local-qwen-large"]);
+  assert.equal(h.nodes["engine-drawer-local-qwen"].hidden, false, "1.7B opens in the Qwen drawer");
+  assert.equal(h.nodes.engineAdvanced.parentElement, h.nodes["engine-drawer-local-qwen"]);
   assert.equal(h.nodes.engineAdvanced.open, true);
+  assert.equal(h.nodes["engine-disclosure-local-qwen"].attributes["aria-expanded"], "true");
   h.context.inspectEngine("local-qwen-large", { toggle: true });
-  assert.equal(h.nodes["engine-drawer-local-qwen-large"].hidden, true);
+  assert.equal(h.nodes["engine-drawer-local-qwen"].hidden, true);
+});
+
+test("opening an engine behind More engines expands that group", () => {
+  const h = harness();
+  h.context.inspectEngine("groq");
+  assert.equal(h.context.engineMoreExpanded, true);
 });
 
 test("the chevron only opens and closes; the row itself chooses", () => {
   const render = section("function renderEngineCards", "function syncEngineDrawer");
-  assert.match(render, /disclosure\.addEventListener\("click", \(\) => inspectEngine\(entry\.value, \{ toggle: true \}\)\)/);
-  assert.match(render, /card\.addEventListener\("click", \(\) => void chooseSettingsEngine\(entry\.value\)\)/);
+  assert.match(render, /disclosure\.addEventListener\("click", \(\) => inspectEngine\(rowChoice\(entry\), \{ toggle: true \}\)\)/);
+  assert.match(render, /card\.addEventListener\("click", \(\) => void chooseSettingsEngine\(rowChoice\(entry\)\)\)/);
   assert.match(render, /row\.append\(card, disclosure\)/);
   assert.doesNotMatch(source, /engine-select-button|selectSettingsEngine/);
 });

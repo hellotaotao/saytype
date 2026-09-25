@@ -15,7 +15,7 @@ const ENGINES: [(&str, &str, &str, Option<&str>); 5] = [
   ),
   (
     "engine-local-qwen-large",
-    "Local · Qwen3-ASR 1.7B (experimental)",
+    "Local · Qwen3-ASR 1.7B",
     "local",
     Some(crate::local_asr::QWEN_LARGE_MODEL_ID),
   ),

@@ -10,7 +10,7 @@ Project direction: [Product pathway](docs/PRODUCT_PATHWAY.md) · [Reliability ac
 
 - **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe
 - **Real-time Audio Visualization**: Waveform animation while recording
-- **Local-first AI Transcription**: Qwen3-ASR runs on-device for batch quality (0.6B by default, 1.7B as an experimental option); Nemotron 3.5 adds live local transcription on Apple Silicon and Windows x64. Groq and OpenAI remain optional cloud choices
+- **Local-first AI Transcription**: Qwen3-ASR runs on-device for batch quality (0.6B by default, 1.7B as a larger option); Nemotron 3.5 adds live local transcription on Apple Silicon and Windows x64. Groq and OpenAI remain optional cloud choices
 - **Auto-typing**: Inserts transcribed text into the active application (macOS; Windows/Linux experimental, untested)
 - **Background Operation**: Runs silently in the system tray
 - **Automatic Updates**: New releases download in the background; restart from the tray or Settings when you're ready
@@ -71,7 +71,7 @@ Releases are built, signed, and published automatically when a `v*` tag is pushe
 ## Configuration
 
 Access settings through the tray menu or main window to configure:
-- Transcription engine: Qwen3-ASR (0.6B, or experimental 1.7B) or Nemotron 3.5 local model (no key; Nemotron supports Apple Silicon and Windows x64), or optional Groq / OpenAI with an API key
+- Transcription engine: Qwen3-ASR (0.6B, or the larger 1.7B) or Nemotron 3.5 local model (no key; Nemotron supports Apple Silicon and Windows x64), or optional Groq / OpenAI with an API key
 - Transcription language (Nemotron and cloud providers); custom dictionary (cloud providers only)
 
 SayType records from the system's default input device; change it in your OS sound settings.
@@ -104,7 +104,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 - **按住录音快捷键**:按住 Ctrl+Shift 开始录音,松开即停止并转写
 - **实时音频可视化**:录音时显示波形动画
-- **本地优先 AI 转写**:Qwen3-ASR 在本机提供高质量批量转写(默认 0.6B,1.7B 为实验选项);Nemotron 3.5 在 Apple Silicon 和 Windows x64 上提供本地实时转写。Groq 和 OpenAI 作为可选云端方案
+- **本地优先 AI 转写**:Qwen3-ASR 在本机提供高质量批量转写(默认 0.6B,也可选更大的 1.7B);Nemotron 3.5 在 Apple Silicon 和 Windows x64 上提供本地实时转写。Groq 和 OpenAI 作为可选云端方案
 - **自动输入**:将转写结果插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
 - **后台运行**:静默驻留在系统托盘
 - **自动更新**:新版本后台自动下载,你随时从托盘或设置里重启完成升级
@@ -166,7 +166,7 @@ npm run build:linux
 
 通过托盘菜单或主窗口进入「设置」,可配置:
 
-- 转写引擎:Qwen3-ASR(0.6B,或实验性的 1.7B)或 Nemotron 3.5 本地模型(无需 key;Nemotron 支持 Apple Silicon 和 Windows x64),或可选的云端服务(Groq / OpenAI)+ API key
+- 转写引擎:Qwen3-ASR(0.6B,或更大的 1.7B)或 Nemotron 3.5 本地模型(无需 key;Nemotron 支持 Apple Silicon 和 Windows x64),或可选的云端服务(Groq / OpenAI)+ API key
 - 转写语言(Nemotron 和云端服务商);自定义词典(仅云端服务商)
 
 SayType 使用系统默认的输入设备录音;要换麦克风,请在系统的声音设置里修改。

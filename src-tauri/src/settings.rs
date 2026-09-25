@@ -110,6 +110,11 @@ pub struct AppConfig {
   pub local_compute: String,
   #[serde(default)]
   pub onboarding_completed: bool,
+  /// The Qwen size last used ("qwen3-asr-0.6b-q8_0" | "qwen3-asr-1.7b-q8_0"),
+  /// so switching back to Qwen from a cloud engine returns to it. Empty means
+  /// the default size. Kept up to date by `remember_qwen_model`.
+  #[serde(default)]
+  pub qwen_model: String,
 }
 
 impl Default for AppConfig {
@@ -132,7 +137,37 @@ impl Default for AppConfig {
       nemotron_latency_ms: default_nemotron_latency_ms(),
       local_compute: default_local_compute(),
       onboarding_completed: false,
+      qwen_model: String::new(),
     }
+  }
+}
+
+/// The Qwen size in use, or the one used last when another engine is active.
+pub fn preferred_qwen_model(config: &AppConfig) -> &'static str {
+  if config.provider == crate::local_asr::LOCAL_PROVIDER {
+    match config.model.as_str() {
+      crate::local_asr::QWEN_MODEL_ID => return crate::local_asr::QWEN_MODEL_ID,
+      crate::local_asr::QWEN_LARGE_MODEL_ID => return crate::local_asr::QWEN_LARGE_MODEL_ID,
+      _ => {}
+    }
+  }
+  remembered_qwen_model(config)
+}
+
+fn remembered_qwen_model(config: &AppConfig) -> &'static str {
+  if config.qwen_model == crate::local_asr::QWEN_LARGE_MODEL_ID {
+    crate::local_asr::QWEN_LARGE_MODEL_ID
+  } else {
+    crate::local_asr::QWEN_MODEL_ID
+  }
+}
+
+/// Record the Qwen size whenever a Qwen model is the active engine.
+pub fn remember_qwen_model(config: &mut AppConfig) {
+  if config.provider == crate::local_asr::LOCAL_PROVIDER
+    && matches!(config.model.as_str(), crate::local_asr::QWEN_MODEL_ID | crate::local_asr::QWEN_LARGE_MODEL_ID)
+  {
+    config.qwen_model = config.model.clone();
   }
 }
 
@@ -170,6 +205,9 @@ pub struct SettingsPayload {
   /// of model download state and the hardware recommendation in local_tier.
   pub local_capable: bool,
   pub local_tier: crate::hardware::LocalTier,
+  /// The Qwen size Home and Settings show for the Qwen engine: the one in use,
+  /// else the one used last.
+  pub qwen_model: String,
   /// Whether the Nemotron engine can run here at all (its streaming runtime is
   /// available for Apple Silicon and Windows x64). False means the engine is
   /// not offered — the Settings provider list, the Home engine switcher and the
@@ -217,6 +255,7 @@ impl SettingsPayload {
       onboarding_completed: config.onboarding_completed,
       local_capable: crate::platform::supports_local_first(),
       local_tier: crate::hardware::local_tier(),
+      qwen_model: preferred_qwen_model(config).into(),
       nemotron_supported: crate::nemotron_asr::supported(),
     }
   }
@@ -278,6 +317,7 @@ fn mutate_config_at(
   let _guard = config_lock();
   let mut config = read_config_from_path(path)?;
   mutation(&mut config)?;
+  remember_qwen_model(&mut config);
   write_config_to_path(path, &config)?;
   Ok(config)
 }
@@ -449,6 +489,24 @@ mod tests {
   }
 
   #[test]
+  fn qwen_size_is_remembered_across_engines() {
+    let mut config = AppConfig::default();
+    assert_eq!(preferred_qwen_model(&config), crate::local_asr::QWEN_MODEL_ID);
+    config.provider = crate::local_asr::LOCAL_PROVIDER.into();
+    config.model = crate::local_asr::QWEN_LARGE_MODEL_ID.into();
+    remember_qwen_model(&mut config);
+    assert_eq!(config.qwen_model, crate::local_asr::QWEN_LARGE_MODEL_ID);
+    // Nemotron is not a Qwen size, so it leaves the remembered one alone.
+    config.model = crate::local_asr::NEMOTRON_MODEL_ID.into();
+    remember_qwen_model(&mut config);
+    assert_eq!(preferred_qwen_model(&config), crate::local_asr::QWEN_LARGE_MODEL_ID);
+    config.provider = "openai".into();
+    config.model = "gpt-transcribe".into();
+    assert_eq!(preferred_qwen_model(&config), crate::local_asr::QWEN_LARGE_MODEL_ID);
+    assert_eq!(SettingsPayload::from_config_with(&config, true).qwen_model, crate::local_asr::QWEN_LARGE_MODEL_ID);
+  }
+
+  #[test]
   fn nemotron_latency_accepts_only_supported_profiles() {
     assert_eq!(normalize_nemotron_latency_ms(560), 560);
     assert_eq!(normalize_nemotron_latency_ms(1_120), 1_120);
@@ -495,7 +553,7 @@ mod tests {
     use crate::hardware::LocalTier;
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path().join("missing.json");
-    for tier in [LocalTier::Qwen, LocalTier::QwenLargeOffered, LocalTier::QwenLargeProminent] {
+    for tier in [LocalTier::Qwen] {
       let config = read_config_from_path_with_tier(&path, tier).unwrap();
       assert_eq!(config.provider, "local");
       assert_eq!(config.model, crate::local_asr::QWEN_MODEL_ID);
@@ -513,7 +571,7 @@ mod tests {
     use crate::hardware::LocalTier;
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path().join("config.json");
-    for tier in [LocalTier::CloudDefault, LocalTier::QwenLargeProminent] {
+    for tier in [LocalTier::CloudDefault, LocalTier::Qwen] {
       fs::write(&path, r#"{"provider":"groq","model":"whisper-large-v3","apiKeyGroq":"gsk"}"#).unwrap();
       let config = read_config_from_path_with_tier(&path, tier).unwrap();
       assert_eq!(config.provider, "groq");
