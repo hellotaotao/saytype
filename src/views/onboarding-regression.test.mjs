@@ -81,7 +81,7 @@ test("required settings and Qwen 1.7B copy is translated, with bounded local pri
   }
   assert.match(t("onboarding.privacy.title"),/本地听写/);
   assert.doesNotMatch(t("onboarding.key.groqDesc"),/大多数|免费随便/);
-  assert.match(t("onboarding.key.comparisonNote"),/准确率.*未.*实测/);
+  assert.match(t("onboarding.key.comparisonNote"),/还不确定.*更准/);
 });
 
 test("engine advance is scheduled before a long model download resolves", async () => {

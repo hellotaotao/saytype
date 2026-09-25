@@ -22,7 +22,7 @@
       <div class="onboard-page" data-ob-step="welcome">
         <div class="onboard-page-content">
           <h1 data-i18n="onboarding.welcome.title">Speak. It types.</h1>
-          <p class="ob-lead" data-i18n="onboarding.welcome.lead">In any app, hold the shortcut and talk.</p>
+          <p class="ob-lead" data-i18n="onboarding.welcome.lead">In any app, hold the shortcut and talk — release, and the words appear at your cursor.</p>
           <div class="ob-steps">
             <div class="ob-step">
               <span class="material-icons">keyboard</span>
@@ -52,7 +52,7 @@
           <div class="ob-privacy-lines">
             <div class="ob-privacy-line"><span class="material-icons" aria-hidden="true">person_outline</span><span data-i18n="onboarding.privacy.noAccount">No sign-up needed for local dictation</span></div>
             <div class="ob-privacy-line"><span class="material-icons" aria-hidden="true">wifi_off</span><span data-i18n="onboarding.privacy.offline">Download the model once, then dictate offline</span></div>
-            <div class="ob-privacy-line"><span class="material-icons" aria-hidden="true">history</span><span data-i18n="onboarding.privacy.line2">History stays on this computer</span></div>
+            <div class="ob-privacy-line"><span class="material-icons" aria-hidden="true">history</span><span data-i18n="onboarding.privacy.line2">History is stored only on this computer</span></div>
           </div>
         </div>
       </div>
@@ -83,7 +83,7 @@
         <div class="onboard-page-content">
           <div class="ob-hero-icon"><span class="material-icons">mic</span></div>
           <h1 data-i18n="onboarding.mic.title">Let SayType hear you</h1>
-          <p class="ob-lead" data-i18n="onboarding.mic.lead">It records only while you hold the shortcut.</p>
+          <p class="ob-lead" data-i18n="onboarding.mic.lead">It records only while you hold the shortcut — release, and it stops.</p>
           <div class="ob-actions" id="obMicActions"></div>
         </div>
       </div>
@@ -101,7 +101,7 @@
             </div>
             <div class="ob-reassure">
               <span class="material-icons">verified_user</span>
-              <span data-i18n="readiness.axGuide.privacy">SayType never logs your keystrokes.</span>
+              <span data-i18n="readiness.axGuide.privacy">This permission is only used to respond to the shortcut and type text. SayType never logs your keystrokes or watches other apps.</span>
             </div>
           </div>
         </div>
@@ -113,7 +113,7 @@
         <div class="onboard-page-content">
           <div class="ob-hero-icon"><span class="material-icons" id="obFinalIcon">celebration</span></div>
           <h1 id="obTryTitle" data-i18n="onboarding.try.title">Ready! Say your first sentence</h1>
-          <p class="ob-lead" id="obTryLead" data-i18n="onboarding.try.lead">It works the same way in every app.</p>
+          <p class="ob-lead" id="obTryLead" data-i18n="onboarding.try.lead">It works the same way in every app from now on.</p>
           <ul class="ob-ready-summary" id="obReadySummary" hidden></ul>
           <div class="ob-checklist" id="obChecklist" hidden></div>
           <div class="ob-try-box" id="obTryBox">
@@ -121,7 +121,7 @@
             <div class="ob-try-hint" id="obTryHint"></div>
           </div>
           <div id="obTryFeedback" class="ob-try-feedback" aria-live="polite" hidden></div>
-          <button type="button" class="link-btn ob-history-hint" id="obHistoryHint" data-i18n="onboarding.try.historyHint">If text does not appear, find it in History.</button>
+          <button type="button" class="link-btn ob-history-hint" id="obHistoryHint" data-i18n="onboarding.try.historyHint">Text didn't show up here? Find it in History to view or copy.</button>
         </div>
       </div>
 
@@ -249,7 +249,7 @@
           <p data-i18n="dictionary.aboutWhat">Type a word and press Enter, or paste a list separated by commas. Changes save automatically.</p>
           <p data-i18n="dictionary.aboutHow">When you use a cloud engine, these words go to the model as a reference. They are more likely to come out right, but not every time.</p>
           <h3 data-i18n="dictionary.punctuationTitle">Automatic punctuation for Chinese</h3>
-          <p data-i18n="dictionary.punctuationDesc">When a Whisper model transcribes Chinese, SayType adds the sentence below after your dictionary so the result comes back with punctuation. The sentence is fixed and holds none of your data. GPT models and other languages don't get it.</p>
+          <p data-i18n="dictionary.punctuationDesc">When Whisper transcribes Chinese, SayType sends the example below to the model to help it add punctuation. The example is fixed and contains none of your data; GPT models and other languages don't use it.</p>
           <!-- Read-only display. Mirrors SEED_ZH in src-tauri/src/commands.rs — keep the two in sync. -->
           <pre class="punctuation-seed" id="punctuation-seed">以下是一段简体中文语音的转写记录。你好，欢迎使用听写工具。今天的会议进展如何？太好了，我们继续！</pre>
         </div>
@@ -284,9 +284,9 @@
           <div class="setting-group">
             <div class="setting-item setting-item-stacked">
               <div class="setting-info">
-                <div class="setting-title" data-i18n="settings.apiProvider.title">Transcription engine</div>
+                <div class="setting-title" data-i18n="settings.apiProvider.title">Transcription Provider</div>
                 <div class="setting-description" data-i18n="settings.apiProvider.description">
-                  Who turns your speech into text. Switching changes which of the settings below apply.
+                  Choose a cloud provider or local engine.
                 </div>
               </div>
               <!-- A row's title opens its details; only the row's check activates it. -->
@@ -311,7 +311,7 @@
               <div class="setting-info">
                 <div class="setting-title" id="apiKeyTitle" data-i18n="settings.apiKey.title">API Key</div>
                 <div class="setting-description" id="apiKeyDescription" data-i18n="settings.apiKey.description">
-                  Enter your API key for selected provider.
+                  Stored only on this computer.
                 </div>
               </div>
               <div class="setting-control">
@@ -328,7 +328,7 @@
 
             <div class="setting-item" id="modelItem">
               <div class="setting-info">
-                <div class="setting-title" data-i18n="settings.model.title">Model Selection</div>
+                <div class="setting-title" data-i18n="settings.model.title">Model</div>
                 <div class="setting-description" data-i18n="settings.model.description">
                   Select transcription model.
                 </div>
@@ -348,7 +348,7 @@
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.recordingShortcut.title">Recording shortcut</div>
                 <div class="setting-description" data-i18n="settings.recordingShortcut.description">
-                  Choose your preferred hold-to-record shortcut.
+                  Hold this shortcut to talk; release to finish.
                 </div>
               </div>
               <div class="setting-control">
@@ -363,9 +363,9 @@
           <div class="setting-group" id="dictationOptions">
             <div class="setting-item">
               <div class="setting-info">
-                <div class="setting-title" data-i18n="settings.transcriptionLanguage.title">Set default language</div>
+                <div class="setting-title" data-i18n="settings.transcriptionLanguage.title">Dictation language</div>
                 <div class="setting-description" id="languageDescription" data-i18n="settings.transcriptionLanguage.description">
-                  Choose the default language for voice transcription.
+                  The language you speak, or auto-detect.
                 </div>
                 <div class="setting-description hidden" id="languageLocalNote" data-i18n="settings.transcriptionLanguage.localNote">
                   Qwen detects the language automatically and does not use this setting.
@@ -467,7 +467,7 @@
               <div class="setting-info">
                 <div class="setting-title" id="mergeSpelledLettersTitle" data-i18n="settings.mergeSpelledLetters.title">Merge spelled-out letters</div>
                 <div class="setting-description" id="mergeSpelledLettersDescription" data-i18n="settings.mergeSpelledLetters.description">
-                  Join space-separated capital letters, for example A P I → API. Keep punctuation and line breaks.
+                  Join separated capital letters, for example A P I → API.
                 </div>
               </div>
               <div class="setting-control">
@@ -482,7 +482,7 @@
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.dictionaryLink.title">Dictionary</div>
                 <div class="setting-description" data-i18n="settings.dictionaryLink.description">
-                  Proper nouns and terms you say often, passed to the cloud engines so they are spelled your way.
+                  Names, brands and terms that get misspelled. Only used by cloud engines.
                 </div>
               </div>
               <div class="setting-control">
@@ -494,15 +494,15 @@
             <summary class="setting-summary" data-i18n="settings.advanced">Advanced settings</summary>
             <div class="setting-item hidden" id="nemotronLatencyItem">
               <div class="setting-info">
-                <div class="setting-title" data-i18n="settings.nemotronLatency.title">Nemotron look-ahead</div>
+                <div class="setting-title" data-i18n="settings.nemotronLatency.title">Nemotron response speed</div>
                 <div class="setting-description" data-i18n="settings.nemotronLatency.description">
-                  Model look-ahead; total response time also includes audio and processing.
+                  Choose faster text or better accuracy.
                 </div>
               </div>
               <div class="setting-control">
                 <select class="input model-select" id="nemotronLatencySelect" title="Select Nemotron latency" data-i18n="settings.nemotronLatency.selectTitle" data-i18n-attr="title">
-                  <option value="560" data-i18n="settings.nemotronLatency.balanced">Lower latency · 0.56 s</option>
-                  <option value="1120" data-i18n="settings.nemotronLatency.accuracy">Higher accuracy · 1.12 s</option>
+                  <option value="560" data-i18n="settings.nemotronLatency.balanced">Faster text</option>
+                  <option value="1120" data-i18n="settings.nemotronLatency.accuracy">More accurate</option>
                 </select>
               </div>
             </div>
@@ -550,9 +550,9 @@
               </div>
               <div class="setting-control">
                 <select class="input language-select" id="uiLanguageSelect" title="Select interface language" data-i18n="settings.uiLanguage.selectTitle" data-i18n-attr="title">
-                  <option value="auto" data-i18n="settings.uiLanguage.auto">Auto (System)</option>
+                  <option value="auto" data-i18n="settings.uiLanguage.auto">System</option>
                   <option value="en" data-i18n="settings.uiLanguage.english">English</option>
-                  <option value="zh" data-i18n="settings.uiLanguage.chinese">中文 (简体)</option>
+                  <option value="zh" data-i18n="settings.uiLanguage.chinese">中文</option>
                 </select>
               </div>
             </div>
@@ -561,12 +561,12 @@
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.theme.title">Theme</div>
                 <div class="setting-description" data-i18n="settings.theme.description">
-                  Choose the visual style of the app.
+                  Light, dark, or follow your system.
                 </div>
               </div>
               <div class="setting-control">
                 <select class="input theme-select" id="themeSelect" title="Select interface theme" data-i18n="settings.theme.selectTitle" data-i18n-attr="title">
-                  <option value="auto" data-i18n="settings.theme.option.auto">Auto (match system)</option>
+                  <option value="auto" data-i18n="settings.theme.option.auto">System</option>
                   <option value="midnight" data-i18n="settings.theme.option.midnight">Dark</option>
                   <option value="elegant" data-i18n="settings.theme.option.elegant">Light</option>
                 </select>
@@ -641,7 +641,7 @@
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.microphone.title">Microphone Permission</div>
                 <div class="setting-description" data-i18n="settings.microphone.description">
-                  Current status of microphone access permission.
+                  SayType needs the microphone to record.
                 </div>
               </div>
               <div class="setting-control">

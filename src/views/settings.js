@@ -592,6 +592,8 @@ function toggleProviderFields(providerChoice) {
 // --- Local model panel (provider "local") ---
 const localModelStatuses = new Map();
 const localModelStatusRequests = new Map();
+// Size of the selected local model, for the delete confirmation.
+let localModelTotalBytes = 0;
 let localModelState = "absent"; // absent | partial | downloading | ready
 // Whether the running download was started from this Settings page. Gates the
 // "switch to local?" prompt on ready: a download driven by the onboarding
@@ -628,6 +630,7 @@ function renderLocalModelPanel(status) {
     return;
   }
   localModelState = status.state;
+  localModelTotalBytes = status.totalBytes || 0;
   const provider = document.getElementById("providerSelect")?.value;
   item.classList.toggle("hidden", !inspectedLocalModel && !localModelForProvider(provider));
   const advanced = document.getElementById("engineAdvanced");
@@ -725,7 +728,7 @@ async function handleLocalModelDelete() {
     localModelState === "partial"
       ? "settings.localModel.deletePartialConfirm"
       : "settings.localModel.deleteConfirm";
-  if (!confirm(translate(confirmKey))) {
+  if (!confirm(translate(confirmKey, { size: formatGB(localModelTotalBytes) }))) {
     return;
   }
   try {
