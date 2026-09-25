@@ -208,6 +208,10 @@ function bindEvents() {
     await loadActivities();
   });
 
+  document.addEventListener("click", closeEngineMenu, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeEngineMenu();
+  });
   ipc.on("accessibility-permission-changed", (_event, data) => {
     showNotification(data.message, data.granted ? "success" : "warning");
     void refreshReadiness();
@@ -875,16 +879,32 @@ function homeEngineLabel(option) {
   return option.labelKey ? t(option.labelKey) : option.label;
 }
 
+// Only a state that needs attention is shown on a button; "ready" is the norm.
+function engineAttentionLabel(option) {
+  const state = engineAvailability.get(option.value)?.state;
+  return state && !["ready", "checking"].includes(state) ? engineReadinessLabel(option) : "";
+}
+
+let engineMenuOpen = false;
+
+function closeEngineMenu(event) {
+  if (event && document.getElementById("engine-card")?.querySelector(".engine-more")?.contains(event.target)) return;
+  if (!engineMenuOpen) return;
+  engineMenuOpen = false;
+  renderEngineCard();
+}
+
 function renderEngineCard() {
   const card = document.getElementById("engine-card");
   if (!card) {
     return;
   }
 
-  const oldSeg = card.querySelector(".engine-seg");
-  const scrollLeft = oldSeg?.scrollLeft || 0;
   const focusedValue = card.contains(document.activeElement)
     ? document.activeElement?.getAttribute("data-engine") : null;
+  const selectedEngine = selectedEngineValue();
+  const row = document.createElement("div");
+  row.className = "engine-row";
   const header = document.createElement("div");
   header.className = "engine-header";
   header.appendChild(makeIcon("memory"));
@@ -892,72 +912,127 @@ function renderEngineCard() {
   title.className = "engine-title";
   title.textContent = t("home.engineLabel");
   header.appendChild(title);
-  const selectedEngine = selectedEngineValue();
-  const seg = document.createElement("div");
-  seg.className = "engine-seg";
-  seg.setAttribute("role", "group");
-  seg.setAttribute("aria-label", t("home.engineLabel"));
-  const button = (value, name, tagText, statusText, active, onClick) => {
+  const pills = document.createElement("div");
+  pills.className = "engine-pills";
+  pills.setAttribute("role", "group");
+  pills.setAttribute("aria-label", t("home.engineLabel"));
+
+  // Local engines show a computer, cloud ones a cloud, as on the onboarding cards.
+  const kindIcon = (option) => {
+    const icon = makeIcon(option.model ? "computer" : "cloud");
+    icon.classList.add("engine-kind-icon");
+    icon.setAttribute("aria-hidden", "true");
+    return icon;
+  };
+  const pillButton = (value, text, extraClass = "") => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `engine-seg-btn${active ? " active" : ""}`;
+    btn.className = `engine-pill-btn${extraClass}`;
     btn.setAttribute("data-engine", value);
-    btn.setAttribute("aria-pressed", String(active));
     btn.setAttribute("aria-disabled", String(engineSwitchPending));
-    const text = document.createElement("span");
-    text.className = "engine-name";
-    text.textContent = name;
-    const tag = document.createElement("span");
-    tag.className = `engine-tag${tagText ? "" : " engine-tag-empty"}`;
-    tag.textContent = tagText || "\u00a0";
-    const status = document.createElement("span");
-    status.className = "engine-readiness";
-    status.textContent = statusText;
-    btn.append(text, tag, status);
-    btn.addEventListener("click", onClick);
+    btn.textContent = text;
     return btn;
   };
-  homeEngineOptions().forEach(option => {
-    const active = selectedEngine === option.value;
-    const tagText = option.recommended || QWEN_SIZE_LABELS[option.value] ? t("home.engineRecommended")
-      : option.experimental ? t("home.engineExperimental") : "";
-    seg.appendChild(button(option.value, homeEngineLabel(option), tagText, engineReadinessLabel(option), active,
-      () => void selectEngine(option.value)));
+  const attention = (option) => {
+    const label = engineAttentionLabel(option);
+    if (!label) return null;
+    const note = document.createElement("span");
+    note.className = "engine-pill-note";
+    note.textContent = label;
+    return note;
+  };
+
+  homeEngineOptions().forEach((option) => {
+    const pill = document.createElement("div");
+    const qwen = !!QWEN_SIZE_LABELS[option.value];
+    const active = qwen ? !!QWEN_SIZE_LABELS[selectedEngine] : selectedEngine === option.value;
+    pill.className = `engine-pill${active ? " active" : ""}`;
+    const main = pillButton(option.value, qwen ? t("home.engineLocalQwen") : homeEngineLabel(option));
+    main.prepend(kindIcon(option));
+    main.setAttribute("aria-pressed", String(active));
+    main.addEventListener("click", () => void selectEngine(option.value));
+    pill.appendChild(main);
+    if (qwen) {
+      // The size lives inside the Qwen pill: a switch once both are downloaded,
+      // otherwise just the size in use.
+      const sizes = ["local-qwen", "local-qwen-large"];
+      const both = sizes.every((value) => engineAvailability.get(value)?.state === "ready");
+      const sizeGroup = document.createElement("span");
+      sizeGroup.className = "engine-size";
+      if (both) {
+        sizeGroup.setAttribute("role", "group");
+        sizeGroup.setAttribute("aria-label", t("home.engineQwenSize"));
+        sizes.forEach((value) => {
+          const current = QWEN_SIZE_LABELS[selectedEngine] ? selectedEngine === value : option.value === value;
+          const size = pillButton(`size-${value}`, QWEN_SIZE_LABELS[value], ` engine-size-btn${current ? " current" : ""}`);
+          size.setAttribute("aria-pressed", String(current));
+          size.addEventListener("click", () => void selectEngine(value));
+          sizeGroup.appendChild(size);
+        });
+      } else {
+        sizeGroup.textContent = QWEN_SIZE_LABELS[option.value];
+      }
+      pill.appendChild(sizeGroup);
+    }
+    const note = attention(option);
+    if (note) pill.appendChild(note);
+    pills.appendChild(pill);
   });
-  const more = homeMoreOptions();
-  if (more.length) {
-    seg.appendChild(button("more", t("home.engineMore"), "", more.map(homeEngineLabel).join(" · "), false,
-      () => void showPage("settings", { settingsTarget: "engines-more" })));
-  }
-  const children = [header, seg];
-  // Both sizes downloaded: switch between them right here.
-  const sizes = ["local-qwen", "local-qwen-large"];
-  if (QWEN_SIZE_LABELS[selectedEngine] && sizes.every((value) => engineAvailability.get(value)?.state === "ready")) {
-    const sizeSeg = document.createElement("div");
-    sizeSeg.className = "engine-size-seg";
-    sizeSeg.setAttribute("role", "group");
-    sizeSeg.setAttribute("aria-label", t("home.engineQwenSize"));
-    sizes.forEach((value) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = `engine-size-btn${selectedEngine === value ? " active" : ""}`;
-      btn.setAttribute("data-engine", `size-${value}`);
-      btn.setAttribute("aria-pressed", String(selectedEngine === value));
-      btn.setAttribute("aria-disabled", String(engineSwitchPending));
-      btn.textContent = QWEN_SIZE_LABELS[value];
-      btn.addEventListener("click", () => void selectEngine(value));
-      sizeSeg.appendChild(btn);
+
+  const moreOptions = homeMoreOptions();
+  if (moreOptions.length) {
+    const more = document.createElement("div");
+    more.className = "engine-more";
+    const toggle = pillButton("more", "", " engine-more-btn");
+    toggle.setAttribute("aria-haspopup", "menu");
+    toggle.setAttribute("aria-expanded", String(engineMenuOpen));
+    const label = document.createElement("span");
+    label.textContent = t("home.engineMore");
+    toggle.append(label, makeIcon("expand_more"));
+    toggle.addEventListener("click", () => {
+      engineMenuOpen = !engineMenuOpen;
+      renderEngineCard();
     });
-    children.push(sizeSeg);
+    more.appendChild(toggle);
+    if (engineMenuOpen) {
+      const menu = document.createElement("div");
+      menu.className = "engine-menu";
+      menu.setAttribute("role", "menu");
+      moreOptions.forEach((option) => {
+        const item = pillButton(`menu-${option.value}`, "", " engine-menu-item");
+        item.setAttribute("role", "menuitem");
+        const name = document.createElement("span");
+        name.className = "engine-menu-name";
+        name.append(kindIcon(option), homeEngineLabel(option));
+        const status = document.createElement("span");
+        status.className = "engine-menu-status";
+        status.textContent = engineReadinessLabel(option);
+        item.append(name, status);
+        item.addEventListener("click", () => {
+          engineMenuOpen = false;
+          void selectEngine(option.value);
+        });
+        menu.appendChild(item);
+      });
+      const all = pillButton("menu-settings", t("home.engineAllSettings"), " engine-menu-item engine-menu-link");
+      all.setAttribute("role", "menuitem");
+      all.addEventListener("click", () => {
+        engineMenuOpen = false;
+        void showPage("settings", { settingsTarget: "engines-more" });
+      });
+      menu.appendChild(all);
+      more.appendChild(menu);
+    }
+    pills.appendChild(more);
   }
+  row.append(header, pills);
+
   const sub = document.createElement("div");
   sub.className = "engine-sub";
   sub.setAttribute("aria-live", "polite");
   const captionKey = ENGINE_CAPTION_KEY[selectedEngine];
   sub.textContent = captionKey ? t(captionKey) : "";
-  children.push(sub);
-  card.replaceChildren(...children);
-  seg.scrollLeft = scrollLeft;
+  card.replaceChildren(row, sub);
   if (focusedValue) {
     card.querySelector(`[data-engine="${focusedValue}"]`)?.focus({ preventScroll: true });
   }
