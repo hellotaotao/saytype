@@ -240,6 +240,10 @@ pub fn supports_local_first() -> bool {
 fn insert_text_via_cgevent(text: &str) -> Result<()> {
   const K_CG_HID_EVENT_TAP: u32 = 0;
   const MAX_CHARS_PER_EVENT: usize = 20;
+  // The pause dominates long insertions (400+ chars: ~128 of ~160ms at 5ms,
+  // measured from lifecycle logs on 2026-09-27). The earlier 5ms was an
+  // unmeasured default carried over from the Electron version.
+  const PAUSE_BETWEEN_EVENTS: Duration = Duration::from_millis(3);
   let utf16: Vec<u16> = text.encode_utf16().collect();
 
   let mut chunks = utf16.chunks(MAX_CHARS_PER_EVENT).peekable();
@@ -255,9 +259,9 @@ fn insert_text_via_cgevent(text: &str) -> Result<()> {
     }
     // Paces the target app so it consumes each event before the next lands —
     // without it some apps drop characters. Nothing follows the final chunk,
-    // so pausing after it would tax every insertion 5ms for nothing.
+    // so pausing after it would tax every insertion for nothing.
     if chunks.peek().is_some() {
-      std::thread::sleep(Duration::from_millis(5));
+      std::thread::sleep(PAUSE_BETWEEN_EVENTS);
     }
   }
 
