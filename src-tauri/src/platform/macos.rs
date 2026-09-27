@@ -239,20 +239,21 @@ pub fn supports_local_first() -> bool {
 
 fn insert_text_via_cgevent(text: &str) -> Result<()> {
   const K_CG_HID_EVENT_TAP: u32 = 0;
-  const MAX_CHARS_PER_EVENT: usize = 20;
   // The pause dominates long insertions (400+ chars: ~128 of ~160ms at 5ms,
   // measured from lifecycle logs on 2026-09-27). The earlier 5ms was an
   // unmeasured default carried over from the Electron version.
   const PAUSE_BETWEEN_EVENTS: Duration = Duration::from_millis(3);
-  let utf16: Vec<u16> = text.encode_utf16().collect();
 
-  let mut chunks = utf16.chunks(MAX_CHARS_PER_EVENT).peekable();
+  let mut chunks = utf16_event_chunks(text).into_iter().peekable();
   while let Some(chunk) = chunks.next() {
     let key_down = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0, true) };
     if key_down.is_null() {
       return Err(anyhow!("failed to create keyboard event"));
     }
     unsafe {
+      // A modifier the user happens to hold (Cmd, Ctrl…) must not turn the
+      // synthetic keystroke into a shortcut in the target app.
+      CGEventSetFlags(key_down, CGEventGetFlags(key_down) & !MODIFIER_FLAGS_MASK);
       CGEventKeyboardSetUnicodeString(key_down, chunk.len(), chunk.as_ptr());
       CGEventPost(K_CG_HID_EVENT_TAP, key_down);
       CFRelease(key_down as *const c_void);
@@ -266,6 +267,31 @@ fn insert_text_via_cgevent(text: &str) -> Result<()> {
   }
 
   Ok(())
+}
+
+/// Caps Lock, Shift, Control, Option, Command and Fn (`kCGEventFlagMask*`).
+const MODIFIER_FLAGS_MASK: u64 =
+  0x0001_0000 | 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000 | 0x0080_0000;
+
+/// A keyboard event carries at most 20 UTF-16 units; the system truncates the
+/// rest. Chunks break only between chars, so a surrogate pair (emoji and
+/// other non-BMP chars) never straddles two events and arrives as garbage.
+fn utf16_event_chunks(text: &str) -> Vec<Vec<u16>> {
+  const MAX_UNITS_PER_EVENT: usize = 20;
+  let mut chunks = Vec::new();
+  let mut current: Vec<u16> = Vec::with_capacity(MAX_UNITS_PER_EVENT);
+  let mut buf = [0u16; 2];
+  for ch in text.chars() {
+    let units = ch.encode_utf16(&mut buf);
+    if current.len() + units.len() > MAX_UNITS_PER_EVENT {
+      chunks.push(std::mem::take(&mut current));
+    }
+    current.extend_from_slice(units);
+  }
+  if !current.is_empty() {
+    chunks.push(current);
+  }
+  chunks
 }
 
 /// How the system-wide `AXFocusedUIElement` query resolved.
@@ -504,6 +530,8 @@ extern "C" {
   fn CGEventCreateKeyboardEvent(source: *mut c_void, virtualKey: u16, keyDown: bool) -> *mut c_void;
   fn CGEventKeyboardSetUnicodeString(event: *mut c_void, stringLength: usize, unicodeString: *const u16);
   fn CGEventPost(tap: u32, event: *mut c_void);
+  fn CGEventGetFlags(event: *mut c_void) -> u64;
+  fn CGEventSetFlags(event: *mut c_void, flags: u64);
   fn AXUIElementCreateSystemWide() -> *const c_void;
   fn AXUIElementCopyAttributeValue(element: *const c_void, attribute: *const c_void, value: *mut *const c_void) -> i32;
   fn AXUIElementIsAttributeSettable(element: *const c_void, attribute: *const c_void, settable: *mut u8) -> i32;
@@ -526,6 +554,27 @@ mod tests {
   const AX_ERROR_CANNOT_COMPLETE: i32 = -25204;
   const AX_ERROR_API_DISABLED: i32 = -25211;
   const AX_ERROR_NO_VALUE: i32 = -25212;
+
+  #[test]
+  fn event_chunks_stay_within_twenty_units_and_never_split_a_surrogate_pair() {
+    // 19 BMP chars then an emoji: the pair must move whole into the next event.
+    let text = format!("{}😀{}", "a".repeat(19), "中".repeat(25));
+    let chunks = utf16_event_chunks(&text);
+    assert!(chunks.iter().all(|c| !c.is_empty() && c.len() <= 20));
+    assert_eq!(chunks[0].len(), 19);
+    for chunk in &chunks {
+      assert!(String::from_utf16(chunk).is_ok(), "chunk splits a surrogate pair");
+    }
+    let joined: Vec<u16> = chunks.concat();
+    assert_eq!(String::from_utf16(&joined).unwrap(), text);
+  }
+
+  #[test]
+  fn event_chunks_fill_to_twenty_units_for_plain_text() {
+    let chunks = utf16_event_chunks(&"字".repeat(45));
+    assert_eq!(chunks.iter().map(Vec::len).collect::<Vec<_>>(), vec![20, 20, 5]);
+    assert!(utf16_event_chunks("").is_empty());
+  }
 
   #[test]
   fn finder_reveal_prefers_the_app_bundle_over_the_binary() {
