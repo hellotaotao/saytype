@@ -79,14 +79,22 @@ pub const MODEL_ASSETS: &[Asset] = &[
 pub const LARGE_MODEL_ASSETS: &[Asset] = &[
   Asset {
     rel_path: "models/Qwen3-ASR-1.7B-Q8_0.gguf",
-    urls: &["https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B-Q8_0.gguf"],
+    // Same ModelScope mirror as the 0.6B assets (probed 2026-09-29: LFS object
+    // path and X-Linked-Etag equal the sha256 below).
+    urls: &[
+      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/master/Qwen3-ASR-1.7B-Q8_0.gguf",
+      "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B-Q8_0.gguf",
+    ],
     bundled: None,
     size: 2_165_034_944,
     sha256: "58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57",
   },
   Asset {
     rel_path: "models/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
-    urls: &["https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"],
+    urls: &[
+      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/master/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+      "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+    ],
     bundled: None,
     size: 355_709_344,
     sha256: "46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
