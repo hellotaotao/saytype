@@ -11,8 +11,9 @@
 // survives ("第一呃，浏览器" → "第一，浏览器"): it may be a real clause break,
 // and a spare comma is cheaper than a run-on sentence.
 //
-// When a filler is probably being talked about rather than hesitated with, the
-// span is left alone: quoted ("“嗯”这种词"), listed with other interjections
+// A filler inside quotation marks is left alone: quoted speech is verbatim
+// (他说：“嗯，好吧。”), and a quoted filler is usually being talked about
+// ("“嗯”这种词"). So is a filler that is listed with other interjections
 // ("嗯啊啊呀", "呃、嗯、啊"), named ("嗯这种词"), used as a word (呃逆, 嗯了一声)
 // or reported as an answer (我说嗯). Keeping a filler only leaves the raw
 // transcript as it was; deleting a meaningful one changes what was said.
@@ -46,6 +47,35 @@ fn closes(c: char) -> bool {
 // Straight quotes open and close, so they only count when both sides agree.
 fn is_straight_quote(c: char) -> bool {
   matches!(c, '"' | '\'')
+}
+
+fn closing_quote(open: char) -> Option<char> {
+  match open {
+    '“' => Some('”'),
+    '‘' => Some('’'),
+    '「' => Some('」'),
+    '『' => Some('』'),
+    '"' => Some('"'),
+    _ => None,
+  }
+}
+
+/// Marks the characters between each matched pair of quotation marks. An
+/// unmatched mark quotes nothing: ’ doubles as an apostrophe, and ASR may drop
+/// a closing quote. The straight apostrophe is never treated as a quote.
+fn quoted_positions(chars: &[char]) -> Vec<bool> {
+  let mut quoted = vec![false; chars.len()];
+  let mut open: Vec<(usize, char)> = Vec::new();
+  for (i, &c) in chars.iter().enumerate() {
+    if let Some(depth) = open.iter().rposition(|&(_, closer)| closer == c) {
+      let start = open[depth].0;
+      quoted[start + 1..i].iter_mut().for_each(|q| *q = true);
+      open.truncate(depth);
+    } else if let Some(closer) = closing_quote(c) {
+      open.push((i, closer));
+    }
+  }
+  quoted
 }
 
 // Interjections that stay in the text. A filler touching one is being listed
@@ -95,6 +125,7 @@ pub fn remove_fillers(text: &str) -> String {
   if !is_filler.contains(&true) {
     return text.to_string();
   }
+  let quoted = quoted_positions(&chars);
   let in_span = |i: usize| is_filler[i] || is_pause_or_space(chars[i]);
   let mut out = String::with_capacity(text.len());
   let mut i = 0;
@@ -109,7 +140,7 @@ pub fn remove_fillers(text: &str) -> String {
       i += 1;
     }
     let span = Span { chars: &chars, is_filler: &is_filler, start, end: i };
-    if !is_filler[start..i].contains(&true) || span.is_mention() {
+    if !is_filler[start..i].contains(&true) || quoted[start] || span.is_mention() {
       out.extend(&chars[start..i]);
     } else {
       out.push_str(&span.collapse());
@@ -300,12 +331,11 @@ mod tests {
   }
 
   #[test]
-  fn nothing_dangles_at_text_quote_bracket_or_line_edges() {
+  fn nothing_dangles_at_text_bracket_or_line_edges() {
     check(&[
       ("好的，呃", "好的"),
-      ("他说：“嗯，好吧。”", "他说：“好吧。”"),
-      ("“好吧，嗯。”", "“好吧。”"),
-      ("“好吧，呃”", "“好吧”"),
+      ("（嗯，其实是这样）", "（其实是这样）"),
+      ("（好吧，嗯。）", "（好吧。）"),
       ("（其实嗯）", "（其实）"),
       ("第一行\n呃，第二行", "第一行\n第二行"),
       ("第一行，嗯\n第二行", "第一行\n第二行"),
@@ -324,6 +354,32 @@ mod tests {
       ("去,呃,然后", "去,然后"),
       ("这个 呃 网站", "这个网站"),
     ]);
+  }
+
+  #[test]
+  fn quoted_speech_keeps_its_fillers() {
+    unchanged(&[
+      "他说：“嗯，好吧。”",
+      "他说：“呃，我不知道，嗯。”",
+      "“好吧，呃”",
+      "她回了一句「嗯，行」",
+      "He said \"嗯, OK\" and left",
+      "他说：“她问我‘嗯，去不去’，我没回。”",
+    ]);
+    check(&[
+      ("呃，他说：“嗯，好吧。”", "他说：“嗯，好吧。”"),
+      ("他说“好吧”，呃，然后走了", "他说“好吧”，然后走了"),
+      ("“第一段”呃“第二段”", "“第一段”“第二段”"),
+      // An apostrophe or an unmatched mark quotes nothing.
+      ("it’s 呃 fine", "it’s fine"),
+      ("don't 呃 go", "don't go"),
+    ]);
+  }
+
+  #[test]
+  fn an_unclosed_quote_protects_nothing() {
+    // ASR can drop the closing mark; without it nothing counts as quoted.
+    check(&[("他说：“嗯，好吧", "他说：“好吧")]);
   }
 
   #[test]

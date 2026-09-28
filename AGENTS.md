@@ -162,8 +162,8 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   capital letters (when `merge_spelled_letters` is enabled); both default on. Run it only on
   complete results before History/insertion, never on individual chunks or live partials.
 - `filler.rs` — removes 嗯/呃 (and a standalone 额) together with their pause punctuation, keeping
-  the strongest mark. A filler that is quoted, listed, named or used as a word stays; when unsure,
-  keep it. 啊/呀/哦 are never removed. Rules and the real transcripts behind them are in its header.
+  the strongest mark. A filler inside quotation marks (quoted speech is verbatim) or one that is
+  listed, named or used as a word stays; when unsure, keep it. 啊/呀/哦 are never removed. Rules and the real transcripts behind them are in its header.
 - `ax_cloud.rs` — window lifecycle for the Accessibility drag cloud.
 - `tray.rs`, `state.rs` — system tray and shared app state.
 - `platform/` — the platform abstraction (`mod.rs` contract + `macos.rs` / `fallback.rs`, plus the
