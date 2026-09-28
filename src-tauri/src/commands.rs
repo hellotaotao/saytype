@@ -828,6 +828,16 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
   show_main_settings(&app, "dictation")
 }
 
+/// The input prompt ended a locked (hands-free) recording without the hotkey:
+/// its startup failed or its capture was interrupted. Releasing the lock lets
+/// the next press start a recording instead of stopping one that is gone.
+#[tauri::command]
+pub fn release_recording_lock(lock_id: u64, state: State<'_, AppState>) {
+  if let Some(handle) = state.hotkey.lock().unwrap().as_ref() {
+    handle.release_lock(lock_id);
+  }
+}
+
 #[tauri::command]
 pub fn hide_input_prompt(app: AppHandle) -> Result<(), String> {
   let _ = app.emit_to("input-prompt", "cleanup-microphone", ());

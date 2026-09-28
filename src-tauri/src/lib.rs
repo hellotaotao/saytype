@@ -213,6 +213,7 @@ pub fn run() {
       commands::get_app_version,
       commands::get_build_info,
       commands::hide_input_prompt,
+      commands::release_recording_lock,
       commands::cleanup_microphone,
       commands::cancel_transcription,
       commands::record_assembled_transcription,

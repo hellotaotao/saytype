@@ -27,7 +27,9 @@ somewhere the user can retry or copy it. How to test this on real devices is in
   persistence is kept.
 - Insertion is irreversible once dispatched. Only the real reply releases the insertion FIFO, and no
   JavaScript timeout may let a later insertion overtake it. There is no clipboard fallback: a failed
-  insert shows a Copy button and the text stays in History.
+  insert shows a Copy button and the text stays in History. While that card shows, clicking the
+  target field and tapping the hotkey re-inserts the card's text through `type_text` (the insert
+  guard still applies); a second failure brings the same card back.
 
 ## Final text formatting
 

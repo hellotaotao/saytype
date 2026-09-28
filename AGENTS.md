@@ -151,7 +151,11 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
 - `hotkey.rs` — global hold-to-record: a CGEventTap on macOS (only when Accessibility is trusted),
   `rdev::listen` elsewhere. Parses the modifier-only record shortcut (default `Ctrl+Shift`) and
   emits start/stop/cancel events. `STOP_DEBOUNCE` (250 ms) absorbs an accidental
-  release; keep it.
+  release; keep it. A press under `CANCEL_THRESHOLD` (500 ms) is a tap: with no second press within
+  `DOUBLE_TAP_WINDOW` (350 ms) it emits `tap-recording` (the prompt re-inserts a visible failure
+  card's text at the caret, otherwise it cancels); a second press emits `lock-recording` and the
+  recording runs hands-free until the next press, Escape or `LOCKED_MAX` (12 min). A lock the
+  frontend ended itself is released through `release_recording_lock`.
 - `settings.rs` — JSON config in the app data dir, shortcut normalization, auto-launch, model
   defaults and API keys.
 - `history.rs` — the History store (`{ "activities": [...] }`, 200-entry `HISTORY_CAP`, atomic
@@ -277,7 +281,8 @@ permission changes and platform-specific behavior explicitly.
 
 ## Development Notes
 
-- Hold `Ctrl+Shift` to record; Escape cancels. There is no translate mode; the Shift+Alt
+- Hold `Ctrl+Shift` to record, or double-tap it to record hands-free until the next press; Escape
+  cancels. There is no translate mode; the Shift+Alt
   translation was removed on 2026-09-25 as unused.
 - Rust unit tests sit beside the code. A few tests that need real model assets are `#[ignore]` and
   run manually.

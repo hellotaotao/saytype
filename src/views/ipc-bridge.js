@@ -28,6 +28,7 @@
     "get-app-version": "get_app_version",
     "get-build-info": "get_build_info",
     "hide-input-prompt": "hide_input_prompt",
+    "release-recording-lock": "release_recording_lock",
     "cleanup-microphone": "cleanup_microphone",
     "cancel-transcription": "cancel_transcription",
     "record-assembled-transcription": "record_assembled_transcription",
@@ -93,6 +94,7 @@
     "prewarm-qwen-worker": [["sessionId", "session_id"]],
     "finish-qwen-worker-session": [["sessionId", "session_id"]],
     "cancel-transcription": [["sessionId", "session_id"]],
+    "release-recording-lock": [["lockId", "lock_id"]],
     "start-live-transcription": [
       ["sessionId", "session_id"],
       ["sampleRate", "sample_rate"],

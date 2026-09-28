@@ -3406,3 +3406,123 @@ test("large Qwen retains its badge and chunked worker lifecycle", async () => {
   assert.equal(h.calls.filter(([command]) => command === "record-assembled-transcription").length, 1);
   assert.equal(h.calls.filter(([command]) => command === "finish-qwen-worker-session").length, 1);
 });
+
+async function startSecondRecording(h, failedText) {
+  h.prompt.stopRecording();
+  await settlePromises();
+  h.prompt._failedText = failedText;
+  h.prompt.stopRequested = false;
+  h.prompt.startRecordingPromise = h.prompt.startRecording();
+  await h.prompt.startRecordingPromise;
+  assert.equal(h.prompt.isRecording, true);
+  return h.prompt.activeRecordingSession.id;
+}
+
+test("a hotkey tap on a failure card inserts its text and never transcribes the tap", async () => {
+  const h = await createLifecycleHarness();
+  const tapSessionId = await startSecondRecording(h, "words that missed the field");
+  assert.equal(h.prompt._failedText, "", "the card is cleared as the tap starts recording");
+  const hidesBefore = h.hides;
+  await h.prompt.handleHotkeyTap();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["final 0", "words that missed the field"]);
+  assert.equal(h.hides, hidesBefore + 1, "a successful re-insertion closes the prompt");
+  assert.equal(h.prompt.isRecording, false);
+  assert.equal(h.calls.some(([command, ...args]) =>
+    command === "transcribe-audio" && args[2] === tapSessionId), false);
+  assert.equal(h.prompt.tapInsertCandidate, null);
+});
+
+test("a tap whose insertion fails again brings the same card back", async () => {
+  const h = await createLifecycleHarness();
+  await startSecondRecording(h, "still no field");
+  h.prompt.typeText = async (text) => {
+    h.inserted.push(text);
+    return { ok: false, message: "No editable text field" };
+  };
+  await h.prompt.handleHotkeyTap();
+  await settlePromises();
+  assert.deepEqual(h.recovered, ["still no field"]);
+  assert.equal(h.prompt._failedText, "still no field", "the next tap can try again");
+  assert.equal(h.prompt.isFlushingInsertQueue, false);
+});
+
+test("a tap without a failure card is the plain mis-trigger cancel", async () => {
+  const h = await createLifecycleHarness();
+  await startSecondRecording(h, "");
+  await h.prompt.handleHotkeyTap();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["final 0"]);
+  assert.equal(h.prompt.isRecording, false);
+});
+
+test("holding the hotkey on a failure card dictates normally and drops the old card text", async () => {
+  const h = await createLifecycleHarness();
+  await startSecondRecording(h, "old card text");
+  h.prompt.tapInsertCandidate = null; // what the stop-recording event does
+  h.prompt.stopRecording();
+  await settlePromises();
+  assert.deepEqual(h.inserted, ["final 0", "final 0"], "the new dictation is inserted, not the card");
+});
+
+test("a locked recording shows its hint and releases the lock when it ends", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.handleRecordingLock(5);
+  assert.equal(h.prompt.recordingLockId, 5);
+  assert.equal(h.prompt.promptText.textContent, "inputPrompt.lockedHint");
+  h.prompt.stopRecording();
+  await settlePromises();
+  assert.deepEqual(h.calls.filter(([command]) => command === "release-recording-lock"),
+    [["release-recording-lock", 5]]);
+  assert.equal(h.prompt.recordingLockId, null);
+});
+
+test("a lock that arrives after the recording already failed is released at once", async () => {
+  const h = await createLifecycleHarness();
+  h.prompt.stopRecording();
+  await settlePromises();
+  const preflight = createDeferred();
+  h.prompt.hasReadyEngine = () => preflight.promise;
+  h.prompt.showApiKeyRequired = () => {};
+  h.prompt.stopRequested = false;
+  const starting = h.prompt.startRecording();
+  h.prompt.handleRecordingLock(8);
+  assert.equal(h.prompt.recordingLockId, 8, "a lock during startup belongs to that recording");
+  preflight.resolve(false);
+  await starting;
+  h.prompt.handleRecordingLock(9);
+  await settlePromises();
+  assert.deepEqual(h.calls.filter(([command]) => command === "release-recording-lock"),
+    [["release-recording-lock", 8], ["release-recording-lock", 9]]);
+});
+
+test("the double-tap tip shows after thirty seconds of holding, a few times at most", () => {
+  const storage = new Map();
+  const VoiceInputPrompt = loadVoiceInputPrompt({ window: { localStorage: {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+  } } });
+  const recordingFor = (ms, overrides = {}) => createBarePrompt(VoiceInputPrompt, {
+    isRecording: true, recordingStartedAt: Date.now() - ms, recordingLockId: null,
+    lockTipShown: false, recordShortcut: "Ctrl+Shift", ...overrides,
+  });
+
+  const early = recordingFor(29000);
+  early.maybeShowLockTip();
+  assert.equal(early.promptText.textContent, "");
+  for (let shown = 1; shown <= 4; shown++) {
+    const prompt = recordingFor(31000);
+    prompt.maybeShowLockTip();
+    prompt.promptText.textContent = prompt.promptText.textContent || "none";
+    assert.equal(prompt.promptText.textContent, shown <= 3 ? "inputPrompt.lockTip" : "none");
+  }
+  storage.clear();
+  recordingFor(1000).rememberLockUsed();
+  const afterLock = recordingFor(31000);
+  afterLock.maybeShowLockTip();
+  assert.equal(afterLock.promptText.textContent, "", "never again once the user has locked");
+  const locked = recordingFor(31000, { recordingLockId: 2 });
+  storage.clear();
+  locked.maybeShowLockTip();
+  assert.equal(locked.promptText.textContent, "");
+});

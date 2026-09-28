@@ -28,6 +28,11 @@ const AUDIO_STAGE_TIMEOUT_MS = 30000;
 // for IPC delivery without imposing one deadline on a multi-chunk recording.
 const TRANSCRIPTION_STAGE_TIMEOUT_MS = 450000;
 const HISTORY_STAGE_TIMEOUT_MS = 5000;
+// A hold recording this long shows the double-tap tip, a few times at most and
+// never again once the user has locked a recording.
+const LOCK_TIP_AFTER_MS = 30000;
+const LOCK_TIP_MAX_SHOWS = 3;
+const LOCK_TIP_STORAGE_KEY = "saytype.lockTip";
 const MODEL_LABEL = {
   "gpt-transcribe": "OpenAI GPT Transcribe",
   // Retired from the picker 2026-09; kept so old history rows still render a name.
@@ -390,6 +395,13 @@ class VoiceInputPrompt {
     this.currentModel = "";
     this.currentMicrophone = "default";
     this._failedText = "";
+    // Text of the failure card that was showing when the current recording
+    // started. A hotkey tap (tap-recording) inserts it instead of recording.
+    this.tapInsertCandidate = null;
+    // Set while the hotkey has locked the current recording (hands-free).
+    this.recordingLockId = null;
+    this.lockTipShown = false;
+    this.startRecordingPromise = null;
 
     this.createWaveBars();
     this.setupEventListeners();
@@ -527,17 +539,30 @@ class VoiceInputPrompt {
       const startupTiming = normalizeRecordingStartPayload(payload);
       this.stopRequested = false;
       this.updateModelBadge();
-      await this.startRecording(startupTiming);
+      this.startRecordingPromise = this.startRecording(startupTiming);
+      await this.startRecordingPromise;
     });
 
     // Listen for stop recording from main process
     ipc.on("stop-recording", () => {
+      this.tapInsertCandidate = null;
       this.stopRequested = true;
       this.stopRecording();
     });
 
     ipc.on("cancel-recording", () => {
+      this.tapInsertCandidate = null;
       this.cancelRecording();
+    });
+
+    // A short press that no second press followed.
+    ipc.on("tap-recording", () => {
+      void this.handleHotkeyTap();
+    });
+
+    // A double tap: keep recording until the hotkey is pressed again.
+    ipc.on("lock-recording", (event, payload) => {
+      this.handleRecordingLock(payload?.lockId);
     });
 
     // Listen for cleanup microphone signal
@@ -666,7 +691,7 @@ class VoiceInputPrompt {
     this.promptElement.classList.remove("recording");
     this.promptElement.classList.add("insert-failed");
     this.promptText.textContent = t("inputPrompt.insertFailedTitle");
-    this.statusText.textContent = t("inputPrompt.insertFailedHint");
+    this.statusText.textContent = t("inputPrompt.insertFailedHint", this.shortcutValues());
     this.statusText.style.color = "var(--status-warning)";
     if (this.copyBtnLabel) {
       this.copyBtnLabel.textContent = t("inputPrompt.copyButton");
@@ -719,6 +744,111 @@ class VoiceInputPrompt {
     this.localModelSetupModel = null;
     if (this.waveContainer) this.waveContainer.style.display = "";
     if (this.promptElement) this.promptElement.classList.remove("insert-failed", "engine-blocked");
+  }
+
+  shortcutValues() {
+    return { record: this.formatShortcutLabel(this.recordShortcut || DEFAULT_RECORD_SHORTCUT) };
+  }
+
+  // A tap of the hotkey while a failure card was showing re-inserts that card's
+  // text at the caret: the user clicks the target field, then taps. The tap
+  // also started a recording, which is always discarded. Without a card it is
+  // just the old mis-trigger cancel.
+  async handleHotkeyTap() {
+    const text = this.tapInsertCandidate;
+    this.tapInsertCandidate = null;
+    this.cancelRecording();
+    if (!hasMeaningfulText(text)) return;
+    // Let the cancelled startup settle first: its late hide must not close a
+    // card that a failed insertion re-shows.
+    try {
+      await this.startRecordingPromise;
+    } catch {
+      // Startup errors are already handled by startRecording.
+    }
+    if (this.isRecording || this.starting || this.isFlushingInsertQueue ||
+      this.pendingInsertionOrder.length || this.transcriptionInProgressCount > 0) return;
+    this.clearHidePromptTimer();
+    this.promptText.textContent = t("inputPrompt.inserting");
+    this.statusText.textContent = "";
+    // Holds the insertion FIFO like any other native insertion.
+    this.isFlushingInsertQueue = true;
+    let result;
+    try {
+      result = await this.typeText(text, { suppressUi: true });
+    } catch (error) {
+      result = { ok: false, message: errorMessage(error) };
+    } finally {
+      this.isFlushingInsertQueue = false;
+    }
+    if (this.pendingInsertionOrder.length) {
+      void this.flushPendingInsertions();
+      return;
+    }
+    if (this.isRecording || this.starting) return;
+    if (result?.ok) {
+      this.hidePrompt();
+      return;
+    }
+    this.showInsertFailed(text);
+  }
+
+  handleRecordingLock(lockId) {
+    this.tapInsertCandidate = null;
+    if (!this.isRecording && !this.starting) {
+      // The recording already ended on its own (e.g. the microphone failed).
+      void this.releaseRecordingLock(lockId);
+      return;
+    }
+    this.recordingLockId = lockId;
+    this.rememberLockUsed();
+    if (this.isRecording) this.promptText.textContent = this.recordingPromptText();
+  }
+
+  // Tells the hotkey that a locked recording is over, so its next press
+  // starts a new recording. A no-op when the hotkey itself ended it.
+  releaseRecordingLock(lockId = this.recordingLockId) {
+    if (lockId === this.recordingLockId) this.recordingLockId = null;
+    if (lockId == null) return Promise.resolve();
+    return Promise.resolve(ipc.invoke("release-recording-lock", lockId)).catch(() => {});
+  }
+
+  recordingPromptText() {
+    return this.recordingLockId != null
+      ? t("inputPrompt.lockedHint", this.shortcutValues())
+      : t("inputPrompt.listening");
+  }
+
+  readLockTipState() {
+    try {
+      const value = JSON.parse(window.localStorage?.getItem(LOCK_TIP_STORAGE_KEY) || "{}");
+      return value && typeof value === "object" ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  writeLockTipState(value) {
+    try {
+      window.localStorage?.setItem(LOCK_TIP_STORAGE_KEY, JSON.stringify(value));
+    } catch {
+      // Storage is a convenience; without it the tip may simply show again.
+    }
+  }
+
+  rememberLockUsed() {
+    this.writeLockTipState({ ...this.readLockTipState(), used: true });
+  }
+
+  maybeShowLockTip() {
+    if (!this.isRecording || this.recordingLockId != null || this.lockTipShown) return;
+    if (Date.now() - (this.recordingStartedAt || Date.now()) < LOCK_TIP_AFTER_MS) return;
+    this.lockTipShown = true;
+    const state = this.readLockTipState();
+    const shows = Number(state.shows) || 0;
+    if (state.used || shows >= LOCK_TIP_MAX_SHOWS) return;
+    this.writeLockTipState({ ...state, shows: shows + 1 });
+    this.promptText.textContent = t("inputPrompt.lockTip", this.shortcutValues());
   }
 
   formatDuration(ms) {
@@ -782,6 +912,7 @@ class VoiceInputPrompt {
         return;
       }
       this.updateStatusText();
+      this.maybeShowLockTip();
     }, 200);
   }
 
@@ -1188,7 +1319,7 @@ class VoiceInputPrompt {
         if (this.pendingRecoveryUi?.recovery === recovery &&
           this.recoveryShownId === sessionId && sessionId === this.recordingSessionId &&
           !this.isRecording && !this.starting) {
-          this.statusText.textContent = t("inputPrompt.recoverySavedHint");
+          this.statusText.textContent = t("inputPrompt.recoverySavedHint", this.shortcutValues());
         }
         this.reportLifecycle(session, "recovery", "complete", Date.now() - startedAt);
       });
@@ -1315,9 +1446,11 @@ class VoiceInputPrompt {
       this.showInsertFailed(recovery.text);
       if (recovery.kind === "incomplete") {
         this.promptText.textContent = t("inputPrompt.transcriptionIncompleteTitle");
-        this.statusText.textContent = t("inputPrompt.transcriptionIncompleteHint");
+        this.statusText.textContent = t("inputPrompt.transcriptionIncompleteHint", this.shortcutValues());
       }
-      if (recovery.persisted) this.statusText.textContent = t("inputPrompt.recoverySavedHint");
+      if (recovery.persisted) {
+        this.statusText.textContent = t("inputPrompt.recoverySavedHint", this.shortcutValues());
+      }
       this.recoveryShownId = sessionId;
       this.scheduleHidePrompt(15000);
     }
@@ -2414,7 +2547,7 @@ class VoiceInputPrompt {
     this.nativeCapture = capture;
 
     this.promptElement.classList.add("visible", "recording");
-    this.promptText.textContent = t("inputPrompt.listening");
+    this.promptText.textContent = this.recordingPromptText();
     this.recordingStartedAt = Date.now();
     this.cancelledShortPress = false;
     this.isRecording = true;
@@ -2459,6 +2592,9 @@ class VoiceInputPrompt {
     const startupStartedAt = performance.now();
     this.clearHidePromptTimer();
     this.clearActualHideTimer();
+    this.tapInsertCandidate = hasMeaningfulText(this._failedText) ? this._failedText : null;
+    this.recordingLockId = null;
+    this.lockTipShown = false;
     this.clearInsertFailedUi();
     this.retryRecoveryPersistence();
     this.starting = true;
@@ -2640,7 +2776,7 @@ class VoiceInputPrompt {
       // Reveal the prompt only after every selected engine is ready to receive
       // audio. The visible Listening state therefore never drops first words.
       this.promptElement.classList.add("visible", "recording");
-      this.promptText.textContent = t("inputPrompt.listening");
+      this.promptText.textContent = this.recordingPromptText();
 
       // No timeslice, and requestData() is never called: the recorder emits
       // exactly one dataavailable, carrying the complete container. Late-audio
@@ -2690,6 +2826,7 @@ class VoiceInputPrompt {
       await this.handleRecordingError(error);
     } finally {
       this.starting = false;
+      if (!this.isRecording && this.recordingLockId != null) void this.releaseRecordingLock();
       if (this.stopRequested && !this.isRecording) {
         if (this.cancelInProgress) {
           // Keep cancellation latched until setup and stop have both finished;
@@ -2708,6 +2845,7 @@ class VoiceInputPrompt {
     }
 
     this.isRecording = false;
+    if (this.recordingLockId != null) void this.releaseRecordingLock();
     const recordingSession = this.activeRecordingSession;
     this.stopRecordingTimer();
     // Mis-trigger discarding now lives in the Rust hotkey layer, which measures
@@ -3529,6 +3667,7 @@ class VoiceInputPrompt {
     this.statusText.style.color = "";
 
     // Reset recording state
+    if (this.recordingLockId != null) void this.releaseRecordingLock();
     this.isRecording = false;
     this.stopRequested = false;
     this.starting = false;

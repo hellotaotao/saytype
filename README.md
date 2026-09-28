@@ -8,7 +8,7 @@ Project direction: [Product pathway](docs/PRODUCT_PATHWAY.md) · [Reliability ac
 
 ## Features
 
-- **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe
+- **Hold-to-Record Hotkey**: Hold down Ctrl+Shift to start recording, release to stop and transcribe. Double-tap Ctrl+Shift to record hands-free; press it once more to finish
 - **Real-time Audio Visualization**: Waveform animation while recording
 - **Local-first AI Transcription**: Qwen3-ASR runs on-device for batch quality (0.6B by default, 1.7B as a larger option); Nemotron 3.5 adds live local transcription on Apple Silicon and Windows x64. Groq and OpenAI remain optional cloud choices
 - **Auto-typing**: Inserts transcribed text into the active application (macOS; Windows/Linux experimental, untested)
@@ -102,7 +102,7 @@ https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 ## 功能特性
 
-- **按住录音快捷键**:按住 Ctrl+Shift 开始录音,松开即停止并转写
+- **按住录音快捷键**:按住 Ctrl+Shift 开始录音,松开即停止并转写;双击 Ctrl+Shift 可免按住录音,再按一下结束
 - **实时音频可视化**:录音时显示波形动画
 - **本地优先 AI 转写**:Qwen3-ASR 在本机提供高质量批量转写(默认 0.6B,也可选更大的 1.7B);Nemotron 3.5 在 Apple Silicon 和 Windows x64 上提供本地实时转写。Groq 和 OpenAI 作为可选云端方案
 - **自动输入**:将转写结果插入到当前活动应用(macOS;Windows/Linux 为实验性支持,未经真机验证)
