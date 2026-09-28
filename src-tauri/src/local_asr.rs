@@ -42,7 +42,9 @@ pub struct Asset {
   /// Final location under local_asr_dir(); doubles as the download's .part
   /// sibling name. Forward slashes are fine in PathBuf::join on Windows.
   pub rel_path: &'static str,
-  /// Try in order (mirror fallback); byte-identical across sources.
+  /// Try in order (mirror fallback); byte-identical across sources. Listed
+  /// global-first; `ordered_urls` moves mainland-China mirrors to the front
+  /// only on machines set to a mainland China time zone.
   pub urls: &'static [&'static str],
   /// A runtime carried inside the app instead of fetched from the network.
   pub bundled: Option<&'static [u8]>,
@@ -54,11 +56,11 @@ pub const MODEL_ASSETS: &[Asset] = &[
   Asset {
     rel_path: "models/Qwen3-ASR-0.6B-Q8_0.gguf",
     // ModelScope mirrors this repo (probed 2026-07-13, HTTP 200, identical
-    // X-Linked-Etag) so it's listed first as the faster mirror for CN users;
-    // HF is the international fallback.
+    // X-Linked-Etag). Hugging Face is unreachable from mainland China, where
+    // `ordered_urls` tries ModelScope first; everywhere else HF leads.
     urls: &[
-      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/master/Qwen3-ASR-0.6B-Q8_0.gguf",
       "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/Qwen3-ASR-0.6B-Q8_0.gguf",
+      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/master/Qwen3-ASR-0.6B-Q8_0.gguf",
     ],
     bundled: None,
     size: 804_749_248,
@@ -67,8 +69,8 @@ pub const MODEL_ASSETS: &[Asset] = &[
   Asset {
     rel_path: "models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
     urls: &[
-      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/master/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
       "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/master/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
     ],
     bundled: None,
     size: 214_392_480,
@@ -79,11 +81,11 @@ pub const MODEL_ASSETS: &[Asset] = &[
 pub const LARGE_MODEL_ASSETS: &[Asset] = &[
   Asset {
     rel_path: "models/Qwen3-ASR-1.7B-Q8_0.gguf",
-    // Same ModelScope mirror as the 0.6B assets (probed 2026-09-29: LFS object
-    // path and X-Linked-Etag equal the sha256 below).
+    // Same ModelScope mirror and ordering as the 0.6B assets (probed
+    // 2026-09-29: LFS object path and X-Linked-Etag equal the sha256 below).
     urls: &[
-      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/master/Qwen3-ASR-1.7B-Q8_0.gguf",
       "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/Qwen3-ASR-1.7B-Q8_0.gguf",
+      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/master/Qwen3-ASR-1.7B-Q8_0.gguf",
     ],
     bundled: None,
     size: 2_165_034_944,
@@ -92,8 +94,8 @@ pub const LARGE_MODEL_ASSETS: &[Asset] = &[
   Asset {
     rel_path: "models/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
     urls: &[
-      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/master/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
       "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/main/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+      "https://modelscope.cn/models/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/master/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
     ],
     bundled: None,
     size: 355_709_344,
@@ -1817,6 +1819,53 @@ async fn transcribe_wav_inner_for(
 
 /// Emit a progress event at most every this many bytes.
 const PROGRESS_EMIT_STEP: u64 = 8 * 1024 * 1024;
+/// A source that sends nothing for this long is treated as failed, so the next
+/// source resumes the .part. A blocked host often accepts the connection and
+/// then goes silent, which the connect timeout alone never catches.
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(20);
+/// After this long, a source averaging below `DOWNLOAD_MIN_BYTES_PER_SEC` gives
+/// way to the next one. The last source is never dropped for being slow.
+const DOWNLOAD_SLOW_WINDOW: Duration = Duration::from_secs(15);
+const DOWNLOAD_MIN_BYTES_PER_SEC: u64 = 200 * 1024;
+
+/// Hosts that serve mainland China reliably, where the global hosts often don't.
+const CN_MIRROR_HOSTS: &[&str] = &["modelscope.cn"];
+
+/// Mainland China time zones, including the legacy aliases some systems still
+/// report. Hong Kong and Macau reach Hugging Face directly, so they stay out.
+fn is_mainland_china_time_zone(tz: &str) -> bool {
+  matches!(
+    tz,
+    "Asia/Shanghai" | "Asia/Chongqing" | "Asia/Chungking" | "Asia/Harbin" | "Asia/Urumqi" | "Asia/Kashgar" | "PRC"
+  )
+}
+
+fn is_cn_mirror(url: &str) -> bool {
+  let host = url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("");
+  CN_MIRROR_HOSTS.iter().any(|mirror| host == *mirror || host.ends_with(&format!(".{mirror}")))
+}
+
+/// The time zone is a local, offline hint for where the machine is; it sends
+/// nothing anywhere. Browser language would misplace Chinese speakers abroad.
+/// A wrong guess only costs one stall/slow check before the next source.
+fn ordered_urls(asset: &Asset) -> Vec<&'static str> {
+  let prefer_cn = iana_time_zone::get_timezone().map(|tz| is_mainland_china_time_zone(&tz)).unwrap_or(false);
+  ordered_urls_for(asset.urls, prefer_cn)
+}
+
+fn ordered_urls_for(urls: &[&'static str], prefer_cn: bool) -> Vec<&'static str> {
+  let mut ordered = urls.to_vec();
+  if prefer_cn {
+    // Stable sort keeps the listed order within each group.
+    ordered.sort_by_key(|url| !is_cn_mirror(url));
+  }
+  ordered
+}
+
+/// Whether a source that has streamed `bytes` in `elapsed` should give way.
+fn source_too_slow(bytes: u64, elapsed: Duration) -> bool {
+  elapsed >= DOWNLOAD_SLOW_WINDOW && bytes < DOWNLOAD_MIN_BYTES_PER_SEC * elapsed.as_secs()
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2072,7 +2121,9 @@ async fn download_asset(
   }
 
   let mut last_err = String::new();
-  for url in asset.urls {
+  let urls = ordered_urls(asset);
+  for (index, url) in urls.iter().copied().enumerate() {
+    let has_fallback = index + 1 < urls.len();
     if cancel.is_cancelled() {
       return Err("DOWNLOAD_CANCELLED".into());
     }
@@ -2085,7 +2136,7 @@ async fn download_asset(
     let stream_result = if offset == asset.size {
       Ok(())
     } else {
-      stream_to_part(on_progress, client, url, &part_path, offset, asset, cancel, done_bytes).await
+      stream_to_part(on_progress, client, url, &part_path, offset, asset, cancel, done_bytes, has_fallback).await
     };
     match stream_result {
       Ok(()) => {
@@ -2133,6 +2184,7 @@ async fn stream_to_part(
   asset: &Asset,
   cancel: &CancellationToken,
   done_bytes: u64,
+  has_fallback: bool,
 ) -> Result<(), String> {
   use std::io::Write;
 
@@ -2140,7 +2192,12 @@ async fn stream_to_part(
   if offset > 0 {
     request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
   }
-  let response = request.send().await.map_err(|e| e.to_string())?;
+  let response = tokio::select! {
+    _ = cancel.cancelled() => return Err("DOWNLOAD_CANCELLED".into()),
+    response = tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, request.send()) => {
+      response.map_err(|_| "no response".to_string())?.map_err(|e| e.to_string())?
+    }
+  };
   let status = response.status();
   if !status.is_success() {
     return Err(format!("HTTP {status}"));
@@ -2157,14 +2214,26 @@ async fn stream_to_part(
   let mut last_emit = written;
 
   let mut response = response;
+  let started = std::time::Instant::now();
+  let mut speed_checked = !has_fallback;
   loop {
     let chunk = tokio::select! {
       _ = cancel.cancelled() => return Err("DOWNLOAD_CANCELLED".into()),
-      chunk = response.chunk() => chunk.map_err(|e| e.to_string())?,
+      chunk = tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, response.chunk()) => {
+        chunk.map_err(|_| format!("stalled for {}s", DOWNLOAD_STALL_TIMEOUT.as_secs()))?.map_err(|e| e.to_string())?
+      }
     };
     let Some(chunk) = chunk else { break };
     out.write_all(&chunk).map_err(|e| e.to_string())?;
     written += chunk.len() as u64;
+    if !speed_checked && started.elapsed() >= DOWNLOAD_SLOW_WINDOW {
+      speed_checked = true;
+      let streamed = written - if append { offset } else { 0 };
+      if source_too_slow(streamed, started.elapsed()) {
+        out.flush().map_err(|e| e.to_string())?;
+        return Err(format!("too slow ({} KB in {}s)", streamed / 1024, started.elapsed().as_secs()));
+      }
+    }
     if written - last_emit >= PROGRESS_EMIT_STEP {
       last_emit = written;
       on_progress(done_bytes + written.min(asset.size));
@@ -2455,6 +2524,40 @@ mod tests {
     // ~1.02GB models + a 10-80MB zip
     assert!(total > 1_020_000_000 && total < 1_150_000_000, "total = {total}");
     assert_ne!(LLAMA_BUILD, "<FILL-STEP-1>");
+  }
+
+  #[test]
+  fn qwen_models_list_hugging_face_first_with_a_china_mirror() {
+    for a in MODEL_ASSETS.iter().chain(LARGE_MODEL_ASSETS) {
+      assert!(a.urls[0].starts_with("https://huggingface.co/"), "{}", a.rel_path);
+      assert!(a.urls.iter().any(|url| is_cn_mirror(url)), "{}", a.rel_path);
+    }
+  }
+
+  #[test]
+  fn china_mirrors_lead_only_in_mainland_time_zones() {
+    let urls: &[&'static str] = &["https://huggingface.co/a", "https://modelscope.cn/b", "https://github.com/c"];
+    assert_eq!(ordered_urls_for(urls, false), urls.to_vec());
+    assert_eq!(
+      ordered_urls_for(urls, true),
+      vec!["https://modelscope.cn/b", "https://huggingface.co/a", "https://github.com/c"]
+    );
+    for tz in ["Asia/Shanghai", "Asia/Urumqi", "PRC"] {
+      assert!(is_mainland_china_time_zone(tz), "{tz}");
+    }
+    for tz in ["Asia/Hong_Kong", "Asia/Macau", "Asia/Taipei", "Australia/Adelaide", "UTC"] {
+      assert!(!is_mainland_china_time_zone(tz), "{tz}");
+    }
+    assert!(is_cn_mirror("https://cdn-lfs-cn-1.modelscope.cn/x"));
+    assert!(!is_cn_mirror("https://evil.com/modelscope.cn"));
+    assert!(!is_cn_mirror("https://notmodelscope.cn/x"));
+  }
+
+  #[test]
+  fn slow_sources_give_way_only_after_the_window() {
+    assert!(!source_too_slow(0, Duration::from_secs(14)));
+    assert!(source_too_slow(1024 * 1024, Duration::from_secs(15)));
+    assert!(!source_too_slow(4 * 1024 * 1024, Duration::from_secs(15)));
   }
 
   #[test]

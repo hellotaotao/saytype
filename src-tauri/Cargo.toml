@@ -20,6 +20,7 @@ tauri-build = { version = "2.5.6", features = [] }
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+iana-time-zone = "0.1"
 dirs = "6.0"
 futures-util = "0.3"
 log = "0.4"
