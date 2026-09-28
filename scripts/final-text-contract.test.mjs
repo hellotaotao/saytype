@@ -30,11 +30,12 @@ test("all complete dictations share final formatting before History and insertio
   assert.ok(retry.indexOf("prepare_final_transcription(&raw)") < retry.indexOf("history::finish_pending_transcription"));
 });
 
-test("final formatting reads the shared setting and leaves partial chunks unmerged", () => {
+test("final formatting reads the shared settings and leaves partial chunks unformatted", () => {
   const finalization = between("fn prepare_final_transcription(", "fn record_successful_transcription(");
   assert.match(finalization, /settings::read_config\(\)/);
-  assert.match(finalization, /config\.merge_spelled_letters/);
-  assert.match(finalization, /crate::scrub::finalize_transcription\(raw, merge_spelled_letters\)/);
+  assert.match(finalization, /merge_spelled_letters: config\.merge_spelled_letters/);
+  assert.match(finalization, /remove_fillers: config\.remove_filler_words/);
+  assert.match(finalization, /crate::scrub::finalize_transcription\(raw, options\)/);
   const chunks = between("fn scrub_transcription_with_chunk_diagnostics(", "pub async fn transcribe_audio(");
   assert.match(chunks, /crate::scrub::scrub_transcription\(raw\)/);
   assert.doesNotMatch(chunks, /finalize_transcription|prepare_final_transcription/);

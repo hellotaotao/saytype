@@ -890,16 +890,19 @@ impl Drop for ActiveTranscriptionGuard<'_> {
 // Called only when the whole result is ready, including assembled dictations
 // and manual History retries. Formatting is shared by persistence and insertion.
 fn prepare_final_transcription(raw: &str) -> String {
-  let merge_spelled_letters = match settings::read_config() {
-    Ok(config) => config.merge_spelled_letters,
+  let options = match settings::read_config() {
+    Ok(config) => crate::scrub::FinalTextOptions {
+      remove_fillers: config.remove_filler_words,
+      merge_spelled_letters: config.merge_spelled_letters,
+    },
     Err(error) => {
       // Optional formatting must not discard a completed transcription or
-      // guess that a user who disabled the setting wants it enabled again.
-      log::warn!("could not read final text settings; skipping letter merging: {error:#}");
-      false
+      // guess that a user who disabled a setting wants it enabled again.
+      log::warn!("could not read final text settings; skipping optional formatting: {error:#}");
+      crate::scrub::FinalTextOptions { remove_fillers: false, merge_spelled_letters: false }
     }
   };
-  crate::scrub::finalize_transcription(raw, merge_spelled_letters)
+  crate::scrub::finalize_transcription(raw, options)
 }
 
 fn record_successful_transcription(

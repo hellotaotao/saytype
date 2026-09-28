@@ -2082,6 +2082,7 @@ async function loadSettings() {
     const autoLaunchCheck = document.getElementById("autoLaunchCheck");
     const startMinimizedCheck = document.getElementById("startMinimizedCheck");
     const mergeSpelledLettersCheck = document.getElementById("mergeSpelledLettersCheck");
+    const removeFillerWordsCheck = document.getElementById("removeFillerWordsCheck");
     const apiKeyGroq = document.getElementById("apiKeyGroq");
     const apiKeyOpenAI = document.getElementById("apiKeyOpenAI");
 
@@ -2134,6 +2135,9 @@ async function loadSettings() {
     }
     if (mergeSpelledLettersCheck) {
       mergeSpelledLettersCheck.checked = currentSettings.mergeSpelledLetters !== false;
+    }
+    if (removeFillerWordsCheck) {
+      removeFillerWordsCheck.checked = currentSettings.removeFillerWords !== false;
     }
 
     renderSettingChoices();
@@ -2356,6 +2360,8 @@ async function persistSettings(intent = null) {
       startMinimized: !!document.getElementById("startMinimizedCheck")?.checked,
       mergeSpelledLetters: document.getElementById("mergeSpelledLettersCheck")?.checked
         ?? currentSettings.mergeSpelledLetters !== false,
+      removeFillerWords: document.getElementById("removeFillerWordsCheck")?.checked
+        ?? currentSettings.removeFillerWords !== false,
       provider: target.provider,
       localCompute: document.getElementById("localComputeSelect")?.value || "auto",
       nemotronLatencyMs: Number(

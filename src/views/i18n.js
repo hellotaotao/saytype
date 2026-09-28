@@ -303,6 +303,10 @@
           groupCommon: "Common",
           groupAll: "All languages",
         },
+        removeFillerWords: {
+          title: "Remove filler words",
+          description: "Drop hesitation sounds such as 嗯 and 呃. Interjections such as 啊 and 呀 stay.",
+        },
         mergeSpelledLetters: {
           title: "Merge spelled-out letters",
           description: "Join separated capital letters, for example A P I → API.",
@@ -860,6 +864,10 @@
             "Qwen 会自动识别语言，用不上这项设置。",
           groupCommon: "常用",
           groupAll: "全部语言",
+        },
+        removeFillerWords: {
+          title: "去掉语气词",
+          description: "删掉停顿时的「嗯」「呃」，「啊」「呀」这类带语气的字会保留。",
         },
         mergeSpelledLetters: {
           title: "自动合并拼读字母",

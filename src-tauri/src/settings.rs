@@ -26,6 +26,10 @@ fn default_merge_spelled_letters() -> bool {
   true
 }
 
+fn default_remove_filler_words() -> bool {
+  true
+}
+
 fn default_ui_language() -> String {
   "auto".into()
 }
@@ -86,6 +90,8 @@ pub struct AppConfig {
   pub language: String,
   #[serde(default = "default_merge_spelled_letters")]
   pub merge_spelled_letters: bool,
+  #[serde(default = "default_remove_filler_words")]
+  pub remove_filler_words: bool,
   #[serde(default = "default_ui_language")]
   pub ui_language: String,
   #[serde(default = "default_ui_theme")]
@@ -126,6 +132,7 @@ impl Default for AppConfig {
       shortcut: default_shortcut(),
       language: default_language(),
       merge_spelled_letters: default_merge_spelled_letters(),
+      remove_filler_words: default_remove_filler_words(),
       ui_language: default_ui_language(),
       ui_theme: default_ui_theme(),
       model: default_model(),
@@ -182,6 +189,7 @@ pub struct SettingsPayload {
   pub shortcut: String,
   pub language: String,
   pub merge_spelled_letters: bool,
+  pub remove_filler_words: bool,
   pub ui_language: String,
   pub ui_theme: String,
   pub model: String,
@@ -240,6 +248,7 @@ impl SettingsPayload {
       shortcut: config.shortcut.clone(),
       language: config.language.clone(),
       merge_spelled_letters: config.merge_spelled_letters,
+      remove_filler_words: config.remove_filler_words,
       ui_language: config.ui_language.clone(),
       ui_theme: config.ui_theme.clone(),
       model: config.model.clone(),
@@ -455,6 +464,26 @@ mod tests {
       })).unwrap();
       let payload = serde_json::to_value(SettingsPayload::from_config_with(&config, false)).unwrap();
       assert_eq!(payload["mergeSpelledLetters"], enabled);
+    }
+  }
+
+  #[test]
+  fn remove_filler_words_defaults_on_and_reaches_the_frontend_payload() {
+    use crate::hardware::LocalTier;
+    for config in [
+      AppConfig::default(),
+      fresh_config_for(LocalTier::Qwen),
+      fresh_config_for(LocalTier::CloudDefault),
+      serde_json::from_str::<AppConfig>(r#"{"provider":"groq"}"#).unwrap(),
+    ] {
+      assert_eq!(serde_json::to_value(config).unwrap()["removeFillerWords"], true);
+    }
+    for enabled in [true, false] {
+      let config: AppConfig = serde_json::from_value(serde_json::json!({
+        "removeFillerWords": enabled,
+      })).unwrap();
+      let payload = serde_json::to_value(SettingsPayload::from_config_with(&config, false)).unwrap();
+      assert_eq!(payload["removeFillerWords"], enabled);
     }
   }
 

@@ -33,7 +33,8 @@ somewhere the user can retry or copy it. How to test this on real devices is in
 
 - Complete batch results, assembled chunked results, Nemotron live finals and History retries use
   the same final-text formatter before saving. History and normal insertion receive its returned
-  text. Individual chunks and live previews do not merge spelled letters.
+  text. Individual chunks and live previews are not formatted: they keep fillers and letter
+  spacing.
 - Settings has a common "Merge spelled-out letters" toggle (`mergeSpelledLetters`), enabled by
   default for new and existing configurations. Disabling it preserves letter spacing without
   disabling the existing hallucination filter.
@@ -41,6 +42,10 @@ somewhere the user can retry or copy it. How to test this on real devices is in
   a dictionary (`A P I` becomes `API`). Punctuation, tabs and line breaks interrupt the run;
   cleanup and chunk joining preserve these separators. Incomplete recovery keeps its existing
   preservation path rather than treating partial text as a successful final.
+- Settings has a "Remove filler words" toggle (`removeFillerWords`), enabled by default. It runs
+  before letter merging and removes 嗯, 呃 and a standalone 额 with the pause marks around them
+  (`觉得，呃，我们` becomes `觉得，我们`). A result that was only fillers becomes empty and is handled
+  as no speech. Details in `src-tauri/src/filler.rs`.
 
 ## Failed transcriptions keep their audio
 

@@ -20,11 +20,21 @@ use regex::Regex;
 
 use crate::commands::SEED_ZH;
 
+/// The optional final-text formatting steps, both on by default.
+#[derive(Clone, Copy, Debug)]
+pub struct FinalTextOptions {
+  pub remove_fillers: bool,
+  pub merge_spelled_letters: bool,
+}
+
 /// Format only a complete result, never an individual chunk or live partial.
 /// History and insertion must share the returned text.
-pub fn finalize_transcription(text: &str, merge_spelled_letters: bool) -> String {
-  let text = scrub_transcription(text);
-  if !merge_spelled_letters {
+pub fn finalize_transcription(text: &str, options: FinalTextOptions) -> String {
+  let mut text = scrub_transcription(text);
+  if options.remove_fillers {
+    text = crate::filler::remove_fillers(&text);
+  }
+  if !options.merge_spelled_letters {
     return text;
   }
   static SPELLED_LETTERS: OnceLock<Regex> = OnceLock::new();
@@ -151,6 +161,10 @@ fn collapse_space_runs(text: &str) -> String {
 mod tests {
   use super::*;
 
+  const LETTERS: FinalTextOptions = FinalTextOptions { remove_fillers: false, merge_spelled_letters: true };
+  const NONE: FinalTextOptions = FinalTextOptions { remove_fillers: false, merge_spelled_letters: false };
+  const ALL: FinalTextOptions = FinalTextOptions { remove_fillers: true, merge_spelled_letters: true };
+
   #[test]
   fn final_text_merges_independent_spelled_letters_without_a_dictionary() {
     for (input, expected) in [
@@ -169,7 +183,7 @@ mod tests {
       ("OpenA P I", "OpenA PI"),
       ("A P I2", "AP I2"),
     ] {
-      assert_eq!(finalize_transcription(input, true), expected, "{input:?}");
+      assert_eq!(finalize_transcription(input, LETTERS), expected, "{input:?}");
     }
   }
 
@@ -181,16 +195,16 @@ mod tests {
       "A\tP\tI", "A\nP\nI", "A\u{00a0}P\u{00a0}I", "A\u{3000}P\u{3000}I",
       "I am here. A good day.",
     ] {
-      assert_eq!(finalize_transcription(input, true), input, "{input:?}");
+      assert_eq!(finalize_transcription(input, LETTERS), input, "{input:?}");
     }
   }
 
   #[test]
   fn disabling_letter_merging_keeps_the_existing_hallucination_filter() {
-    assert_eq!(finalize_transcription(" A  P I ", false), " A  P I ");
-    assert_eq!(finalize_transcription("A P I 字幕由Amara.org社区提供", false), "A P I");
-    assert_eq!(finalize_transcription(SEED_ZH, false), "");
-    assert_eq!(finalize_transcription(SEED_ZH, true), "");
+    assert_eq!(finalize_transcription(" A  P I ", NONE), " A  P I ");
+    assert_eq!(finalize_transcription("A P I 字幕由Amara.org社区提供", NONE), "A P I");
+    assert_eq!(finalize_transcription(SEED_ZH, NONE), "");
+    assert_eq!(finalize_transcription(SEED_ZH, LETTERS), "");
   }
 
   #[test]
@@ -198,16 +212,24 @@ mod tests {
     let first = scrub_transcription("A P");
     let second = scrub_transcription("I");
     assert_eq!(first, "A P");
-    let text = finalize_transcription(&format!("{first} {second}"), true);
+    let text = finalize_transcription(&format!("{first} {second}"), LETTERS);
     assert_eq!(text, "API");
-    assert_eq!(finalize_transcription(&text, true), text);
+    assert_eq!(finalize_transcription(&text, LETTERS), text);
+  }
+
+  #[test]
+  fn filler_removal_runs_before_letter_merging_and_can_be_disabled() {
+    assert_eq!(finalize_transcription("呃，A 嗯 P I 接口", ALL), "API 接口");
+    assert_eq!(finalize_transcription("呃，A P I", LETTERS), "呃，API");
+    assert_eq!(finalize_transcription("嗯。", ALL), "");
+    assert_eq!(finalize_transcription("A P I 字幕由Amara.org社区提供", ALL), "API");
   }
 
   #[test]
   fn boilerplate_cleanup_does_not_turn_other_separators_into_mergeable_spaces() {
     for separator in ["\n", "\r\n", "\t", "\u{00a0}", "\u{3000}"] {
       let text = format!("A{separator}P I 字幕由Amara.org社区提供");
-      assert_eq!(finalize_transcription(&text, true), format!("A{separator}PI"));
+      assert_eq!(finalize_transcription(&text, LETTERS), format!("A{separator}PI"));
     }
   }
 
