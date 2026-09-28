@@ -8,7 +8,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, LogicalPosition, Manager};
+use tauri::{AppHandle, Emitter, Manager};
+#[cfg(not(target_os = "windows"))]
+use tauri::LogicalPosition;
 
 // Recording starts the instant the modifier combo is down — there is no startup
 // gate. A press shorter than this is treated as a mis-trigger and discarded
@@ -825,17 +827,27 @@ const POSITION_SETTLE_TIMEOUT: Duration = Duration::from_millis(60);
 ///   it. A `LogicalPosition` passes through untouched, so we use that.
 ///
 /// So: normalize every input to logical points, and set a logical position.
+///
+/// Windows is different (tao 0.34.8): `cursor_position()` and
+/// `monitor_from_point` are both plain physical pixels, and a `LogicalPosition`
+/// is converted with the window's *current* scale factor, so it lands in the
+/// wrong place when the target screen has another one. There the origin is
+/// scaled by the target monitor's own factor and set as a physical position.
+/// That math is shared with macOS: the "logical" rect below is the monitor's
+/// physical rect divided by its scale, so multiplying back by that same scale
+/// is exact.
 fn position_input_prompt(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
   let monitor = target_monitor(window)?;
+  let monitor_scale = monitor.scale_factor();
   let screen = logical_rect(
     (monitor.position().x, monitor.position().y),
     (monitor.size().width, monitor.size().height),
-    monitor.scale_factor(),
+    monitor_scale,
   )?;
 
   // The window's own size is physical at *its* current scale factor, which is
   // not necessarily the target monitor's.
-  let window_scale = window.scale_factor().unwrap_or(monitor.scale_factor());
+  let window_scale = window.scale_factor().unwrap_or(monitor_scale);
   let prompt = window
     .outer_size()
     .ok()
@@ -848,9 +860,29 @@ fn position_input_prompt(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
     })
     .unwrap_or(PROMPT_FALLBACK_SIZE);
 
-  let (x, y) = prompt_origin(screen, prompt);
-  let _ = window.set_position(LogicalPosition::new(x, y));
-  Some((x, y))
+  move_prompt(window, prompt_origin(screen, prompt), monitor_scale)
+}
+
+/// Returns the logical target for `wait_for_position` to settle on.
+#[cfg(not(target_os = "windows"))]
+fn move_prompt(window: &tauri::WebviewWindow, origin: (f64, f64), _monitor_scale: f64) -> Option<(f64, f64)> {
+  let _ = window.set_position(LogicalPosition::new(origin.0, origin.1));
+  Some(origin)
+}
+
+/// Returns nothing to wait for: tao's Windows move is a synchronous
+/// `SetWindowPos` on the main thread, queued ahead of the `show()` that follows.
+#[cfg(target_os = "windows")]
+fn move_prompt(window: &tauri::WebviewWindow, origin: (f64, f64), monitor_scale: f64) -> Option<(f64, f64)> {
+  let (x, y) = physical_origin(origin, monitor_scale);
+  let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+  None
+}
+
+/// A monitor-local logical origin back in that monitor's physical pixels.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn physical_origin(origin: (f64, f64), monitor_scale: f64) -> (i32, i32) {
+  ((origin.0 * monitor_scale).round() as i32, (origin.1 * monitor_scale).round() as i32)
 }
 
 /// Blocks until the window has actually moved to `target`, so `show()` can't
@@ -932,7 +964,7 @@ fn target_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
     }
   }
 
-  if let Some((x, y)) = cursor_point_logical(window) {
+  if let Some((x, y)) = cursor_point(window) {
     if let Ok(Some(monitor)) = window.monitor_from_point(x, y) {
       log::info!("input-prompt: screen from cursor at ({x:.0}, {y:.0})");
       return Some(monitor);
@@ -946,7 +978,8 @@ fn target_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
 /// `cursor_position()` hands back logical points already multiplied by the
 /// *primary* monitor's scale factor, so undo that to get the plain logical
 /// point `monitor_from_point` expects.
-fn cursor_point_logical(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+#[cfg(not(target_os = "windows"))]
+fn cursor_point(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
   let cursor = window.cursor_position().ok()?;
   let primary_scale = window
     .primary_monitor()
@@ -956,6 +989,14 @@ fn cursor_point_logical(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
     .filter(|scale| *scale > 0.0)
     .unwrap_or(1.0);
   Some((cursor.x / primary_scale, cursor.y / primary_scale))
+}
+
+/// On Windows the cursor is already in physical pixels (`GetCursorPos`), the
+/// same space `monitor_from_point` (`MonitorFromPoint`) takes.
+#[cfg(target_os = "windows")]
+fn cursor_point(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+  let cursor = window.cursor_position().ok()?;
+  Some((cursor.x, cursor.y))
 }
 
 #[cfg(test)]
@@ -991,6 +1032,24 @@ mod tests {
   // Mirrors PROMPT_FALLBACK_SIZE / the input-prompt window in tauri.conf.json;
   // only the height feeds the y assertions below (x is width-driven).
   const PROMPT_SIZE: (f64, f64) = (460.0, 244.0);
+
+  // Windows, mixed DPI: primary 1920x1080 at 100%, a 4K screen at 150% to its
+  // right. Setting the prompt's origin as a LogicalPosition while the window
+  // still sits on the other screen converts it with the wrong factor; for the
+  // primary target that put the prompt's top at y=1104, below a 1080-tall
+  // screen. The physical origin is the same bottom-center point in the target
+  // monitor's own pixels.
+  #[test]
+  fn windows_origin_is_scaled_by_the_target_monitor() {
+    let four_k = logical_rect((1920, 0), (3840, 2160), 1.5).unwrap();
+    let origin = prompt_origin(four_k, PROMPT_SIZE);
+    assert_eq!(physical_origin(origin, 1.5), (1920 + (3840 - 690) / 2, 2160 - 366 - 150));
+
+    let primary = logical_rect((0, 0), (1920, 1080), 1.0).unwrap();
+    let origin = prompt_origin(primary, PROMPT_SIZE);
+    assert_eq!(physical_origin(origin, 1.0), (730, 736));
+    assert!(physical_origin(origin, 1.0).1 + 244 <= 1080);
+  }
 
   #[test]
   fn one_x_screen_is_unchanged_by_the_scale_division() {
