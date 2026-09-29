@@ -1665,6 +1665,73 @@ test("finishChunkedLocal reports failed chunks but accepts silence", async () =>
   assert.equal(await prompt.finishChunkedLocal({ chunked: silent }), "");
 });
 
+function loadForRemainderVad(invoke, gate) {
+  return loadVoiceInputPrompt({
+    invoke,
+    window: {
+      SayTypeChunk: chunkDecision,
+      SayTypeVad: { encodeWavPcm16 },
+      SayTypeVadGate: gate,
+    },
+  });
+}
+
+async function dictateWithRemainder(gate, { firstReason = "silence", remainderSamples = 8000 } = {}) {
+  const decoded = [];
+  const vadCalls = [];
+  const VoiceInputPrompt = loadForRemainderVad(async (channel, ...args) => {
+    if (channel !== "transcribe-audio") return null;
+    decoded.push(args[3]);
+    return `chunk${args[3]}`;
+  }, gate && {
+    hasSpeech: async (pcm) => {
+      vadCalls.push(pcm.length);
+      return gate(pcm);
+    },
+  });
+  const prompt = createBarePrompt(VoiceInputPrompt);
+  const chunked = makeChunked();
+  if (firstReason) prompt.enqueueChunkDecode(chunked, new Float32Array(16000), firstReason);
+  prompt.enqueueChunkDecode(chunked, new Float32Array(remainderSamples), "release");
+  await chunked.queue;
+  chunked.stopped = true;
+  chunked.accounting.acceptedSamples = chunked.accounting.queuedSamples;
+  const text = await prompt.finishChunkedLocal({ chunked });
+  return { decoded, vadCalls, text, chunked };
+}
+
+test("a silent remainder after the last cut is dropped instead of decoded", async () => {
+  const { decoded, vadCalls, text, chunked } = await dictateWithRemainder(async () => false);
+  assert.deepEqual(vadCalls, [8000], "only the final remainder is checked");
+  assert.deepEqual(decoded, [0], "Qwen never sees the pause's tail");
+  assert.equal(text, "chunk0", "nothing is appended for it");
+  assert.equal(chunked.accounting.completedChunks, 2, "the skipped remainder still counts as covered");
+});
+
+test("a remainder with speech is decoded as before", async () => {
+  const { decoded, text } = await dictateWithRemainder(async () => true);
+  assert.deepEqual(decoded, [0, 1]);
+  assert.equal(text, "chunk0 chunk1");
+});
+
+test("the VAD is not consulted for an uncut dictation or a long remainder", async () => {
+  const uncut = await dictateWithRemainder(async () => false, { firstReason: null });
+  assert.deepEqual(uncut.vadCalls, [], "a single-chunk dictation keeps the old path");
+  assert.deepEqual(uncut.decoded, [0]);
+
+  const long = await dictateWithRemainder(async () => false, { remainderSamples: 3 * 16000 + 1 });
+  assert.deepEqual(long.vadCalls, [], "past 3 s the remainder is decoded unchecked");
+  assert.deepEqual(long.decoded, [0, 1]);
+});
+
+test("a failing or missing VAD fails open to decoding the remainder", async () => {
+  const failing = await dictateWithRemainder(async () => { throw new Error("ort blew up"); });
+  assert.deepEqual(failing.decoded, [0, 1]);
+
+  const missing = await dictateWithRemainder(null);
+  assert.deepEqual(missing.decoded, [0, 1]);
+});
+
 test("releasing the key flushes the buffered remainder as the final chunk", () => {
   const VoiceInputPrompt = loadForChunking(async () => null);
   const enqueued = [];

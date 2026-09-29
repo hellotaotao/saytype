@@ -24,6 +24,13 @@ const BATCH_RECORDER_STOP_TIMEOUT_MS = 15000;
 // Allow IPC round-trip and channel drainage beyond the backend's 5 s stop deadline.
 const NATIVE_CAPTURE_STOP_TIMEOUT_MS = 8000;
 const AUDIO_STAGE_TIMEOUT_MS = 30000;
+// A chunked dictation's final remainder at or under this length is checked with
+// the neural VAD first. A cut shortly before release can leave only the pause's
+// tail, and Qwen turns a fraction of a second of room noise into "嗯。" or "no.".
+// Silero takes ~10 ms per second of audio, so longer remainders are not worth
+// holding the post-release path for; they contain speech almost always.
+const REMAINDER_VAD_MAX_S = 3;
+const REMAINDER_VAD_TIMEOUT_MS = 1500;
 // Native transcription has its own 420 s whole-request deadline. Leave time
 // for IPC delivery without imposing one deadline on a multi-chunk recording.
 const TRANSCRIPTION_STAGE_TIMEOUT_MS = 450000;
@@ -2032,6 +2039,17 @@ class VoiceInputPrompt {
       if (chunked.aborted) {
         return;
       }
+      if (reason === "release" && chunkIndex > 0 &&
+        pcm.length <= REMAINDER_VAD_MAX_S * chunked.sampleRate &&
+        await this.remainderIsSilent(pcm, chunked.sampleRate)) {
+        if (chunked.aborted) return;
+        accounting.submittedSamples += pcm.length;
+        accounting.submittedChunks += 1;
+        accounting.completedSamples += pcm.length;
+        accounting.completedChunks += 1;
+        this.reportChunkProbe(chunked, "request-result", "no-speech", { ...metadata, chars: 0 });
+        return;
+      }
       try {
         const wav = await this.waitForSessionStage(recordingSession, "resample",
           () => this.encodeChunkWav(pcm, chunked.sampleRate), AUDIO_STAGE_TIMEOUT_MS, chunkIndex);
@@ -2100,6 +2118,27 @@ class VoiceInputPrompt {
       }
       this.renderChunkedPreview(chunked);
     });
+  }
+
+  // True only when the VAD positively finds no speech. Any failure, a missing
+  // VAD or a slow verdict fails open to decoding, which is the old behavior.
+  async remainderIsSilent(pcm, sampleRate) {
+    const gate = window.SayTypeVadGate;
+    if (typeof gate?.hasSpeech !== "function") return false;
+    let timer = null;
+    try {
+      const verdict = (async () => gate.hasSpeech(await this.resampleTo16k(pcm, sampleRate)))();
+      verdict.catch(() => {}); // a rejection after the timeout won the race is moot
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(true), REMAINDER_VAD_TIMEOUT_MS);
+      });
+      return (await Promise.race([verdict, timeout])) === false;
+    } catch (error) {
+      console.warn("remainder VAD failed; decoding it anyway:", error);
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // Chunks reach Qwen the same way whole clips already do: resampled to 16 kHz

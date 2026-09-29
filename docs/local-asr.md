@@ -95,8 +95,8 @@ int8 (a 60 s passage fully correct with 23 punctuation marks, where Groq Whisper
 hard audio the error patterns differed, e.g. an occasional homophone swap (轮胎 → 轮台). Five
 seconds or more of digital silence or white noise returned empty text, and real room-noise silence
 was clean at every duration, but 2 s or less of pure digital silence hallucinated "嗯。". The VAD
-gate drops no-speech clips on the whole-clip path; the chunked path skips the gate and relies on
-Qwen's empty output.
+gate drops no-speech clips on the whole-clip path; the chunked path relies on Qwen's empty output,
+except for a short final remainder (below).
 
 The spike and benchmark reports from that period were local working files, never committed, and
 have since been discarded. The figures in this section are what was kept from them.
@@ -221,6 +221,14 @@ audio). Qwen does not segment internally.
   one space between Latin chunks.
 - The post-release VAD gate is skipped on this path. Its trimming exists for Whisper's silence
   boilerplate, a cloud problem; Qwen returns empty text for silence.
+- One exception: when a cut happened during recording and the final remainder is 3 s or shorter,
+  Silero checks it first (`remainderIsSilent`, `SayTypeVadGate.hasSpeech`) and a remainder without
+  speech is dropped instead of decoded. A cut shortly before release can leave only the pause's
+  tail, and Qwen turned such 0.02–0.5 s remainders into "嗯。" or "no." in an offline A/B on
+  synthesized Chinese (2026-09-30). There Silero dropped all 39 silent remainders, kept every
+  remainder with speech, and detected all 48 isolated short answers (186–808 ms, "对"/"不"/"好的").
+  It costs ~10 ms per second of audio. Any VAD failure or a verdict slower than 1.5 s decodes the
+  remainder as before.
 - Cancel stops dispatching chunks, kills the in-flight decode, clears the queue and discards
   partials. One chunk failing does not abort the session.
 

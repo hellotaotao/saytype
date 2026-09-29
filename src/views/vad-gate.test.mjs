@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-function loadVadGate() {
+function loadVadGate({ segments = [{ start: 0, end: 500 }] } = {}) {
   let activeRuns = 0;
   let maxConcurrentRuns = 0;
   const sharedVad = {
@@ -11,7 +11,7 @@ function loadVadGate() {
       activeRuns += 1;
       maxConcurrentRuns = Math.max(maxConcurrentRuns, activeRuns);
       await new Promise((resolve) => setTimeout(resolve, 20));
-      yield { start: 0, end: 500 };
+      yield* segments;
       activeRuns -= 1;
     },
   };
@@ -81,6 +81,21 @@ test("VAD analyses sharing one model run serially", async () => {
   const blob = new Blob([new Uint8Array([1])], { type: "audio/webm" });
 
   await Promise.all([gate.analyze(blob), gate.analyze(blob)]);
+
+  assert.equal(maxConcurrentRuns(), 1);
+});
+
+test("hasSpeech reports whether any segment was found", async () => {
+  const pcm = new Float32Array(1600);
+  assert.equal(await loadVadGate().gate.hasSpeech(pcm), true);
+  assert.equal(await loadVadGate({ segments: [] }).gate.hasSpeech(pcm), false);
+});
+
+test("hasSpeech shares the model with analyze and never overlaps it", async () => {
+  const { gate, maxConcurrentRuns } = loadVadGate();
+  const blob = new Blob([new Uint8Array([1])], { type: "audio/webm" });
+
+  await Promise.all([gate.analyze(blob), gate.hasSpeech(new Float32Array(1600))]);
 
   assert.equal(maxConcurrentRuns(), 1);
 });

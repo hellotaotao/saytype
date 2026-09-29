@@ -6,7 +6,7 @@ const MAX_EVENTS = 50000;
 const PHASES = new Set(['capture', 'recorder-stop', 'finalize', 'resample', 'chunk-ipc', 'history', 'insert', 'recovery', 'session']);
 const EVENTS = new Set(['start', 'complete', 'timeout', 'cancel', 'error', 'fallback', 'late']);
 const CHUNK_EVENTS = new Set(['queued', 'request-start', 'request-result', 'seal', 'final', 'stop']);
-const REASONS = new Set(['manual', 'silence', 'forced', 'release', 'cancelled', 'complete', 'error', 'decode-error', 'coverage-mismatch', 'capture-incomplete']);
+const REASONS = new Set(['manual', 'silence', 'forced', 'release', 'cancelled', 'complete', 'no-speech', 'error', 'decode-error', 'coverage-mismatch', 'capture-incomplete']);
 const NUMBERS = new Set(['elapsed_ms', 'chunk_index', 'pending_count', 'chunk', 'rate', 'hold_ms', 'last_pcm_gap_ms', 'start', 'end', 'input_samples', 'wav_bytes', 'wav_frames', 'chars', 'accepted', 'buffered', 'queued', 'submitted', 'completed', 'queued_chunks', 'submitted_chunks', 'completed_chunks', 'native_samples', 'bytes', 'raw_chars', 'final_chars']);
 
 function fields(tail) {

@@ -145,5 +145,22 @@
     });
   }
 
-  window.SayTypeVadGate = { analyze, warmup, encodeFullWav };
+  // Speech verdict for PCM that is already 16 kHz mono, such as the short
+  // remainder a chunked local dictation leaves after its last cut. Any segment
+  // counts as speech: a missed word would cost the user text, while a false
+  // alarm only costs the decode that would have happened anyway.
+  async function hasSpeech(pcm16k) {
+    return runExclusive(async () => {
+      const vad = await getVad();
+      let found = false;
+      // Drain the generator so the shared frame processor ends in its reset state.
+      for await (const seg of vad.run(pcm16k, TARGET_RATE)) {
+        void seg;
+        found = true;
+      }
+      return found;
+    });
+  }
+
+  window.SayTypeVadGate = { analyze, warmup, encodeFullWav, hasSpeech };
 })();
