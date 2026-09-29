@@ -30,7 +30,7 @@ pub struct FinalTextOptions {
 /// Format only a complete result, never an individual chunk or live partial.
 /// History and insertion must share the returned text.
 pub fn finalize_transcription(text: &str, options: FinalTextOptions) -> String {
-  let mut text = scrub_transcription(text);
+  let mut text = correct_known_terms(&scrub_transcription(text));
   if options.remove_fillers {
     text = crate::filler::remove_fillers(&text);
   }
@@ -46,6 +46,18 @@ pub fn finalize_transcription(text: &str, options: FinalTextOptions) -> String {
   pattern.replace_all(&text, |caps: &regex::Captures<'_>| {
     caps[0].replace(' ', "")
   }).into_owned()
+}
+
+/// Fix product names the ASR engines consistently mishear. Always on: these
+/// are corrections, not formatting preferences.
+fn correct_known_terms(text: &str) -> String {
+  static CLAUDE_CODE: OnceLock<Regex> = OnceLock::new();
+  // "Claude Code" comes back as "cloud code" in any casing. ASCII word
+  // boundaries still match next to CJK text.
+  let pattern = CLAUDE_CODE.get_or_init(|| {
+    Regex::new(r"(?i)(?-u:\b)cloud[ -]?code(?-u:\b)").expect("claude code regex")
+  });
+  pattern.replace_all(text, "Claude Code").into_owned()
 }
 
 fn boilerplate_patterns() -> &'static Vec<Regex> {
@@ -164,6 +176,24 @@ mod tests {
   const LETTERS: FinalTextOptions = FinalTextOptions { remove_fillers: false, merge_spelled_letters: true };
   const NONE: FinalTextOptions = FinalTextOptions { remove_fillers: false, merge_spelled_letters: false };
   const ALL: FinalTextOptions = FinalTextOptions { remove_fillers: true, merge_spelled_letters: true };
+
+  #[test]
+  fn final_text_corrects_misheard_claude_code_regardless_of_options() {
+    for (input, expected) in [
+      ("cloud code", "Claude Code"),
+      ("I use Cloud Code daily.", "I use Claude Code daily."),
+      ("CLOUD CODE", "Claude Code"),
+      ("cloud-code and cloudcode", "Claude Code and Claude Code"),
+      ("用cloud code写代码", "用Claude Code写代码"),
+      ("Claude Code", "Claude Code"),
+      ("cloud codes", "cloud codes"),
+      ("icloud code", "icloud code"),
+      ("cloud storage code", "cloud storage code"),
+    ] {
+      assert_eq!(finalize_transcription(input, NONE), expected, "{input:?}");
+      assert_eq!(finalize_transcription(input, ALL), expected, "{input:?}");
+    }
+  }
 
   #[test]
   fn final_text_merges_independent_spelled_letters_without_a_dictionary() {

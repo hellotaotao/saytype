@@ -168,7 +168,8 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   Only counts and fixed labels, never text, audio, paths, device names or keys. Sends only from
   official builds with `SAYTYPE_POSTHOG_KEY` compiled in, and only after the onboarding privacy page
   was passed or onboarding completed. Turning `usage_stats` off deletes the file, ID included.
-- `scrub.rs` — strips known ASR boilerplate and prompt leaks. `finalize_transcription` then removes
+- `scrub.rs` — strips known ASR boilerplate and prompt leaks and always corrects misheard product
+  names ("cloud code" → "Claude Code"). `finalize_transcription` then removes
   hesitation fillers (`filler.rs`, when `remove_filler_words` is enabled) and merges space-separated
   capital letters (when `merge_spelled_letters` is enabled); both default on. Run it only on
   complete results before History/insertion, never on individual chunks or live partials.
