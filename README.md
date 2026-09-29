@@ -76,6 +76,13 @@ Access settings through the tray menu or main window to configure:
 
 SayType records from the system's default input device; change it in your OS sound settings.
 
+## Privacy
+
+Local engines keep audio on your computer. SayType sends anonymous daily usage counts (how many
+dictations and characters, engine, app and OS version; never audio or text). Turn them off in
+Settings, where you can also view exactly what is sent. Every connection the app makes is listed in
+[PRIVACY.md](PRIVACY.md).
+
 ## Reset macOS permissions for repeated testing
 
 ```
@@ -170,6 +177,10 @@ npm run build:linux
 - 转写语言(Nemotron 和云端服务商);自定义词典(仅云端服务商)
 
 SayType 使用系统默认的输入设备录音;要换麦克风,请在系统的声音设置里修改。
+
+## 隐私
+
+本地引擎下录音不离开电脑。SayType 每天发送一次匿名使用统计(听写次数和字数、引擎、软件和系统版本;不含录音和文字),可以在设置里关闭,也能在那里查看发送的原始内容。App 的全部网络连接见 [PRIVACY.md](PRIVACY.md#隐私说明)。
 
 ## 重复测试时重置 macOS 权限
 

@@ -1394,6 +1394,60 @@ async function copyDiagnosticLog() {
   }
 }
 
+async function refreshUsagePreview() {
+  const contentElement = document.getElementById("usagePreviewContent");
+  const statusElement = document.getElementById("usagePreviewStatus");
+  if (!ipc || !contentElement || !statusElement) {
+    return;
+  }
+  try {
+    const preview = await ipc.invoke("get-usage-preview");
+    const batch = Array.isArray(preview?.batch) ? preview.batch : [];
+    if (!preview?.enabled) {
+      contentElement.value = "";
+      statusElement.textContent = translate("settings.usageStats.previewOff");
+      return;
+    }
+    if (!batch.length) {
+      contentElement.value = "";
+      statusElement.textContent = translate("settings.usageStats.previewEmpty");
+      return;
+    }
+    const text = JSON.stringify({ endpoint: preview.endpoint, batch }, null, 2);
+    contentElement.value = text;
+    statusElement.textContent = translate("settings.usageStats.previewLoaded", {
+      count: batch.length,
+      size: formatDiagnosticLogSize(new TextEncoder().encode(JSON.stringify(batch)).length),
+    });
+  } catch (error) {
+    statusElement.textContent = translate("settings.diagnostics.loadError", {
+      message: String(error),
+    });
+  }
+}
+
+function setupUsagePreviewPanel() {
+  const panel = document.getElementById("usagePreviewPanel");
+  if (!panel || panel.dataset.bound) {
+    return;
+  }
+  panel.dataset.bound = "1";
+  panel.addEventListener("toggle", () => {
+    if (panel.open) void refreshUsagePreview();
+  });
+  document.getElementById("refreshUsagePreviewBtn")?.addEventListener("click", () => {
+    void refreshUsagePreview();
+  });
+  // Turning statistics off deletes the local counts; show that right away.
+  // The page-level change handler queues the save after this listener runs.
+  document.getElementById("usageStatsCheck")?.addEventListener("change", () => {
+    if (!panel.open) return;
+    window.setTimeout(() => {
+      void Promise.resolve(saveSettings.pending).then(refreshUsagePreview);
+    }, 0);
+  });
+}
+
 function setupDiagnosticLogPanel() {
   if (diagnosticLogPanelBound) {
     return;
@@ -2139,6 +2193,10 @@ async function loadSettings() {
     if (removeFillerWordsCheck) {
       removeFillerWordsCheck.checked = currentSettings.removeFillerWords !== false;
     }
+    const usageStatsCheck = document.getElementById("usageStatsCheck");
+    if (usageStatsCheck) {
+      usageStatsCheck.checked = currentSettings.usageStats !== false;
+    }
 
     renderSettingChoices();
     await refreshLocalModelStatus();
@@ -2362,6 +2420,8 @@ async function persistSettings(intent = null) {
         ?? currentSettings.mergeSpelledLetters !== false,
       removeFillerWords: document.getElementById("removeFillerWordsCheck")?.checked
         ?? currentSettings.removeFillerWords !== false,
+      usageStats: document.getElementById("usageStatsCheck")?.checked
+        ?? currentSettings.usageStats !== false,
       provider: target.provider,
       localCompute: document.getElementById("localComputeSelect")?.value || "auto",
       nemotronLatencyMs: Number(
@@ -2400,6 +2460,7 @@ async function initializeSettingsPage() {
   setupLocalModelSync();
   setupGpuRuntimeSync();
   setupDiagnosticLogPanel();
+  setupUsagePreviewPanel();
   void setupUpdatesPanel();
   await loadSettings();
   activateSettingsTab(activeSettingsTab);

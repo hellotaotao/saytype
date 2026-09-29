@@ -16,6 +16,7 @@ mod settings;
 mod state;
 mod tray;
 mod updater;
+mod usage;
 
 use tauri::{webview::PageLoadEvent, Manager, WindowEvent};
 
@@ -160,6 +161,7 @@ pub fn run() {
       *app.state::<state::AppState>().hotkey.lock().unwrap() = Some(hotkey_handle);
 
       updater::spawn_periodic_checks(app.handle().clone());
+      usage::spawn_periodic_sends();
 
       // Cmd+Tab only *activates* the app; macOS sends no reopen event for it, so
       // without this the app comes to the front owning the menu bar with every
@@ -246,6 +248,9 @@ pub fn run() {
       commands::get_dictionary,
       commands::save_dictionary,
       commands::set_onboarding_completed,
+      commands::set_usage_stats,
+      commands::record_onboarding_step,
+      commands::get_usage_preview,
       commands::save_onboarding_api_key,
       commands::set_provider,
       commands::set_local_model,

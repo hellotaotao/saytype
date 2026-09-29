@@ -54,6 +54,13 @@
             <div class="ob-privacy-line"><span class="material-icons" aria-hidden="true">wifi_off</span><span data-i18n="onboarding.privacy.offline">Download the model once, then dictate offline</span></div>
             <div class="ob-privacy-line"><span class="material-icons" aria-hidden="true">history</span><span data-i18n="onboarding.privacy.line2">History is stored only on this computer</span></div>
           </div>
+          <label class="ob-usage-stats">
+            <input type="checkbox" id="obUsageStatsCheck" checked>
+            <span>
+              <span class="ob-usage-stats-title" data-i18n="onboarding.privacy.usageTitle">Share anonymous usage counts</span>
+              <span class="ob-usage-stats-desc" data-i18n="onboarding.privacy.usageDesc">Once a day: how many dictations and characters, which engine, app and system version. Never audio, text or anything that identifies you. You can turn this off in Settings any time.</span>
+            </span>
+          </label>
         </div>
       </div>
 
@@ -633,6 +640,53 @@
                   Restart to update
                 </button>
               </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-title" id="usageStatsTitle" data-i18n="settings.usageStats.title">Anonymous usage statistics</div>
+                <div class="setting-description" id="usageStatsDescription" data-i18n="settings.usageStats.description">
+                  Once a day, send how many dictations and characters, which engine, app and system version. Never audio or text. Turning this off also deletes the counts not yet sent.
+                </div>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input type="checkbox" id="usageStatsCheck" aria-labelledby="usageStatsTitle" aria-describedby="usageStatsDescription" checked>
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="setting-item diagnostic-log-item">
+              <details id="usagePreviewPanel" class="diagnostic-log-panel">
+                <summary>
+                  <div class="setting-info">
+                    <div class="setting-title" data-i18n="settings.usageStats.previewTitle">View what is sent</div>
+                    <div class="setting-description" data-i18n="settings.usageStats.previewDescription">
+                      The exact content of the next upload, including today's running count.
+                    </div>
+                  </div>
+                </summary>
+                <div class="diagnostic-log-body">
+                  <div class="diagnostic-log-toolbar">
+                    <div id="usagePreviewStatus" class="diagnostic-log-status" role="status" aria-live="polite"></div>
+                    <div class="diagnostic-log-actions">
+                      <button class="btn btn-secondary" id="refreshUsagePreviewBtn" type="button" data-i18n="settings.diagnostics.refresh">
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    id="usagePreviewContent"
+                    class="diagnostic-log-content"
+                    readonly
+                    spellcheck="false"
+                    aria-label="Usage statistics preview"
+                    data-i18n="settings.usageStats.previewAria"
+                    data-i18n-attr="aria-label"
+                  ></textarea>
+                </div>
+              </details>
             </div>
           </div>
 

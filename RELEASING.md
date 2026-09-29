@@ -113,6 +113,16 @@ and local builds are unaffected.
 The bundler reads only `TAURI_SIGNING_PRIVATE_KEY` (a path or the contents); a `_PATH` variant is
 ignored. The matching public key is in `tauri.conf.json`.
 
+### Usage statistics key
+
+| Secret | Value |
+| --- | --- |
+| `SAYTYPE_POSTHOG_KEY` | The project API key (`phc_…`) of the SayType project in PostHog's EU region. It is write-only and public by design. |
+
+It is compiled into official builds (`usage.rs`). Without it a release still builds and records
+counts locally, but never sends them. In the PostHog project settings, turn on "Discard client IP
+data". What is sent is described in `PRIVACY.md`.
+
 <a id="release-notes"></a>
 
 ### Release notes
@@ -296,6 +306,14 @@ base64 -i ~/Desktop/certificate.p12 | pbcopy   # 粘贴到 APPLE_CERTIFICATE
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 这把钥匙的密码(本地 `scripts/sign.env` 里也有) |
 
 bundler 只认 `TAURI_SIGNING_PRIVATE_KEY`(路径或内容都行),`_PATH` 变体不生效。对应的公钥在 `tauri.conf.json` 里。
+
+### 使用统计 key
+
+| Secret | 值 |
+| --- | --- |
+| `SAYTYPE_POSTHOG_KEY` | PostHog 欧盟区 SayType 项目的 project API key(`phc_…`),只能写入,本来就是公开的 |
+
+它被编译进正式版(`usage.rs`)。没有它照样能发版,统计只在本地记录、从不发送。PostHog 项目设置里要打开 "Discard client IP data"。发送内容见 `PRIVACY.md`。
 
 <a id="发布说明"></a>
 

@@ -166,6 +166,9 @@ function bindEvents() {
     obMoreExpanded = !obMoreExpanded;
     renderObLocal();
   });
+  document.getElementById("obUsageStatsCheck")?.addEventListener("change", (event) => {
+    void obSetUsageStats(event.target);
+  });
   document.getElementById("obResumeBtn")?.addEventListener("click", resumeOnboarding);
   document.getElementById("obTryInput")?.addEventListener("input", renderObPracticeFeedback);
   document.getElementById("obHistoryHint")?.addEventListener("click", () => {
@@ -1299,6 +1302,9 @@ function renderOnboarding() {
       return dot;
     }));
   }
+  obRecordStep(obCurrent);
+  const usageCheck = document.getElementById("obUsageStatsCheck");
+  if (usageCheck && cachedSettings) usageCheck.checked = cachedSettings.usageStats !== false;
   renderObKeycaps();
   renderObMic();
   renderObAx();
@@ -1307,6 +1313,29 @@ function renderOnboarding() {
   renderObFooter();
   renderObFinal();
   renderObPracticeFeedback();
+}
+
+// Each step is counted once per install (usage.rs dedupes); this set only
+// avoids re-sending on every re-render.
+const obRecordedSteps = new Set();
+function obRecordStep(step) {
+  if (obRecordedSteps.has(step)) return;
+  obRecordedSteps.add(step);
+  void Promise.resolve(ipc.invoke("record-onboarding-step", step)).catch(() => {});
+}
+
+async function obSetUsageStats(input) {
+  const enabled = input.checked;
+  try {
+    await ipc.invoke("set-usage-stats", enabled);
+    if (cachedSettings) cachedSettings.usageStats = enabled;
+    // Settings lives in this window and saves its whole form, switch included.
+    const settingsCheck = document.getElementById("usageStatsCheck");
+    if (settingsCheck) settingsCheck.checked = enabled;
+  } catch (error) {
+    console.error("Failed to save usage statistics choice:", error);
+    input.checked = !enabled;
+  }
 }
 
 function obFormatGB(bytes) {

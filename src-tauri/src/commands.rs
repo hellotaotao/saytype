@@ -489,6 +489,14 @@ pub fn report_transcription_lifecycle(
     report.chunk_index,
     report.pending_count
   );
+  // The session phase ends exactly once per hotkey recording.
+  if matches!(report.phase, TranscriptionPhase::Session) {
+    match report.event {
+      TranscriptionEvent::Complete => crate::usage::record_dictation(true),
+      TranscriptionEvent::Error => crate::usage::record_dictation(false),
+      _ => {}
+    }
+  }
   Ok(())
 }
 
@@ -566,7 +574,8 @@ pub fn save_settings(
     settings_input.shortcut,
     settings_input.ui_theme
   );
-  let config = settings::mutate_config(move |existing| {
+  let mut usage_stats_turned_off = false;
+  let config = settings::mutate_config(|existing| {
     let previous_auto_launch = existing.auto_launch;
     let mut config = settings_input;
     config.dictionary = existing.dictionary.clone();
@@ -596,10 +605,14 @@ pub fn save_settings(
     if settings::auto_launch_needs_update(previous_auto_launch, config.auto_launch) {
       settings::update_auto_launch(config.auto_launch)?;
     }
+    usage_stats_turned_off = existing.usage_stats && !config.usage_stats;
     *existing = config;
     Ok(())
   })
   .map_err(stringify_error)?;
+  if usage_stats_turned_off {
+    crate::usage::delete_local_data();
+  }
 
   if let Some(handle) = state.hotkey.lock().unwrap().as_ref() {
     handle.update_shortcut(config.shortcut.clone());
@@ -621,7 +634,34 @@ pub fn set_onboarding_completed() -> Result<bool, String> {
     Ok(())
   })
   .map_err(stringify_error)?;
+  crate::usage::record_onboarding_completed();
   Ok(true)
+}
+
+// The switch on the onboarding privacy page. Settings saves the same field
+// through save_settings.
+#[tauri::command]
+pub fn set_usage_stats(enabled: bool) -> Result<bool, String> {
+  log::info!("command:set_usage_stats enabled={enabled}");
+  settings::mutate_config(|config| {
+    config.usage_stats = enabled;
+    Ok(())
+  })
+  .map_err(stringify_error)?;
+  if !enabled {
+    crate::usage::delete_local_data();
+  }
+  Ok(true)
+}
+
+#[tauri::command]
+pub fn record_onboarding_step(step: String) -> Result<(), String> {
+  crate::usage::record_onboarding_step(&step)
+}
+
+#[tauri::command]
+pub fn get_usage_preview() -> serde_json::Value {
+  crate::usage::preview()
 }
 
 // Onboarding page 5: set the provider + its API key without round-tripping the
@@ -1330,6 +1370,7 @@ pub async fn type_text(
   // A panic inside the task degrades to `Failed` rather than propagating an
   // Err: that is the same graceful path as any failed insert, and the
   // transcription is already in History either way.
+  let inserted_chars = text.chars().count();
   let outcome = match tokio::task::spawn_blocking(move || platform::insert_text(&text)).await {
     Ok(result) => result,
     Err(join_error) => {
@@ -1337,6 +1378,10 @@ pub async fn type_text(
       InsertResult::Failed
     }
   };
+
+  if matches!(outcome, InsertResult::Inserted { .. }) {
+    crate::usage::record_inserted_chars(inserted_chars);
+  }
 
   // No clipboard fallback by design: every transcription is already saved to
   // history (see transcribe_audio), so a failed insert just points the user
@@ -1627,6 +1672,11 @@ pub async fn download_local_model(
   *state.local_model_download.lock().unwrap() = None;
 
   let status = crate::local_asr::model_status_for(model, false);
+  crate::usage::record_model_download(model, match &result {
+    Ok(()) => crate::usage::DownloadResult::Ok,
+    Err(err) if err == "DOWNLOAD_CANCELLED" => crate::usage::DownloadResult::Cancelled,
+    Err(_) => crate::usage::DownloadResult::Error,
+  });
   match result {
     Ok(()) => {
       // Switch before announcing "ready", so a window that re-reads settings on

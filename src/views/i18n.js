@@ -93,6 +93,9 @@
           noAccount: "No sign-up needed for local dictation",
           offline: "Download the model once, then dictate offline",
           line2: "History is stored only on this computer",
+          usageTitle: "Share anonymous usage counts",
+          usageDesc:
+            "Once a day: how many dictations and characters, which engine, app and system version. Never audio, text or anything that identifies you. You can turn this off in Settings any time.",
         },
         mic: {
           title: "Let SayType hear you",
@@ -332,6 +335,17 @@
           ready: "v{version} ready — restart to update",
           upToDate: "v{version} — up to date",
           error: "Couldn't check for updates. Try again later.",
+        },
+        usageStats: {
+          title: "Anonymous usage statistics",
+          description:
+            "Once a day, send how many dictations and characters, which engine, app and system version. Never audio or text. Turning this off also deletes the counts not yet sent.",
+          previewTitle: "View what is sent",
+          previewDescription: "The exact content of the next upload, including today's running count.",
+          previewAria: "Usage statistics preview",
+          previewOff: "Statistics are off. Nothing is recorded or sent.",
+          previewEmpty: "Nothing recorded yet.",
+          previewLoaded: "{count} rows · {size}. Today's row is sent tomorrow.",
         },
         diagnostics: {
           title: "Diagnostic logs",
@@ -659,6 +673,9 @@
           noAccount: "本地听写无需注册账号",
           offline: "模型下载一次，即可离线听写",
           line2: "历史记录只保存在这台电脑上",
+          usageTitle: "发送匿名使用统计",
+          usageDesc:
+            "每天一次：听写了几次、多少字，用的哪个引擎、软件和系统版本。不含录音、文字，也没有能认出你的信息。随时可以在设置里关掉。",
         },
         mic: {
           title: "先让 SayType 听到你",
@@ -895,6 +912,16 @@
           ready: "v{version} 已就绪 — 重启即可更新",
           upToDate: "v{version} — 已是最新",
           error: "检查更新失败，请稍后再试。",
+        },
+        usageStats: {
+          title: "匿名使用统计",
+          description: "每天发送一次：听写了几次、多少字，用的哪个引擎、软件和系统版本。不含录音和文字。关闭后，还没发出的统计也会一并删除。",
+          previewTitle: "查看发送的内容",
+          previewDescription: "下一次上传的原始内容，包括今天到目前为止的计数。",
+          previewAria: "使用统计预览",
+          previewOff: "统计已关闭，不记录也不发送。",
+          previewEmpty: "还没有记录。",
+          previewLoaded: "{count} 条 · {size}。今天这条明天发出。",
         },
         diagnostics: {
           title: "\u8bca\u65ad\u65e5\u5fd7",

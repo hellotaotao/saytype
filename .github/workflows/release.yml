@@ -138,6 +138,9 @@ jobs:
           # Marks this as an official release build (build.rs → clean version
           # badge). Local builds never set it, so they always show as "dev".
           SAYTYPE_OFFICIAL_BUILD: "1"
+          # PostHog project key for anonymous usage statistics (usage.rs,
+          # PRIVACY.md). Unset → the build records locally but never sends.
+          SAYTYPE_POSTHOG_KEY: ${{ secrets.SAYTYPE_POSTHOG_KEY }}
         with:
           # The version comes from Cargo.toml / tauri.conf.json in the tagged commit
           args: ${{ matrix.build-args }}

@@ -22,6 +22,7 @@ overturning a rule.
 | Failure, retry and recovery rules | `docs/dictation-recovery.md` |
 | Cloud models, punctuation research | `docs/cloud-transcription.md` |
 | Third-party components and their licenses | `THIRD_PARTY_NOTICES.md` |
+| Network connections, anonymous usage statistics (public) | `PRIVACY.md` |
 | Upstream llama.cpp worker-reuse bug | `vendor/llama.cpp/README.md` |
 | Past feature designs (each starts with a status line) | `docs/superpowers/specs/` |
 | Parked ideas (local file, gitignored — never commit) | `TODO.md` |
@@ -161,6 +162,12 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
 - `history.rs` — the History store (`{ "activities": [...] }`, 200-entry `HISTORY_CAP`, atomic
   writes), including pending audio.
 - `retry_error.rs` — typed registry of the persisted `RETRY_*` codes.
+- `usage.rs` — anonymous usage statistics: per-day counts in `usage-stats.json`, sent to PostHog
+  (EU) as one `daily_usage` row per finished day plus a few one-off onboarding events. `PRIVACY.md`
+  is the public promise, so a change to what is recorded or sent must update it in the same commit.
+  Only counts and fixed labels, never text, audio, paths, device names or keys. Sends only from
+  official builds with `SAYTYPE_POSTHOG_KEY` compiled in, and only after the onboarding privacy page
+  was passed or onboarding completed. Turning `usage_stats` off deletes the file, ID included.
 - `scrub.rs` — strips known ASR boilerplate and prompt leaks. `finalize_transcription` then removes
   hesitation fillers (`filler.rs`, when `remove_filler_words` is enabled) and merges space-separated
   capital letters (when `merge_spelled_letters` is enabled); both default on. Run it only on

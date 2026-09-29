@@ -923,6 +923,36 @@ body {
   flex: none;
 }
 
+.ob-usage-stats {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--panel-border);
+  cursor: pointer;
+}
+
+.ob-usage-stats input {
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.ob-usage-stats-title {
+  display: block;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+
+.ob-usage-stats-desc {
+  display: block;
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+
 /* Pages 3/4: permission points + reassurance + action row */
 .ob-points {
   display: flex;
