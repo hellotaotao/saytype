@@ -753,6 +753,7 @@ struct HoldTrace {
   started_at: Option<Instant>,
   broken: Option<ComboBreak>,
   last_stop_at: Option<Instant>,
+  locked: bool,
 }
 
 impl HoldTrace {
@@ -770,7 +771,9 @@ impl HoldTrace {
     }
     let held = state.combo_held();
     match event {
-      KeyEvent::Release(key) if was_held && !held && self.broken.is_none() => {
+      // Also when an extra modifier had already spoiled the exact match: the
+      // combo key lifting after it is still what schedules the stop.
+      KeyEvent::Release(key) if !held && self.broken.is_none() && key_label(key) != "other" => {
         self.broken = Some(ComboBreak { at: now, key, source_pid });
         None
       }
@@ -795,6 +798,7 @@ impl HoldTrace {
       Action::Start => {
         self.started_at = Some(now);
         self.broken = None;
+        self.locked = false;
         let since_stop = now.saturating_duration_since(self.last_stop_at.take()?);
         (since_stop < REPRESS_TRACE_WINDOW)
           .then(|| format!("hotkey repress since_stop_ms={}", since_stop.as_millis()))
@@ -805,6 +809,7 @@ impl HoldTrace {
           .take()
           .map_or(-1, |started| now.saturating_duration_since(started).as_millis() as i64);
         self.last_stop_at = Some(now);
+        let locked = std::mem::take(&mut self.locked);
         let line = match self.broken.take() {
           Some(broken) => format!(
             "hotkey stop held_ms={held_ms} release_key={} release_pid={} debounce_ms={}",
@@ -813,15 +818,20 @@ impl HoldTrace {
             now.saturating_duration_since(broken.at).as_millis(),
           ),
           // A locked recording, ended by a press or its time limit.
-          None => format!("hotkey stop held_ms={held_ms} release_key=none"),
+          None if locked => format!("hotkey stop held_ms={held_ms} mode=locked"),
+          None => format!("hotkey stop held_ms={held_ms} release_key=unobserved"),
         };
         Some(line)
       }
-      Action::Cancel | Action::Tap | Action::Lock(_) => {
-        if !matches!(action, Action::Lock(_)) {
-          self.started_at = None;
-        }
+      Action::Lock(lock_id) => {
+        self.locked = true;
         self.broken = None;
+        Some(format!("hotkey lock id={lock_id}"))
+      }
+      Action::Cancel | Action::Tap => {
+        self.started_at = None;
+        self.broken = None;
+        self.locked = false;
         None
       }
     }
@@ -1555,6 +1565,35 @@ mod tests {
       vec!["hotkey combo-restored gap_ms=90 release_key=ctrl release_pid=812 press_key=ctrl press_pid=0"]
     );
     assert!(state.is_recording);
+  }
+
+  #[test]
+  fn trace_names_the_combo_key_lifted_after_an_extra_modifier() {
+    let (mut state, mut trace) = (fresh_state(), HoldTrace::default());
+    let start = Instant::now();
+    traced(&mut state, &mut trace, KeyEvent::Press(Key::ControlLeft), 0, start);
+    traced(&mut state, &mut trace, KeyEvent::Press(Key::ShiftLeft), 0, start);
+    traced(&mut state, &mut trace, KeyEvent::Press(Key::MetaLeft), 0, start + ms(3000));
+    traced(&mut state, &mut trace, KeyEvent::Release(Key::ControlLeft), 0, start + ms(4000));
+    let lines = traced(&mut state, &mut trace, KeyEvent::Release(Key::MetaLeft), 0, start + ms(4300));
+    assert_eq!(lines, vec!["hotkey stop held_ms=4300 release_key=ctrl release_pid=0 debounce_ms=300"]);
+  }
+
+  #[test]
+  fn trace_labels_a_locked_recording_stop() {
+    let (mut state, mut trace) = (fresh_state(), HoldTrace::default());
+    let start = Instant::now();
+    press_combo(&mut state, start);
+    release_combo(&mut state, start + ms(100));
+    press_combo(&mut state, start + ms(250));
+    release_combo(&mut state, start + ms(330));
+    let lines: Vec<String> =
+      state.drain_actions().into_iter().filter_map(|action| trace.observe_action(action, start)).collect();
+    assert_eq!(lines, vec!["hotkey lock id=1"]);
+    press_combo(&mut state, start + ms(9000));
+    let lines: Vec<String> =
+      state.drain_actions().into_iter().filter_map(|action| trace.observe_action(action, start + ms(9000))).collect();
+    assert_eq!(lines, vec!["hotkey stop held_ms=9000 mode=locked"]);
   }
 
   #[test]
