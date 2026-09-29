@@ -129,6 +129,10 @@ pub struct AppConfig {
   /// onboarding privacy page and Settings both carry the switch.
   #[serde(default = "default_usage_stats")]
   pub usage_stats: bool,
+  /// Development builds only: keep a copy of every clip sent for transcription
+  /// (recording_archive.rs). No UI; set by hand for offline tests.
+  #[serde(default)]
+  pub debug_save_audio: bool,
 }
 
 impl Default for AppConfig {
@@ -154,6 +158,7 @@ impl Default for AppConfig {
       onboarding_completed: false,
       qwen_model: String::new(),
       usage_stats: default_usage_stats(),
+      debug_save_audio: false,
     }
   }
 }

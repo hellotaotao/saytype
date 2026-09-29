@@ -201,10 +201,12 @@ audio). Qwen does not segment internally.
 ### How it works (implemented 2026-08-29)
 
 - PCM captured during recording is cut into 55–75 s chunks (`chunk-decision.mjs`:
-  `SOFT_TARGET_S = 55`, `HARD_MAX_S = 75`). After 55 s the first frame at or below
-  `loudRef × QUIET_RATIO` closes the chunk; if none arrives by 75 s, the cut goes at the quietest
-  frame of the 55–75 s window. `loudRef` resets after each cut, so the rule behaves the same at any
-  mic gain.
+  `SOFT_TARGET_S = 55`, `HARD_MAX_S = 75`). After 55 s the first pause closes the chunk: at
+  least `MIN_PAUSE_S` (100 ms) of consecutive audio at or below `loudRef × QUIET_RATIO`. If none
+  arrives by 75 s, the cut goes after the quietest 100 ms stretch of the 55–75 s window. Both are
+  measured in samples, because capture blocks are 40 ms on macOS but ~2.7 ms on the WebKit path,
+  where one quiet block (the closure of a stop consonant) used to count as a pause. `loudRef`
+  resets after each cut, so the rule behaves the same at any mic gain.
 - Cut points use RMS energy, not Silero. Picking the quietest frame in a 60-second window is a
   different job from sentence-level VAD cutting, which was rejected because the maintainer pauses
   mid-sentence to pick words. Here a bad seam costs one seam's punctuation, and the audio on both

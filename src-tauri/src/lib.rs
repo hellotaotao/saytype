@@ -13,6 +13,7 @@ mod native_capture;
 mod nemotron_asr;
 mod scrub;
 mod platform;
+mod recording_archive;
 mod settings;
 mod state;
 mod tray;

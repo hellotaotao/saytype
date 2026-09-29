@@ -585,6 +585,8 @@ pub fn save_settings(
     config.onboarding_completed = existing.onboarding_completed;
     // Not a form field either; remember_qwen_model updates it after this save.
     config.qwen_model = existing.qwen_model.clone();
+    // Hand-set development flag with no form field.
+    config.debug_save_audio = existing.debug_save_audio;
     config.shortcut = settings::normalize_record_shortcut(&config.shortcut);
     config.nemotron_latency_ms =
       settings::normalize_nemotron_latency_ms(config.nemotron_latency_ms);
@@ -1199,10 +1201,15 @@ pub async fn transcribe_audio(
       RetryError::SettingsRead.code().to_owned()
     })?;
     let route = resolve_transcription_route_for(provider, &config)?;
-    Ok((transcription_config_for_provider(&config, provider), route))
+    Ok((transcription_config_for_provider(&config, provider), route, config.debug_save_audio))
   })();
   let (config, route) = match route_result {
-    Ok(resolved) => resolved,
+    Ok((config, route, archive)) => {
+      if crate::recording_archive::enabled(archive) {
+        crate::recording_archive::save(session_id, chunk_index, audio_buffer.clone(), mime.clone());
+      }
+      (config, route)
+    }
     Err(error) => {
       if !frontend_owns_recovery {
         record_failed_transcription(
