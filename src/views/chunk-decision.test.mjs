@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   SOFT_TARGET_S,
   HARD_MAX_S,
+  MIN_PAUSE_S,
   frameRms,
   createChunkState,
   pushFrame,
@@ -62,6 +63,46 @@ test("past the soft target, the first pause cuts", () => {
   assert.ok(cut, "a pause after the soft target must cut");
   assert.equal(cut.reason, "silence");
   assert.equal(cut.cutAtSample, state.samples, "a silence cut lands at the current instant");
+});
+
+test("a pause is measured in time, not blocks: one tiny quiet block does not cut", () => {
+  // The WebKit capture path delivers 128-sample blocks, ~2.7 ms at 48 kHz.
+  const BLOCK = 128;
+  const state = createChunkState();
+  feed(state, SOFT_TARGET_S + 1, 0.1);
+  pushFrame(state, 0.0, BLOCK);
+  assert.equal(decideCut(state, RATE), null, "a 2.7 ms dip inside a word is not a pause");
+  pushFrame(state, 0.1, BLOCK);
+
+  let cut = null;
+  let quietSamples = 0;
+  while (!cut) {
+    pushFrame(state, 0.0, BLOCK);
+    quietSamples += BLOCK;
+    cut = decideCut(state, RATE);
+  }
+  assert.equal(cut.reason, "silence");
+  assert.ok(quietSamples >= MIN_PAUSE_S * RATE, "it cuts once the quiet lasts MIN_PAUSE_S");
+  assert.ok(quietSamples < MIN_PAUSE_S * RATE + BLOCK, "and not a block later");
+});
+
+test("a forced cut prefers a quiet stretch over a single quieter block", () => {
+  const BLOCK = 128;
+  const state = createChunkState();
+  const blocks = (seconds) => Math.round((seconds * RATE) / BLOCK);
+  for (let i = 0; i < blocks(SOFT_TARGET_S + 2); i++) pushFrame(state, 0.2, BLOCK);
+  pushFrame(state, 0.001, BLOCK); // quietest single block, but only 2.7 ms long
+  for (let i = 0; i < blocks(3); i++) pushFrame(state, 0.2, BLOCK);
+  // 100 ms of low but not "pause"-quiet audio (0.02 > 0.2 * 0.03)
+  for (let i = 0; i < blocks(0.1); i++) pushFrame(state, 0.02, BLOCK);
+  const stretchEnd = state.samples;
+  let cut = null;
+  while (!cut) {
+    pushFrame(state, 0.2, BLOCK);
+    cut = decideCut(state, RATE);
+  }
+  assert.equal(cut.reason, "forced");
+  assert.equal(cut.cutAtSample, stretchEnd, "the seam lands after the quiet stretch");
 });
 
 // ---- forced cut ----

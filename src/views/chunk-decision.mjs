@@ -20,9 +20,15 @@ export const HARD_MAX_S = 75;
 // A frame this far below the chunk's own speech level counts as a pause. It is
 // a RATIO, not an absolute level, so the same decisions hold across mic gains
 // (see the scale-invariance test). The threshold only decides whether a cut
-// lands early; when no frame qualifies, the forced cut still picks the quietest
-// frame available, so a mediocre threshold degrades gracefully.
+// lands early; when no pause qualifies, the forced cut still picks the quietest
+// stretch available, so a mediocre threshold degrades gracefully.
 export const QUIET_RATIO = 0.03;
+
+// The shortest stretch of quiet that counts as a pause, and the span the forced
+// cut measures quietness over. Measured in samples, not frames: capture blocks
+// are 40 ms on macOS but 128 samples (~2.7 ms at 48 kHz) on the WebKit path,
+// where a single quiet block happens inside words (a stop consonant's closure).
+export const MIN_PAUSE_S = 0.1;
 
 // RMS of one worklet block. Silence is 0, a full-scale square wave is 1.
 export function frameRms(samples) {
@@ -55,26 +61,43 @@ export function decideCut(state, sampleRate, opts = {}) {
   const hardMax = (opts.hardMaxS ?? HARD_MAX_S) * sampleRate;
   if (state.samples < softTarget) return null;
 
+  const minPause = (opts.minPauseS ?? MIN_PAUSE_S) * sampleRate;
+
   // Past the soft target, the first real pause wins — cutting on silence is the
   // whole point, and waiting for a "better" pause only grows the tail.
   const quiet = state.loudRef * (opts.quietRatio ?? QUIET_RATIO);
-  const last = state.frames[state.frames.length - 1];
-  if (last && last.rms <= quiet) {
+  let pause = 0;
+  for (let i = state.frames.length - 1; i >= 0 && pause < minPause && state.frames[i].rms <= quiet; i--) {
+    pause += state.frames[i].length;
+  }
+  if (pause >= minPause) {
     return { cutAtSample: state.samples, reason: "silence" };
   }
 
   // No pause in the whole search window (a fast talker, or steady background
-  // noise keeping every frame above the threshold): cut at the quietest frame
-  // in [softTarget, now] rather than blindly at the current instant, so the
-  // seam still lands at the least damaging point available.
+  // noise keeping every frame above the threshold): cut after the quietest
+  // MIN_PAUSE_S stretch ending in [softTarget, now] rather than blindly at the
+  // current instant, so the seam still lands at the least damaging point.
   if (state.samples >= hardMax) {
     let best = null;
-    for (const frame of state.frames) {
-      if (frame.at < softTarget) continue;
-      if (!best || frame.rms < best.rms) best = frame;
+    let bestEnergy = Infinity;
+    for (let j = 0; j < state.frames.length; j++) {
+      const end = state.frames[j].at + state.frames[j].length;
+      if (end <= softTarget) continue;
+      let span = 0;
+      let energy = 0;
+      for (let i = j; i >= 0 && span < minPause; i--) {
+        const frame = state.frames[i];
+        span += frame.length;
+        energy += frame.rms * frame.rms * frame.length;
+      }
+      if (span < minPause) continue;
+      if (energy / span < bestEnergy) {
+        bestEnergy = energy / span;
+        best = end;
+      }
     }
-    const cutAtSample = best ? best.at + best.length : state.samples;
-    return { cutAtSample, reason: "forced" };
+    return { cutAtSample: best ?? state.samples, reason: "forced" };
   }
 
   return null;
@@ -130,6 +153,7 @@ if (typeof window !== "undefined") {
   window.SayTypeChunk = {
     SOFT_TARGET_S,
     HARD_MAX_S,
+    MIN_PAUSE_S,
     frameRms,
     createChunkState,
     pushFrame,
