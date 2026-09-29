@@ -87,6 +87,10 @@ const PROBE_BUCKET_MS = 500;
 // afterwards and craters SNR inside the window.
 const PROBE_TONE_HZ = 440;
 const PROBE_BUCKETS = 24; // first 12 s; longer holds just stop extending it
+// The level at the very end tells a release after the speaker stopped from one
+// in mid-sentence (a keyboard dropout reads as the keys lifting). Two rolling
+// windows of this length, so the reported tail covers the last 250-500 ms.
+const PROBE_TAIL_WINDOW_MS = 250;
 
 function createOnsetProbe(sampleRate, originMs) {
   return {
@@ -119,6 +123,10 @@ function createOnsetProbe(sampleRate, originMs) {
     gzCoeff: 2 * Math.cos((2 * Math.PI * PROBE_TONE_HZ) / sampleRate),
     frameCounts: new Int32Array(PROBE_BUCKETS),
     clipped: 0,
+    tailSum: 0,
+    tailCount: 0,
+    tailPrevSum: 0,
+    tailPrevCount: 0,
     reported: false,
   };
 }
@@ -147,6 +155,15 @@ function pushOnsetBlock(probe, samples, audioContext) {
   if (peak > probe.peak) probe.peak = peak;
   probe.clipped += clipped;
   const rms = Math.sqrt(sumSquares / samples.length);
+
+  probe.tailSum += sumSquares;
+  probe.tailCount += samples.length;
+  if (probe.tailCount >= (probe.sampleRate * PROBE_TAIL_WINDOW_MS) / 1000) {
+    probe.tailPrevSum = probe.tailSum;
+    probe.tailPrevCount = probe.tailCount;
+    probe.tailSum = 0;
+    probe.tailCount = 0;
+  }
 
   const bucket = Math.floor(positionMs / PROBE_BUCKET_MS);
   if (bucket >= 0 && bucket < PROBE_BUCKETS) {
@@ -1030,6 +1047,8 @@ class VoiceInputPrompt {
     probe.reported = true;
     const ms = (value) => (value === null ? -1 : Math.round(value));
     const capturedMs = Math.round((probe.samples / probe.sampleRate) * 1000);
+    const tailCount = probe.tailPrevCount + probe.tailCount;
+    const tailRms = tailCount ? Math.sqrt((probe.tailPrevSum + probe.tailSum) / tailCount) : 0;
     const holdMs = Math.round(performance.now() - probe.originMs);
     const detail = [
       `chunked=${!!recordingSession.chunked}`,
@@ -1045,6 +1064,8 @@ class VoiceInputPrompt {
       `zero_lead_blocks=${probe.zeroLeadBlocks}`,
       `quiet_lead_blocks=${probe.quietLeadBlocks}`,
       `peak=${probe.peak.toFixed(4)}`,
+      `tail_db=${tailRms > 0 ? Math.round(20 * Math.log10(tailRms)) : -99}`,
+      `tail_speech=${tailRms > PROBE_SPEECH_RMS}`,
       `ctx_state_at_signal=${probe.ctxStateAtSignal || "none"}`,
       `ctx_time_at_signal=${probe.ctxTimeAtSignal === null ? -1 : probe.ctxTimeAtSignal.toFixed(3)}`,
       `analyser_frames=${probe.analyserFrames}`,

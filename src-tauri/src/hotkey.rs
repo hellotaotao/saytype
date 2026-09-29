@@ -186,7 +186,9 @@ pub enum KeyEvent {
 
 #[derive(Debug)]
 pub enum HotkeyMsg {
-  KeyEvent(KeyEvent),
+  /// A key event and, where the platform reports it, the PID of the process
+  /// that posted it (0 for hardware input on macOS).
+  KeyEvent(KeyEvent, Option<i64>),
   UpdateShortcut(String),
   /// The frontend ended a locked recording on its own (startup failure,
   /// interrupted capture), so the next press must start, not stop.
@@ -493,7 +495,7 @@ fn spawn_os_listener(handle: HotkeyHandle) {
         };
 
         if let Some(key_event) = key_event {
-          let _ = handle.tx.send(HotkeyMsg::KeyEvent(key_event));
+          let _ = handle.tx.send(HotkeyMsg::KeyEvent(key_event, None));
         }
       }) {
         log::error!("global hotkey listener exited: {error:?}");
@@ -567,11 +569,12 @@ unsafe extern "C" fn macos_event_tap_callback(
   match event_type {
     KCG_EVENT_FLAGS_CHANGED => {
       let next = modifier_state_from_flags(CGEventGetFlags(event));
+      let pid = Some(CGEventGetIntegerValueField(event, KCG_EVENT_SOURCE_UNIX_PROCESS_ID));
       if let Ok(mut current) = context.modifiers.lock() {
-        emit_modifier_transition(&context.tx, current.ctrl, next.ctrl, Key::ControlLeft);
-        emit_modifier_transition(&context.tx, current.shift, next.shift, Key::ShiftLeft);
-        emit_modifier_transition(&context.tx, current.alt, next.alt, Key::Alt);
-        emit_modifier_transition(&context.tx, current.meta, next.meta, Key::MetaLeft);
+        emit_modifier_transition(&context.tx, current.ctrl, next.ctrl, Key::ControlLeft, pid);
+        emit_modifier_transition(&context.tx, current.shift, next.shift, Key::ShiftLeft, pid);
+        emit_modifier_transition(&context.tx, current.alt, next.alt, Key::Alt, pid);
+        emit_modifier_transition(&context.tx, current.meta, next.meta, Key::MetaLeft, pid);
         *current = next;
       }
     }
@@ -582,7 +585,7 @@ unsafe extern "C" fn macos_event_tap_callback(
       } else {
         KeyEvent::NonModifierPress
       };
-      let _ = context.tx.send(HotkeyMsg::KeyEvent(key_event));
+      let _ = context.tx.send(HotkeyMsg::KeyEvent(key_event, None));
     }
     _ => {}
   }
@@ -591,7 +594,7 @@ unsafe extern "C" fn macos_event_tap_callback(
 }
 
 #[cfg(target_os = "macos")]
-fn emit_modifier_transition(tx: &Sender<HotkeyMsg>, previous: bool, next: bool, key: Key) {
+fn emit_modifier_transition(tx: &Sender<HotkeyMsg>, previous: bool, next: bool, key: Key, pid: Option<i64>) {
   let key_event = match (previous, next) {
     (false, true) => Some(KeyEvent::Press(key)),
     (true, false) => Some(KeyEvent::Release(key)),
@@ -599,7 +602,7 @@ fn emit_modifier_transition(tx: &Sender<HotkeyMsg>, previous: bool, next: bool, 
   };
 
   if let Some(key_event) = key_event {
-    let _ = tx.send(HotkeyMsg::KeyEvent(key_event));
+    let _ = tx.send(HotkeyMsg::KeyEvent(key_event, pid));
   }
 }
 
@@ -648,6 +651,8 @@ const KCG_EVENT_FLAG_MASK_ALTERNATE: u64 = 1 << 19;
 const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 1 << 20;
 #[cfg(target_os = "macos")]
 const KVK_ESCAPE: i64 = 53;
+#[cfg(target_os = "macos")]
+const KCG_EVENT_SOURCE_UNIX_PROCESS_ID: i32 = 41;
 
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -684,6 +689,7 @@ fn run_state_thread(app: AppHandle, rx: Receiver<HotkeyMsg>, initial_shortcut: S
     .or_else(|| Shortcut::parse(DEFAULT_RECORD_SHORTCUT))
     .expect("default record shortcut must parse");
   let mut state = HotkeyState::new(record_shortcut);
+  let mut trace = HoldTrace::default();
 
   loop {
     let timeout = state
@@ -696,10 +702,16 @@ fn run_state_thread(app: AppHandle, rx: Receiver<HotkeyMsg>, initial_shortcut: S
     let now = Instant::now();
 
     match message {
-      Ok(HotkeyMsg::KeyEvent(KeyEvent::Press(Key::Escape))) if !state.is_recording && is_input_prompt_visible(&app) => {
+      Ok(HotkeyMsg::KeyEvent(KeyEvent::Press(Key::Escape), _)) if !state.is_recording && is_input_prompt_visible(&app) => {
         dispatch_action(&app, Action::Cancel);
       }
-      Ok(HotkeyMsg::KeyEvent(event)) => state.handle_event(event, now),
+      Ok(HotkeyMsg::KeyEvent(event, source_pid)) => {
+        let was_held = state.combo_held();
+        state.handle_event(event, now);
+        if let Some(line) = trace.observe_key(&state, was_held, event, source_pid, now) {
+          log::info!(target: "saytype_lifecycle", "{line}");
+        }
+      }
       Ok(HotkeyMsg::UpdateShortcut(shortcut)) => {
         if let Some(parsed) = Shortcut::parse(&shortcut) {
           state.record_shortcut = parsed;
@@ -712,9 +724,122 @@ fn run_state_thread(app: AppHandle, rx: Receiver<HotkeyMsg>, initial_shortcut: S
 
     state.handle_tick(now);
     for action in state.drain_actions() {
+      if let Some(line) = trace.observe_action(action, now) {
+        log::info!(target: "saytype_lifecycle", "{line}");
+      }
       dispatch_action(&app, action);
     }
   }
+}
+
+// A re-press this soon after a stop is logged: a keyboard that re-reports the
+// held keys after a dropout shows up as a stop followed by a quick new start.
+const REPRESS_TRACE_WINDOW: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy)]
+struct ComboBreak {
+  at: Instant,
+  key: Key,
+  source_pid: Option<i64>,
+}
+
+/// Diagnostics only, never behavior: records how each held recording ended so
+/// the log can tell a real release from one the user did not make (a wireless
+/// keyboard losing its link reports every key up; another process can post a
+/// synthetic modifier change). Lines go to the lifecycle target, which release
+/// builds keep.
+#[derive(Debug, Default)]
+struct HoldTrace {
+  started_at: Option<Instant>,
+  broken: Option<ComboBreak>,
+  last_stop_at: Option<Instant>,
+}
+
+impl HoldTrace {
+  fn observe_key(
+    &mut self,
+    state: &HotkeyState,
+    was_held: bool,
+    event: KeyEvent,
+    source_pid: Option<i64>,
+    now: Instant,
+  ) -> Option<String> {
+    // A locked recording is meant to run with the keys up.
+    if !state.is_recording || state.lock.is_some() {
+      return None;
+    }
+    let held = state.combo_held();
+    match event {
+      KeyEvent::Release(key) if was_held && !held && self.broken.is_none() => {
+        self.broken = Some(ComboBreak { at: now, key, source_pid });
+        None
+      }
+      KeyEvent::Press(key) if !was_held && held => {
+        // Re-formed inside STOP_DEBOUNCE, so the recording kept going.
+        let broken = self.broken.take()?;
+        Some(format!(
+          "hotkey combo-restored gap_ms={} release_key={} release_pid={} press_key={} press_pid={}",
+          now.saturating_duration_since(broken.at).as_millis(),
+          key_label(broken.key),
+          pid_label(broken.source_pid),
+          key_label(key),
+          pid_label(source_pid),
+        ))
+      }
+      _ => None,
+    }
+  }
+
+  fn observe_action(&mut self, action: Action, now: Instant) -> Option<String> {
+    match action {
+      Action::Start => {
+        self.started_at = Some(now);
+        self.broken = None;
+        let since_stop = now.saturating_duration_since(self.last_stop_at.take()?);
+        (since_stop < REPRESS_TRACE_WINDOW)
+          .then(|| format!("hotkey repress since_stop_ms={}", since_stop.as_millis()))
+      }
+      Action::Stop => {
+        let held_ms = self
+          .started_at
+          .take()
+          .map_or(-1, |started| now.saturating_duration_since(started).as_millis() as i64);
+        self.last_stop_at = Some(now);
+        let line = match self.broken.take() {
+          Some(broken) => format!(
+            "hotkey stop held_ms={held_ms} release_key={} release_pid={} debounce_ms={}",
+            key_label(broken.key),
+            pid_label(broken.source_pid),
+            now.saturating_duration_since(broken.at).as_millis(),
+          ),
+          // A locked recording, ended by a press or its time limit.
+          None => format!("hotkey stop held_ms={held_ms} release_key=none"),
+        };
+        Some(line)
+      }
+      Action::Cancel | Action::Tap | Action::Lock(_) => {
+        if !matches!(action, Action::Lock(_)) {
+          self.started_at = None;
+        }
+        self.broken = None;
+        None
+      }
+    }
+  }
+}
+
+fn key_label(key: Key) -> &'static str {
+  match key {
+    Key::ControlLeft | Key::ControlRight => "ctrl",
+    Key::ShiftLeft | Key::ShiftRight => "shift",
+    Key::Alt | Key::AltGr => "alt",
+    Key::MetaLeft | Key::MetaRight => "meta",
+    _ => "other",
+  }
+}
+
+fn pid_label(pid: Option<i64>) -> String {
+  pid.map_or_else(|| "unknown".into(), |pid| pid.to_string())
 }
 
 fn is_input_prompt_visible(app: &AppHandle) -> bool {
@@ -1375,5 +1500,68 @@ mod tests {
     let _ = state.drain_actions();
     state.handle_event(KeyEvent::Press(Key::Escape), start + Duration::from_millis(400));
     assert_eq!(state.drain_actions(), vec![Action::Cancel]);
+  }
+
+  /// Feeds one key event through the state machine and the trace, like the
+  /// state thread does, and returns the trace lines it produced.
+  fn traced(
+    state: &mut HotkeyState,
+    trace: &mut HoldTrace,
+    event: KeyEvent,
+    pid: i64,
+    at: Instant,
+  ) -> Vec<String> {
+    let was_held = state.combo_held();
+    state.handle_event(event, at);
+    let mut lines: Vec<String> = trace.observe_key(state, was_held, event, Some(pid), at).into_iter().collect();
+    state.handle_tick(at);
+    for action in state.drain_actions() {
+      lines.extend(trace.observe_action(action, at));
+    }
+    lines
+  }
+
+  #[test]
+  fn trace_names_the_key_and_process_that_ended_a_hold() {
+    let (mut state, mut trace) = (fresh_state(), HoldTrace::default());
+    let start = Instant::now();
+    traced(&mut state, &mut trace, KeyEvent::Press(Key::ControlLeft), 0, start);
+    traced(&mut state, &mut trace, KeyEvent::Press(Key::ShiftLeft), 0, start);
+    let release = start + ms(40_000);
+    assert!(traced(&mut state, &mut trace, KeyEvent::Release(Key::ShiftLeft), 0, release).is_empty());
+    state.handle_tick(release + STOP_DEBOUNCE);
+    let lines: Vec<String> =
+      state.drain_actions().into_iter().filter_map(|action| trace.observe_action(action, release + STOP_DEBOUNCE)).collect();
+    assert_eq!(lines, vec!["hotkey stop held_ms=40250 release_key=shift release_pid=0 debounce_ms=250"]);
+
+    // A new press shortly after is the keyboard or the user pressing again.
+    let again = release + ms(1500);
+    let lines = traced(&mut state, &mut trace, KeyEvent::Press(Key::ShiftLeft), 0, again);
+    assert_eq!(lines, vec!["hotkey repress since_stop_ms=1250"]);
+  }
+
+  #[test]
+  fn trace_reports_a_dropout_the_debounce_absorbed() {
+    let (mut state, mut trace) = (fresh_state(), HoldTrace::default());
+    let start = Instant::now();
+    press_combo(&mut state, start);
+    let _ = state.drain_actions();
+    trace.observe_action(Action::Start, start);
+    let drop = start + ms(20_000);
+    traced(&mut state, &mut trace, KeyEvent::Release(Key::ControlLeft), 812, drop);
+    let lines = traced(&mut state, &mut trace, KeyEvent::Press(Key::ControlLeft), 0, drop + ms(90));
+    assert_eq!(
+      lines,
+      vec!["hotkey combo-restored gap_ms=90 release_key=ctrl release_pid=812 press_key=ctrl press_pid=0"]
+    );
+    assert!(state.is_recording);
+  }
+
+  #[test]
+  fn trace_ignores_the_keys_lifting_during_a_locked_recording() {
+    let (mut state, mut trace) = (locked_state(Instant::now()), HoldTrace::default());
+    let later = Instant::now() + ms(5000);
+    assert!(traced(&mut state, &mut trace, KeyEvent::Release(Key::ShiftLeft), 0, later).is_empty());
+    assert!(trace.broken.is_none());
   }
 }
