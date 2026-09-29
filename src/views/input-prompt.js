@@ -655,7 +655,8 @@ class VoiceInputPrompt {
     if (typeof shortcut !== "string") {
       return "";
     }
-    const label = shortcut.replace(/\+/g, " + ");
+    // Non-breaking spaces: a wrapped hint must never split "Ctrl + / Shift".
+    const label = shortcut.replace(/\+/g, " + ");
     // macOS labels Alt as Option; Windows/Linux keep Alt. Use the backend `os`
     // field (set in syncShortcutFromSettings), falling back to navigator only
     // before settings have loaded.

@@ -180,18 +180,27 @@ body.has-transcription .input-prompt.recording {
   box-shadow: var(--prompt-shadow-recording-dimmed);
 }
 
+/* The box is a fixed 360px, and its row is centered: a section that grows
+   past it overflows BOTH edges, and overflow:hidden then clips the mic icon on
+   the left and the wave on the right (a long locked-recording hint did exactly
+   that). So both sections may shrink. The wave gives way first (it shrinks 100x
+   faster, down to its min-width), then the text wraps instead of pushing. */
 .left-section {
   display: flex;
   align-items: center;
   gap: 14px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .right-section {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex: none;
+  flex: 0 100 auto;
+  /* Explicit: the automatic minimum would be the 24 fixed-width bars' ~118px,
+     so the wave could never give way. Matches the wave's own floor. */
+  min-width: 64px;
 }
 
 .content-section {
@@ -207,24 +216,38 @@ body.has-transcription .input-prompt.recording {
   color: var(--prompt-text-muted);
   font-size: 14px;
   font-weight: 500;
+  line-height: 17px;
   opacity: 1;
   transition: all 0.3s ease;
   text-shadow: var(--prompt-text-shadow);
-  white-space: nowrap;
+  /* Wraps to a second line rather than clipping an instruction; the 80/90px
+     box fits two lines plus status and model badge. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
+  /* Split evenly instead of stranding the last word on line two, and only at
+     spaces/punctuation so a CJK phrase like 按一下 stays whole; a run with no
+     such break can still wrap anywhere. */
+  text-wrap: balance;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .wave-container {
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* When squeezed, keep the newest (rightmost) bars and clip the oldest. */
+  justify-content: flex-end;
   height: 28px;
   gap: 2px;
-  width: 120px;
+  flex: 0 1 120px;
+  min-width: 64px;
+  overflow: hidden;
 }
 
 .wave-bar {
+  flex: none;
   width: 3px;
   background: linear-gradient(to top, var(--prompt-accent), var(--prompt-accent-deep));
   border-radius: 2px;
