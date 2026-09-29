@@ -19,7 +19,7 @@ SayType has no account and no sign-up.
 | --- | --- | --- |
 | At startup and every 24 hours | GitHub (`github.com`) | A request for the latest version manifest. No data about you or your use. |
 | When you download a local model | Hugging Face, ModelScope or GitHub | Ordinary file downloads. |
-| Only if you choose a cloud engine | OpenAI or Groq, directly with your own key | The recorded audio of each dictation, and the dictionary. SayType's servers are not involved. |
+| Only if you choose a cloud engine | OpenAI or Groq, directly with your own key | The recorded audio of each dictation, and the dictionary's words (for a replacement rule, only the corrected spelling). SayType's servers are not involved. |
 | Once a day, unless turned off | PostHog, EU region (Frankfurt) | Anonymous usage statistics, described below. |
 
 ## Anonymous usage statistics

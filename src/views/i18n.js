@@ -198,7 +198,7 @@
       dictionary: {
         title: "Dictionary",
         subtitle: "Names, brands and terms you want transcribed correctly.",
-        placeholder: "Add a word, press Enter",
+        placeholder: "Add a word, or heard => wanted, press Enter",
         remove: "Remove {entry}",
         saved: "Saved",
         count: "{count} entries",
@@ -206,7 +206,8 @@
         aboutTitle: "How the dictionary is used",
         aboutWhat: "Type a word and press Enter, or paste a list separated by commas. Changes save automatically.",
         aboutHow: "When you use a cloud engine, these words go to the model as a reference. They are more likely to come out right, but not every time.",
-        localNote: "The dictionary has no effect on the local engine. It works when you use a cloud engine (Groq or OpenAI).",
+        aboutRules: "If a word keeps coming out wrong, add a rule such as vcell => Vercel. SayType replaces it in the final text with every engine, local ones included, ignoring case.",
+        localNote: "The local engine doesn't use the words in your dictionary. Replacement rules (heard => wanted) work with every engine.",
         punctuationTitle: "Automatic punctuation for Chinese",
         punctuationDesc: "When Whisper transcribes Chinese, SayType sends the example below to the model to help it add punctuation. The example is fixed and contains none of your data; GPT models and other languages don't use it.",
         saveError: "Error saving dictionary: {message}",
@@ -516,7 +517,7 @@
         dictionaryLink: {
           title: "Dictionary",
           description:
-            "Names, brands and terms that get misspelled. Only used by cloud engines.",
+            "Names, brands and terms that get misspelled, plus replacement rules for words that keep coming out wrong.",
           open: "Edit dictionary",
         },
         about: {
@@ -776,7 +777,7 @@
       dictionary: {
         title: "词典",
         subtitle: "添加容易被写错的人名、品牌和术语，让转写把它们写对。",
-        placeholder: "输入一个词，按回车添加",
+        placeholder: "输入一个词，或「错词 => 正词」，按回车添加",
         remove: "删除 {entry}",
         saved: "已保存",
         count: "{count} 个词条",
@@ -784,7 +785,8 @@
         aboutTitle: "词典怎么起作用",
         aboutWhat: "输入一个词按回车添加，也可以粘贴一串用逗号隔开的词。改动会自动保存。",
         aboutHow: "用云端引擎转写时，这些词会一起发给模型作参考。加进来的词更容易写对，但不保证每次都对。",
-        localNote: "本地引擎用不上词典。切换到云端引擎（Groq 或 OpenAI）后，词典才会起作用。",
+        aboutRules: "某个词总被写错，就加一条规则，比如 vcell => Vercel。SayType 会在最终文本里把它换掉，本地和云端引擎都有效，不分大小写。",
+        localNote: "本地引擎不会参考词典里的词；「错词 => 正词」这样的替换规则对所有引擎都有效。",
         punctuationTitle: "中文标点自动优化",
         punctuationDesc: "用 Whisper 转写中文时，SayType 会把下面这句示例一起发给模型，帮它加上标点。这句话是固定的，不含你的任何信息；GPT 模型和其他语言不会用到。",
         saveError: "保存词典出错：{message}",
@@ -1089,7 +1091,7 @@
         },
         dictionaryLink: {
           title: "词典",
-          description: "添加容易被写错的人名、品牌和术语，只对云端引擎有效。",
+          description: "添加容易被写错的人名、品牌和术语，也可以设置「错词 => 正词」替换规则。",
           open: "编辑词典",
         },
         about: {

@@ -43,7 +43,8 @@ for (const [choice, model, provider, disabled] of [
     assert.equal(h.node("languageLocalNote").classList.contains("hidden"), !disabled);
     assert.equal(h.node("languageDescription").classList.contains("hidden"), disabled);
     assert.equal(h.node("languageControl").classList.contains("hidden"), disabled);
-    assert.equal(h.node("dictionarySettingItem").classList.contains("hidden"), provider === "local");
+    // Replacement rules apply to every engine, so the dictionary entry stays.
+    assert.equal(h.node("dictionarySettingItem").classList.contains("hidden"), false);
     assert.equal(h.node("languageSelect").value, "en");
   });
 }

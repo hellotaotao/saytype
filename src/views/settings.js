@@ -790,7 +790,6 @@ function applyNemotronAvailability() {
 function toggleProviderFields(providerChoice) {
   const provider = localModelForProvider(providerChoice) ? "local" : providerChoice;
   const isLocal = provider === "local";
-  document.getElementById("dictionarySettingItem")?.classList.toggle("hidden", currentSettings.provider === "local");
   const advanced = document.getElementById("engineAdvanced");
   advanced?.classList.toggle("hidden", !isLocal && !inspectedLocalModel);
 

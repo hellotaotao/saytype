@@ -230,14 +230,14 @@
 
       <div class="dictionary-local-note hidden" id="dictionaryLocalNote">
         <span class="material-icons" aria-hidden="true">info_outline</span>
-        <span data-i18n="dictionary.localNote">The dictionary has no effect on the local engine. It works when you use a cloud engine (Groq or OpenAI).</span>
+        <span data-i18n="dictionary.localNote">The local engine doesn't use the words in your dictionary. Replacement rules (heard =&gt; wanted) work with every engine.</span>
       </div>
 
       <div class="dictionary-editor" id="dictionaryEditor" role="list" aria-labelledby="dictionaryTitle">
         <input
           type="text"
           id="dictionaryInput"
-          placeholder="Add a word, press Enter"
+          placeholder="Add a word, or heard =&gt; wanted, press Enter"
           data-i18n="dictionary.placeholder"
           data-i18n-attr="placeholder,aria-label"
           autocomplete="off"
@@ -254,6 +254,7 @@
         <div class="dictionary-about-body">
           <p data-i18n="dictionary.aboutWhat">Type a word and press Enter, or paste a list separated by commas. Changes save automatically.</p>
           <p data-i18n="dictionary.aboutHow">When you use a cloud engine, these words go to the model as a reference. They are more likely to come out right, but not every time.</p>
+          <p data-i18n="dictionary.aboutRules">If a word keeps coming out wrong, add a rule such as vcell =&gt; Vercel. SayType replaces it in the final text with every engine, local ones included, ignoring case.</p>
           <h3 data-i18n="dictionary.punctuationTitle">Automatic punctuation for Chinese</h3>
           <p data-i18n="dictionary.punctuationDesc">When Whisper transcribes Chinese, SayType sends the example below to the model to help it add punctuation. The example is fixed and contains none of your data; GPT models and other languages don't use it.</p>
           <!-- Read-only display. Mirrors SEED_ZH in src-tauri/src/commands.rs — keep the two in sync. -->
@@ -503,7 +504,7 @@
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.dictionaryLink.title">Dictionary</div>
                 <div class="setting-description" data-i18n="settings.dictionaryLink.description">
-                  Names, brands and terms that get misspelled. Only used by cloud engines.
+                  Names, brands and terms that get misspelled, plus replacement rules for words that keep coming out wrong.
                 </div>
               </div>
               <div class="setting-control">

@@ -1,5 +1,6 @@
 mod ax_cloud;
 mod commands;
+mod dictionary;
 mod filler;
 mod history;
 mod hardware;

@@ -294,7 +294,8 @@ pre-1.12 manual `bin/b9960-vulkan` extraction (unstamped) is reinstalled rather 
   and live requests carry the saved `language` (empty means `auto`). Settings enables language
   selection for Nemotron and cloud engines, and disables it only for Qwen; whether Nemotron
   follows the parameter hasn't been checked.
-  The dictionary applies to cloud providers only.
+  The dictionary's words reach cloud providers only; its `heard => wanted` replacement rules apply
+  to every engine's final text.
 - The CPU paths on Windows and Linux are not verified end to end on real machines.
 
 ## Open measurements

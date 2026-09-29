@@ -2339,14 +2339,40 @@ async function clearHistory() {
 /* ---------- Dictionary ---------- */
 
 // Entries are short words, so the page edits them as chips and stores them as
-// one comma-separated string: the transcription prompt the cloud APIs take.
+// one comma-separated string. A plain entry is a spelling reference for cloud
+// engines; `heard => wanted` is a replacement rule every engine's final text
+// goes through. The backend parses the same syntax (src-tauri/src/dictionary.rs).
 const DICTIONARY_SEPARATORS = /[,\n，、;；]+/;
+const DICTIONARY_RULE_ARROW = /=>|->|→/;
 let dictionaryEntries = [];
 let dictionarySaveChain = Promise.resolve();
 let dictionaryStatusTimer = null;
 
+function parseDictionaryRule(entry) {
+  const match = DICTIONARY_RULE_ARROW.exec(entry);
+  if (!match) return null;
+  const heard = entry.slice(0, match.index).trim();
+  const wanted = entry.slice(match.index + match[0].length).trim();
+  return heard && wanted ? { heard, wanted } : null;
+}
+
+// Rules are stored in one spelling, and a second rule for the same heard text
+// replaces the first instead of being dropped as a duplicate.
+function normalizeDictionaryEntry(entry) {
+  const rule = parseDictionaryRule(entry);
+  return rule ? `${rule.heard} => ${rule.wanted}` : entry;
+}
+
+function dictionaryEntryKey(entry) {
+  const rule = parseDictionaryRule(entry);
+  return rule ? `rule:${rule.heard.toLowerCase()}` : entry.toLowerCase();
+}
+
 function parseDictionaryEntries(text) {
-  return String(text || "").split(DICTIONARY_SEPARATORS).map((entry) => entry.trim()).filter(Boolean);
+  return String(text || "")
+    .split(DICTIONARY_SEPARATORS)
+    .map((entry) => normalizeDictionaryEntry(entry.trim()))
+    .filter(Boolean);
 }
 
 function renderDictionary() {
@@ -2359,7 +2385,8 @@ function renderDictionary() {
     chip.className = "dictionary-chip";
     chip.setAttribute("role", "listitem");
     const label = document.createElement("span");
-    label.textContent = entry;
+    const rule = parseDictionaryRule(entry);
+    label.textContent = rule ? `${rule.heard} → ${rule.wanted}` : entry;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "dictionary-chip-remove";
@@ -2400,15 +2427,20 @@ function persistDictionary() {
 }
 
 function addDictionaryEntries(text) {
-  const known = new Set(dictionaryEntries.map((entry) => entry.toLowerCase()));
-  let added = false;
+  let changed = false;
   for (const entry of parseDictionaryEntries(text)) {
-    if (known.has(entry.toLowerCase())) continue;
-    known.add(entry.toLowerCase());
-    dictionaryEntries.push(entry);
-    added = true;
+    const key = dictionaryEntryKey(entry);
+    const index = dictionaryEntries.findIndex((existing) => dictionaryEntryKey(existing) === key);
+    if (index === -1) {
+      dictionaryEntries.push(entry);
+    } else if (key.startsWith("rule:") && dictionaryEntries[index] !== entry) {
+      dictionaryEntries[index] = entry;
+    } else {
+      continue;
+    }
+    changed = true;
   }
-  if (!added) return;
+  if (!changed) return;
   renderDictionary();
   persistDictionary();
 }
@@ -2427,9 +2459,9 @@ function commitDictionaryInput() {
   addDictionaryEntries(text);
 }
 
-// The dictionary rides along as the transcription request's `prompt`, which
-// only the cloud APIs take — the local CLI invocation has no such argument.
-// Say so on the page instead of letting entries look active when they aren't.
+// Plain entries ride along as the transcription request's `prompt`, which only
+// the cloud APIs take — the local CLI invocation has no such argument. Say so
+// on the page; replacement rules still apply to local engines.
 // Re-read on every visit: the engine may have changed in Settings since load.
 async function refreshDictionaryLocalNote() {
   try {
@@ -2449,8 +2481,9 @@ async function loadDictionary() {
     dictionaryEntries = [];
     const known = new Set();
     for (const entry of parseDictionaryEntries(await ipc.invoke("get-dictionary"))) {
-      if (known.has(entry.toLowerCase())) continue;
-      known.add(entry.toLowerCase());
+      const key = dictionaryEntryKey(entry);
+      if (known.has(key)) continue;
+      known.add(key);
       dictionaryEntries.push(entry);
     }
   } catch (error) {

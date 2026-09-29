@@ -48,16 +48,33 @@ pub fn finalize_transcription(text: &str, options: FinalTextOptions) -> String {
   }).into_owned()
 }
 
-/// Fix product names the ASR engines consistently mishear. Always on: these
-/// are corrections, not formatting preferences.
+/// Fix names the ASR engines demonstrably mishear, taken from real History.
+/// Always on: these are corrections, not formatting preferences. Only misheard
+/// forms that mean nothing else belong here; a user's own vocabulary goes in
+/// their dictionary as a `heard => wanted` rule instead.
 fn correct_known_terms(text: &str) -> String {
-  static CLAUDE_CODE: OnceLock<Regex> = OnceLock::new();
-  // "Claude Code" comes back as "cloud code" in any casing. ASCII word
-  // boundaries still match next to CJK text.
-  let pattern = CLAUDE_CODE.get_or_init(|| {
-    Regex::new(r"(?i)(?-u:\b)cloud[ -]?code(?-u:\b)").expect("claude code regex")
+  static TERMS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+  // ASCII word boundaries still match next to CJK text.
+  let terms = TERMS.get_or_init(|| {
+    [
+      (r"cloud[ -]?code", "Claude Code"),
+      (r"superbase", "Supabase"),
+      (r"whisper\s*flow", "Wispr Flow"),
+      (r"parrot\s*kit", "Parakeet"),
+      (r"x\s+high", "xhigh"),
+      (r"hack\s+news", "Hacker News"),
+      (r"vcell", "Vercel"),
+      (r"what\s+isaacson", "Walter Isaacson"),
+    ]
+    .into_iter()
+    .map(|(heard, wanted)| {
+      (Regex::new(&format!(r"(?i)(?-u:\b){heard}(?-u:\b)")).expect("known term regex"), wanted)
+    })
+    .collect()
   });
-  pattern.replace_all(text, "Claude Code").into_owned()
+  terms.iter().fold(text.to_string(), |text, (pattern, wanted)| {
+    pattern.replace_all(&text, *wanted).into_owned()
+  })
 }
 
 fn boilerplate_patterns() -> &'static Vec<Regex> {
@@ -178,7 +195,7 @@ mod tests {
   const ALL: FinalTextOptions = FinalTextOptions { remove_fillers: true, merge_spelled_letters: true };
 
   #[test]
-  fn final_text_corrects_misheard_claude_code_regardless_of_options() {
+  fn final_text_corrects_misheard_names_regardless_of_options() {
     for (input, expected) in [
       ("cloud code", "Claude Code"),
       ("I use Cloud Code daily.", "I use Claude Code daily."),
@@ -189,6 +206,15 @@ mod tests {
       ("cloud codes", "cloud codes"),
       ("icloud code", "icloud code"),
       ("cloud storage code", "cloud storage code"),
+      ("Superbase我们早就不用了", "Supabase我们早就不用了"),
+      ("人家 Whisper Flow 是纯云端", "人家 Wispr Flow 是纯云端"),
+      ("用Parrot Kit模型", "用Parakeet模型"),
+      ("从x high降到high", "从xhigh降到high"),
+      ("像Hack News发帖", "像Hacker News发帖"),
+      ("去vcell上拿日志", "去Vercel上拿日志"),
+      ("作者叫What Isaacson", "作者叫Walter Isaacson"),
+      ("OpenAI Whisper and Hacker News stay", "OpenAI Whisper and Hacker News stay"),
+      ("x higher, superbases", "x higher, superbases"),
     ] {
       assert_eq!(finalize_transcription(input, NONE), expected, "{input:?}");
       assert_eq!(finalize_transcription(input, ALL), expected, "{input:?}");

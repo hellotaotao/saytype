@@ -940,19 +940,25 @@ impl Drop for ActiveTranscriptionGuard<'_> {
 // Called only when the whole result is ready, including assembled dictations
 // and manual History retries. Formatting is shared by persistence and insertion.
 fn prepare_final_transcription(raw: &str) -> String {
-  let options = match settings::read_config() {
-    Ok(config) => crate::scrub::FinalTextOptions {
-      remove_fillers: config.remove_filler_words,
-      merge_spelled_letters: config.merge_spelled_letters,
-    },
+  let (options, replacements) = match settings::read_config() {
+    Ok(config) => (
+      crate::scrub::FinalTextOptions {
+        remove_fillers: config.remove_filler_words,
+        merge_spelled_letters: config.merge_spelled_letters,
+      },
+      crate::dictionary::replacements(&config.dictionary),
+    ),
     Err(error) => {
       // Optional formatting must not discard a completed transcription or
       // guess that a user who disabled a setting wants it enabled again.
       log::warn!("could not read final text settings; skipping optional formatting: {error:#}");
-      crate::scrub::FinalTextOptions { remove_fillers: false, merge_spelled_letters: false }
+      (crate::scrub::FinalTextOptions { remove_fillers: false, merge_spelled_letters: false }, Vec::new())
     }
   };
-  crate::scrub::finalize_transcription(raw, options)
+  // The user's rules run last, so they also see merged letters and can
+  // override a built-in correction.
+  let text = crate::scrub::finalize_transcription(raw, options);
+  crate::dictionary::apply_replacements(&text, &replacements)
 }
 
 fn record_successful_transcription(
@@ -2366,7 +2372,7 @@ async fn perform_transcription_request(
     form = form.text("language", config.language.clone());
   }
   if let Some(prompt) =
-    build_transcription_prompt(&model, &config.language, &config.dictionary)
+    build_transcription_prompt(&model, &config.language, &crate::dictionary::prompt_terms(&config.dictionary))
   {
     form = form.text("prompt", prompt);
   }

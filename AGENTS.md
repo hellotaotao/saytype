@@ -133,13 +133,14 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   - Chunks stay ≤ 75 s so every chunk maps to ctx 2048 and one worker serves the whole session.
   - Drain stdout and stderr concurrently. Partial text is visible progress, not streaming ASR.
   - Trust an extracted runtime only when its `.saytype-runtime-sha256` stamp matches.
-  - Qwen gets neither the language setting nor the dictionary.
+  - Qwen gets neither the language setting nor the dictionary prompt (replacement rules still
+    apply to its final text).
   - GPU (Windows) is a separate Vulkan pack and `auto` resolves to CPU. A failing GPU worker
     disables GPU for the process and the same recording retries on CPU.
 - `nemotron_asr.rs` — Nemotron 3.5 streaming engine (NVIDIA `nemo-speech` sidecar), available only
   on macOS arm64 and Windows x64 (`supported()`). Its batch and live requests carry the saved
   `language` (empty means `auto`). Settings enables the language picker for Nemotron and cloud
-  engines, and disables it only for Qwen. The dictionary doesn't reach Nemotron.
+  engines, and disables it only for Qwen. The dictionary prompt doesn't reach Nemotron.
 - `native_capture.rs` — macOS-only CoreAudio capture (cpal) that streams 16 kHz PCM16 to the
   frontend over a binary Channel; see `docs/audio-capture.md`.
 - `updater.rs` — auto-update: background check of `latest.json` at startup and every 24 h (skipped
@@ -168,11 +169,14 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   Only counts and fixed labels, never text, audio, paths, device names or keys. Sends only from
   official builds with `SAYTYPE_POSTHOG_KEY` compiled in, and only after the onboarding privacy page
   was passed or onboarding completed. Turning `usage_stats` off deletes the file, ID included.
-- `scrub.rs` — strips known ASR boilerplate and prompt leaks and always corrects misheard product
-  names ("cloud code" → "Claude Code"). `finalize_transcription` then removes
+- `scrub.rs` — strips known ASR boilerplate and prompt leaks and always corrects a short built-in
+  list of misheard names ("cloud code" → "Claude Code"). `finalize_transcription` then removes
   hesitation fillers (`filler.rs`, when `remove_filler_words` is enabled) and merges space-separated
   capital letters (when `merge_spelled_letters` is enabled); both default on. Run it only on
   complete results before History/insertion, never on individual chunks or live partials.
+- `dictionary.rs` — parses the user dictionary (one stored string, same separators as the
+  Dictionary page). Plain entries and the wanted side of `heard => wanted` rules form the cloud
+  prompt; the rules rewrite every engine's final text after `finalize_transcription`.
 - `filler.rs` — removes 嗯/呃 (and a standalone 额) together with their pause punctuation, keeping
   the strongest mark. A filler inside quotation marks (quoted speech is verbatim) or one that is
   listed, named or used as a word stays; when unsure, keep it. 啊/呀/哦 are never removed. Rules and the real transcripts behind them are in its header.
