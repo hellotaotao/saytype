@@ -228,33 +228,61 @@
         <p data-i18n="dictionary.subtitle">Names, brands and terms you want transcribed correctly.</p>
       </div>
 
-      <div class="dictionary-local-note hidden" id="dictionaryLocalNote">
-        <span class="material-icons" aria-hidden="true">info_outline</span>
-        <span data-i18n="dictionary.localNote">The local engine doesn't use the words in your dictionary. Replacement rules (heard =&gt; wanted) work with every engine.</span>
-      </div>
+      <section class="dictionary-section">
+        <h3 id="dictionaryWordsTitle" data-i18n="dictionary.wordsTitle">Words</h3>
+        <p class="dictionary-section-desc" data-i18n="dictionary.wordsDesc">Helps cloud engines spell these words right.</p>
+        <div class="dictionary-local-note hidden" id="dictionaryLocalNote">
+          <span class="material-icons" aria-hidden="true">info_outline</span>
+          <span data-i18n="dictionary.localNote">The local engine doesn't use these words. Automatic replacements below work with every engine.</span>
+        </div>
+        <div class="dictionary-editor" id="dictionaryEditor" role="list" aria-labelledby="dictionaryWordsTitle">
+          <input
+            type="text"
+            id="dictionaryInput"
+            placeholder="Add a word, press Enter"
+            data-i18n="dictionary.placeholder"
+            data-i18n-attr="placeholder,aria-label"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div class="dictionary-meta">
+          <span id="dictionaryCount"></span>
+          <span id="dictionaryStatus" role="status" aria-live="polite"></span>
+        </div>
+      </section>
 
-      <div class="dictionary-editor" id="dictionaryEditor" role="list" aria-labelledby="dictionaryTitle">
-        <input
-          type="text"
-          id="dictionaryInput"
-          placeholder="Add a word, or heard =&gt; wanted, press Enter"
-          data-i18n="dictionary.placeholder"
-          data-i18n-attr="placeholder,aria-label"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </div>
-      <div class="dictionary-meta">
-        <span id="dictionaryCount"></span>
-        <span id="dictionaryStatus" role="status" aria-live="polite"></span>
-      </div>
+      <section class="dictionary-section">
+        <h3 id="replacementTitle" data-i18n="dictionary.replaceTitle">Automatic replacements</h3>
+        <p class="dictionary-section-desc" data-i18n="dictionary.replaceDesc">A word keeps coming out wrong? Enter how it comes out and what it should be, and SayType fixes it from then on. Works with every engine.</p>
+        <form class="replacement-form" id="replacementForm" autocomplete="off">
+          <input
+            type="text"
+            id="replacementHeard"
+            placeholder="Comes out as, e.g. cloud code"
+            data-i18n="dictionary.replaceHeard"
+            data-i18n-attr="placeholder,aria-label"
+            spellcheck="false"
+          />
+          <span class="material-icons replacement-arrow" aria-hidden="true">arrow_forward</span>
+          <input
+            type="text"
+            id="replacementWanted"
+            placeholder="Should be, e.g. Claude Code"
+            data-i18n="dictionary.replaceWanted"
+            data-i18n-attr="placeholder,aria-label"
+            spellcheck="false"
+          />
+          <button class="btn btn-secondary" type="submit" id="replacementAdd" data-i18n="dictionary.replaceAdd">Add</button>
+        </form>
+        <ul class="replacement-list" id="replacementList" aria-labelledby="replacementTitle"></ul>
+      </section>
 
       <details class="dictionary-about">
         <summary data-i18n="dictionary.aboutTitle">How the dictionary is used</summary>
         <div class="dictionary-about-body">
           <p data-i18n="dictionary.aboutWhat">Type a word and press Enter, or paste a list separated by commas. Changes save automatically.</p>
           <p data-i18n="dictionary.aboutHow">When you use a cloud engine, these words go to the model as a reference. They are more likely to come out right, but not every time.</p>
-          <p data-i18n="dictionary.aboutRules">If a word keeps coming out wrong, add a rule such as vcell =&gt; Vercel. SayType replaces it in the final text with every engine, local ones included, ignoring case.</p>
           <h3 data-i18n="dictionary.punctuationTitle">Automatic punctuation for Chinese</h3>
           <p data-i18n="dictionary.punctuationDesc">When Whisper transcribes Chinese, SayType sends the example below to the model to help it add punctuation. The example is fixed and contains none of your data; GPT models and other languages don't use it.</p>
           <!-- Read-only display. Mirrors SEED_ZH in src-tauri/src/commands.rs — keep the two in sync. -->
@@ -504,7 +532,7 @@
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.dictionaryLink.title">Dictionary</div>
                 <div class="setting-description" data-i18n="settings.dictionaryLink.description">
-                  Names, brands and terms that get misspelled, plus replacement rules for words that keep coming out wrong.
+                  Names, brands and terms that get misspelled, and automatic replacements for words that keep coming out wrong.
                 </div>
               </div>
               <div class="setting-control">

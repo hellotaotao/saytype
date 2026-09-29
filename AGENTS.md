@@ -176,7 +176,8 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   complete results before History/insertion, never on individual chunks or live partials.
 - `dictionary.rs` — parses the user dictionary (one stored string, same separators as the
   Dictionary page). Plain entries and the wanted side of `heard => wanted` rules form the cloud
-  prompt; the rules rewrite every engine's final text after `finalize_transcription`.
+  prompt; the rules rewrite every engine's final text after `finalize_transcription`. Users never
+  type that syntax: the page edits rules in a two-field "Automatic replacements" form.
 - `filler.rs` — removes 嗯/呃 (and a standalone 额) together with their pause punctuation, keeping
   the strongest mark. A filler inside quotation marks (quoted speech is verbatim) or one that is
   listed, named or used as a word stays; when unsure, keep it. 啊/呀/哦 are never removed. Rules and the real transcripts behind them are in its header.

@@ -1533,11 +1533,28 @@ body {
 
 /* Dictionary. One editor, the page's only job; the explanation folds away
    beneath it because it is read once, not on every visit. */
+.dictionary-section + .dictionary-section {
+  margin-top: 28px;
+}
+
+.dictionary-section h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.dictionary-section-desc {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
 .dictionary-local-note {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   padding: 11px 14px;
   border-radius: 10px;
   background: var(--pill-warn-bg);
@@ -1560,7 +1577,7 @@ body {
   flex-wrap: wrap;
   align-content: flex-start;
   gap: 8px;
-  min-height: 132px;
+  min-height: 96px;
   padding: 14px;
   box-sizing: border-box;
   background: var(--panel-bg);
@@ -1641,8 +1658,101 @@ body {
   color: var(--text-soft);
 }
 
+.replacement-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.replacement-form input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--app-text);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.replacement-form input::placeholder {
+  color: var(--input-placeholder);
+}
+
+.replacement-form input:focus {
+  outline: none;
+  border-color: var(--input-border-focus);
+}
+
+.replacement-arrow {
+  flex: none;
+  font-size: 18px;
+  color: var(--text-soft);
+}
+
+.replacement-form .btn-secondary {
+  flex: none;
+  height: 36px;
+  padding: 0 16px;
+}
+
+.replacement-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replacement-list:empty {
+  display: none;
+}
+
+.replacement-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 6px 0 14px;
+  border-top: 1px solid var(--panel-border);
+  font-size: 14px;
+}
+
+.replacement-list li:last-child {
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.replacement-list .replacement-heard {
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.replacement-list .replacement-wanted {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.replacement-list .replacement-arrow {
+  font-size: 16px;
+}
+
+@media (max-width: 560px) {
+  .replacement-form {
+    flex-wrap: wrap;
+  }
+
+  .replacement-form input {
+    flex-basis: 100%;
+  }
+
+  .replacement-form .replacement-arrow {
+    display: none;
+  }
+}
+
 .dictionary-about {
-  margin-top: 18px;
+  margin-top: 28px;
   font-size: 13px;
   color: var(--text-muted);
 }

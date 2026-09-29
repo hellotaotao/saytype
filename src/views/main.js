@@ -2338,10 +2338,11 @@ async function clearHistory() {
 
 /* ---------- Dictionary ---------- */
 
-// Entries are short words, so the page edits them as chips and stores them as
-// one comma-separated string. A plain entry is a spelling reference for cloud
-// engines; `heard => wanted` is a replacement rule every engine's final text
-// goes through. The backend parses the same syntax (src-tauri/src/dictionary.rs).
+// Everything is stored as one comma-separated string. A plain entry is a word
+// cloud engines get as a spelling reference, edited as a chip; `heard => wanted`
+// is an automatic replacement every engine's final text goes through, edited in
+// its own two-field form so nobody has to learn the syntax. The backend parses
+// the same format (src-tauri/src/dictionary.rs).
 const DICTIONARY_SEPARATORS = /[,\n，、;；]+/;
 const DICTIONARY_RULE_ARROW = /=>|->|→/;
 let dictionaryEntries = [];
@@ -2368,6 +2369,16 @@ function dictionaryEntryKey(entry) {
   return rule ? `rule:${rule.heard.toLowerCase()}` : entry.toLowerCase();
 }
 
+// Separators and arrows would split a replacement when it is stored, so a
+// field turns them into spaces.
+function cleanReplacementField(value) {
+  return String(value || "")
+    .replace(DICTIONARY_SEPARATORS, " ")
+    .replace(new RegExp(DICTIONARY_RULE_ARROW.source, "g"), " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function parseDictionaryEntries(text) {
   return String(text || "")
     .split(DICTIONARY_SEPARATORS)
@@ -2380,13 +2391,21 @@ function renderDictionary() {
   const input = document.getElementById("dictionaryInput");
   if (!editor || !input) return;
   editor.querySelectorAll(".dictionary-chip").forEach((chip) => chip.remove());
+  const list = document.getElementById("replacementList");
+  list.replaceChildren();
+  let words = 0;
   dictionaryEntries.forEach((entry, index) => {
+    const rule = parseDictionaryRule(entry);
+    if (rule) {
+      list.append(renderReplacement(rule, index));
+      return;
+    }
+    words += 1;
     const chip = document.createElement("span");
     chip.className = "dictionary-chip";
     chip.setAttribute("role", "listitem");
     const label = document.createElement("span");
-    const rule = parseDictionaryRule(entry);
-    label.textContent = rule ? `${rule.heard} → ${rule.wanted}` : entry;
+    label.textContent = entry;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "dictionary-chip-remove";
@@ -2402,9 +2421,49 @@ function renderDictionary() {
     chip.append(label, remove);
     editor.insertBefore(chip, input);
   });
-  const count = dictionaryEntries.length;
   document.getElementById("dictionaryCount").textContent =
-    count === 0 ? "" : count === 1 ? t("dictionary.countOne") : t("dictionary.count", { count });
+    words === 0 ? "" : words === 1 ? t("dictionary.countOne") : t("dictionary.count", { count: words });
+}
+
+function renderReplacement(rule, index) {
+  const row = document.createElement("li");
+  const heard = document.createElement("span");
+  heard.className = "replacement-heard";
+  heard.textContent = rule.heard;
+  const arrow = document.createElement("span");
+  arrow.className = "material-icons replacement-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "arrow_forward";
+  const wanted = document.createElement("span");
+  wanted.className = "replacement-wanted";
+  wanted.textContent = rule.wanted;
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "dictionary-chip-remove";
+  remove.setAttribute("aria-label", t("dictionary.replaceRemove", rule));
+  remove.innerHTML = '<span class="material-icons" aria-hidden="true">close</span>';
+  remove.addEventListener("click", () => removeDictionaryEntry(index, "replacementHeard"));
+  row.append(heard, arrow, wanted, remove);
+  return row;
+}
+
+function submitReplacement() {
+  const heardInput = document.getElementById("replacementHeard");
+  const wantedInput = document.getElementById("replacementWanted");
+  const heard = cleanReplacementField(heardInput.value);
+  const wanted = cleanReplacementField(wantedInput.value);
+  if (!heard) {
+    heardInput.focus();
+    return;
+  }
+  if (!wanted) {
+    wantedInput.focus();
+    return;
+  }
+  heardInput.value = "";
+  wantedInput.value = "";
+  if (heard !== wanted) addDictionaryEntries(`${heard} => ${wanted}`);
+  heardInput.focus();
 }
 
 // Saves are chained so rapid adds and removes reach the disk in order.
@@ -2445,11 +2504,11 @@ function addDictionaryEntries(text) {
   persistDictionary();
 }
 
-function removeDictionaryEntry(index) {
+function removeDictionaryEntry(index, focusId = "dictionaryInput") {
   dictionaryEntries.splice(index, 1);
   renderDictionary();
   persistDictionary();
-  document.getElementById("dictionaryInput").focus();
+  document.getElementById(focusId).focus();
 }
 
 function commitDictionaryInput() {
@@ -2508,6 +2567,23 @@ async function loadDictionary() {
   });
   input.addEventListener("compositionend", () => input.dispatchEvent(new Event("input")));
   input.addEventListener("blur", commitDictionaryInput);
+  document.getElementById("replacementForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitReplacement();
+  });
+  // Enter in the first field moves on to the second instead of submitting a
+  // half-filled replacement.
+  document.getElementById("replacementHeard").addEventListener("keydown", (event) => {
+    if (event.isComposing || event.key !== "Enter") return;
+    event.preventDefault();
+    const wanted = document.getElementById("replacementWanted");
+    if (wanted.value.trim()) submitReplacement();
+    else wanted.focus();
+  });
+  // Enter that picks an IME candidate must not submit the form.
+  document.getElementById("replacementWanted").addEventListener("keydown", (event) => {
+    if (event.isComposing && event.key === "Enter") event.preventDefault();
+  });
   document
     .getElementById("dictionaryLocalNote")
     ?.classList.toggle("hidden", cachedSettings?.provider !== "local");
