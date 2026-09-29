@@ -30,6 +30,10 @@ fn default_remove_filler_words() -> bool {
   true
 }
 
+fn default_usage_stats() -> bool {
+  true
+}
+
 fn default_ui_language() -> String {
   "auto".into()
 }
@@ -121,6 +125,10 @@ pub struct AppConfig {
   /// the default size. Kept up to date by `remember_qwen_model`.
   #[serde(default)]
   pub qwen_model: String,
+  /// Anonymous daily usage counts (usage.rs, PRIVACY.md). On by default; the
+  /// onboarding privacy page and Settings both carry the switch.
+  #[serde(default = "default_usage_stats")]
+  pub usage_stats: bool,
 }
 
 impl Default for AppConfig {
@@ -145,6 +153,7 @@ impl Default for AppConfig {
       local_compute: default_local_compute(),
       onboarding_completed: false,
       qwen_model: String::new(),
+      usage_stats: default_usage_stats(),
     }
   }
 }
@@ -225,6 +234,7 @@ pub struct SettingsPayload {
   /// macOS, whose runtime already carries Metal, and the Settings row is
   /// hidden rather than offering a switch that could not do anything.
   pub gpu_runtime_supported: bool,
+  pub usage_stats: bool,
 }
 
 impl SettingsPayload {
@@ -266,6 +276,7 @@ impl SettingsPayload {
       local_tier: crate::hardware::local_tier(),
       qwen_model: preferred_qwen_model(config).into(),
       nemotron_supported: crate::nemotron_asr::supported(),
+      usage_stats: config.usage_stats,
     }
   }
 }
