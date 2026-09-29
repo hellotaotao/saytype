@@ -164,8 +164,8 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
   writes), including pending audio.
 - `retry_error.rs` — typed registry of the persisted `RETRY_*` codes.
 - `recording_archive.rs` — development-only copy of every clip sent to `transcribe_audio`, kept 7
-  days in `debug-dictations/` for offline chunking and decoding tests. It needs the hand-set config
-  flag `debug_save_audio` and is ignored in official builds.
+  days in `debug-dictations/` for offline chunking and decoding tests. It needs the hand-set
+  config.json key `"debugSaveAudio": true` and is ignored in official builds.
 - `usage.rs` — anonymous usage statistics: per-day counts in `usage-stats.json`, sent to PostHog
   (EU) as one `daily_usage` row per finished day plus a few one-off onboarding events. `PRIVACY.md`
   is the public promise, so a change to what is recorded or sent must update it in the same commit.

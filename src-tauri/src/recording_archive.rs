@@ -1,7 +1,7 @@
 //! Development-only archive of dictation audio, for offline tests of chunking
-//! and decoding on the maintainer's real speech. Off unless the config sets
-//! `debug_save_audio`, and ignored in official builds whatever the config says:
-//! the app's promise is that audio is decoded and discarded (PRIVACY.md).
+//! and decoding on the maintainer's real speech. Off unless config.json sets
+//! `"debugSaveAudio": true`, and ignored in official builds whatever the config
+//! says: the app's promise is that audio is decoded and discarded (PRIVACY.md).
 //!
 //! Each clip that reaches `transcribe_audio` is written as sent, before decoding,
 //! to `debug-dictations/<launch>-s<session>-c<chunk>.<ext>`. The chunks of one
