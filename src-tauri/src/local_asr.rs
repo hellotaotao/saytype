@@ -123,6 +123,7 @@ static MAC_ZIP: Asset = Asset {
   rel_path: "llama-macos-arm64.tar.gz",
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-macos-arm64.tar.gz",
+    "https://saytype.taotao.au/download/runtime/llama.cpp/b9960/llama-b9960-bin-macos-arm64.tar.gz",
   ],
   bundled: None,
   size: 10_734_569,
@@ -141,6 +142,7 @@ static MAC_ZIP: Asset = Asset {
   rel_path: "llama-macos-x64.tar.gz",
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-macos-x64.tar.gz",
+    "https://saytype.taotao.au/download/runtime/llama.cpp/b9960/llama-b9960-bin-macos-x64.tar.gz",
   ],
   bundled: None,
   size: 11_007_527,
@@ -156,6 +158,7 @@ static WIN_ZIP: Asset = Asset {
   rel_path: "llama-win-x64.zip",
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-win-cpu-x64.zip",
+    "https://saytype.taotao.au/download/runtime/llama.cpp/b9960/llama-b9960-bin-win-cpu-x64.zip",
   ],
   bundled: None,
   size: 18_209_357,
@@ -171,6 +174,7 @@ static LINUX_ZIP: Asset = Asset {
   rel_path: "llama-linux-x64.tar.gz",
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-ubuntu-x64.tar.gz",
+    "https://saytype.taotao.au/download/runtime/llama.cpp/b9960/llama-b9960-bin-ubuntu-x64.tar.gz",
   ],
   bundled: None,
   size: 15_819_482,
@@ -200,6 +204,7 @@ static GPU_ZIP: Option<Asset> = Some(Asset {
   rel_path: "llama-win-vulkan-x64.zip",
   urls: &[
     "https://github.com/ggml-org/llama.cpp/releases/download/b9960/llama-b9960-bin-win-vulkan-x64.zip",
+    "https://saytype.taotao.au/download/runtime/llama.cpp/b9960/llama-b9960-bin-win-vulkan-x64.zip",
   ],
   bundled: None,
   size: 32_896_693,
@@ -1829,7 +1834,9 @@ const DOWNLOAD_SLOW_WINDOW: Duration = Duration::from_secs(15);
 const DOWNLOAD_MIN_BYTES_PER_SEC: u64 = 200 * 1024;
 
 /// Hosts that serve mainland China reliably, where the global hosts often don't.
-const CN_MIRROR_HOSTS: &[&str] = &["modelscope.cn"];
+/// `saytype.taotao.au/download` carries the runtime archives, which GitHub
+/// alone hosts otherwise.
+const CN_MIRROR_HOSTS: &[&str] = &["modelscope.cn", "saytype.taotao.au"];
 
 /// Mainland China time zones, including the legacy aliases some systems still
 /// report. Hong Kong and Macau reach Hugging Face directly, so they stay out.
@@ -2530,6 +2537,16 @@ mod tests {
   fn qwen_models_list_hugging_face_first_with_a_china_mirror() {
     for a in MODEL_ASSETS.iter().chain(LARGE_MODEL_ASSETS) {
       assert!(a.urls[0].starts_with("https://huggingface.co/"), "{}", a.rel_path);
+      assert!(a.urls.iter().any(|url| is_cn_mirror(url)), "{}", a.rel_path);
+    }
+  }
+
+  #[test]
+  fn runtime_archives_list_github_first_with_a_china_mirror() {
+    let mut runtimes = vec![llama_zip_asset()];
+    runtimes.extend(gpu_zip_asset());
+    for a in runtimes {
+      assert!(a.urls[0].starts_with("https://github.com/"), "{}", a.rel_path);
       assert!(a.urls.iter().any(|url| is_cn_mirror(url)), "{}", a.rel_path);
     }
   }

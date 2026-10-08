@@ -70,6 +70,7 @@ static RUNTIME: Option<RuntimeSpec> = Some(RuntimeSpec {
     rel_path: "runtime/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz",
     urls: &[
       "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz",
+      "https://saytype.taotao.au/download/runtime/nemo-speech/v0.1.0/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz",
     ],
     bundled: None,
     size: 3_465_028,
@@ -85,6 +86,7 @@ static RUNTIME: Option<RuntimeSpec> = Some(RuntimeSpec {
     rel_path: "runtime/nemo-speech-0.1.0-windows-x86_64-cpu.zip",
     urls: &[
       "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip",
+      "https://saytype.taotao.au/download/runtime/nemo-speech/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip",
     ],
     bundled: None,
     size: 4_730_421,
