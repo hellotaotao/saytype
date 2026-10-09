@@ -1847,7 +1847,7 @@ fn is_mainland_china_time_zone(tz: &str) -> bool {
   )
 }
 
-fn is_cn_mirror(url: &str) -> bool {
+pub(crate) fn is_cn_mirror(url: &str) -> bool {
   let host = url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("");
   CN_MIRROR_HOSTS.iter().any(|mirror| host == *mirror || host.ends_with(&format!(".{mirror}")))
 }
@@ -1856,8 +1856,11 @@ fn is_cn_mirror(url: &str) -> bool {
 /// nothing anywhere. Browser language would misplace Chinese speakers abroad.
 /// A wrong guess only costs one stall/slow check before the next source.
 fn ordered_urls(asset: &Asset) -> Vec<&'static str> {
-  let prefer_cn = iana_time_zone::get_timezone().map(|tz| is_mainland_china_time_zone(&tz)).unwrap_or(false);
-  ordered_urls_for(asset.urls, prefer_cn)
+  ordered_urls_for(asset.urls, prefers_cn_mirrors())
+}
+
+pub(crate) fn prefers_cn_mirrors() -> bool {
+  iana_time_zone::get_timezone().map(|tz| is_mainland_china_time_zone(&tz)).unwrap_or(false)
 }
 
 fn ordered_urls_for(urls: &[&'static str], prefer_cn: bool) -> Vec<&'static str> {

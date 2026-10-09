@@ -57,6 +57,39 @@ pub fn current_status(app: &AppHandle) -> UpdateStatus {
   app.state::<AppState>().update_status.lock().unwrap().clone()
 }
 
+/// The configured manifest endpoints, with the mainland-China mirror moved to
+/// the front on machines in a mainland time zone. The plugin tries endpoints in
+/// order and has no ordering of its own; GitHub leads everywhere else. Each
+/// manifest points at packages on its own host, and every package is
+/// minisign-verified whichever host served it.
+fn ordered_endpoints(configured: &[String], prefer_cn: bool) -> Vec<String> {
+  let mut ordered = configured.to_vec();
+  if prefer_cn {
+    // Stable sort keeps the configured order within each group.
+    ordered.sort_by_key(|url| !crate::local_asr::is_cn_mirror(url));
+  }
+  ordered
+}
+
+fn updater_for(app: &AppHandle) -> tauri_plugin_updater::Result<tauri_plugin_updater::Updater> {
+  let configured: Vec<String> = app
+    .config()
+    .plugins
+    .0
+    .get("updater")
+    .and_then(|updater| updater.get("endpoints"))
+    .and_then(|endpoints| serde_json::from_value(endpoints.clone()).ok())
+    .unwrap_or_default();
+  let endpoints: Vec<tauri::Url> = ordered_endpoints(&configured, crate::local_asr::prefers_cn_mirrors())
+    .iter()
+    .filter_map(|url| url.parse().ok())
+    .collect();
+  if endpoints.is_empty() {
+    return app.updater();
+  }
+  app.updater_builder().endpoints(endpoints)?.build()
+}
+
 /// Check the manifest and, if a newer version exists, download it fully.
 /// Returns the final status (also stored + emitted as `update-status`).
 pub async fn check_and_download(app: &AppHandle) -> UpdateStatus {
@@ -78,7 +111,7 @@ pub async fn check_and_download(app: &AppHandle) -> UpdateStatus {
 
   set_status(app, UpdateStatus::new("checking", None, None));
 
-  let checked = match app.updater() {
+  let checked = match updater_for(app) {
     Ok(updater) => updater.check().await,
     Err(error) => Err(error),
   };
@@ -202,6 +235,32 @@ pub fn release_page_url(version: &str) -> Option<String> {
   }
   let repository = env!("CARGO_PKG_REPOSITORY").trim_end_matches('/');
   Some(format!("{repository}/releases/tag/v{version}"))
+}
+
+#[cfg(test)]
+mod endpoint_order_tests {
+  use super::ordered_endpoints;
+
+  #[test]
+  fn the_china_mirror_leads_only_when_preferred() {
+    let configured = vec![
+      "https://github.com/hellotaotao/saytype/releases/latest/download/latest.json".to_string(),
+      "https://saytype.taotao.au/download/latest.json".to_string(),
+    ];
+    assert_eq!(ordered_endpoints(&configured, false), configured);
+    assert_eq!(ordered_endpoints(&configured, true), vec![configured[1].clone(), configured[0].clone()]);
+    // The localhost e2e harness has no mirror to move.
+    let local = vec!["http://127.0.0.1:8765/latest.json".to_string()];
+    assert_eq!(ordered_endpoints(&local, true), local);
+  }
+
+  #[test]
+  fn the_shipped_config_lists_github_first_and_the_mirror_second() {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let endpoints: Vec<String> = serde_json::from_value(config["plugins"]["updater"]["endpoints"].clone()).unwrap();
+    assert!(endpoints[0].starts_with("https://github.com/"), "{endpoints:?}");
+    assert!(endpoints.iter().any(|url| crate::local_asr::is_cn_mirror(url)), "{endpoints:?}");
+  }
 }
 
 #[cfg(test)]

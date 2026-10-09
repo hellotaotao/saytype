@@ -207,3 +207,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+  mirror:
+    # Copies the published macOS and Windows packages, plus a latest.json that
+    # points at them, to saytype.taotao.au/download for mainland China, where
+    # GitHub is unreliable (RELEASING.md, "Distribution"). It runs after publish,
+    # so the mirror never announces a version GitHub doesn't have. A failure here
+    # leaves the release itself fine and the mirror on the previous version:
+    # re-run this job.
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Mirror release for mainland China
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.SAYTYPE_DOWNLOADS_BLOB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$BLOB_READ_WRITE_TOKEN" ]; then
+            echo "::warning::No SAYTYPE_DOWNLOADS_BLOB_TOKEN secret — the mainland-China mirror was not updated."
+            exit 0
+          fi
+          node scripts/mirror-release.mjs "$GITHUB_REF_NAME"

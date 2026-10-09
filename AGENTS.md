@@ -144,7 +144,8 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
 - `native_capture.rs` — macOS-only CoreAudio capture (cpal) that streams 16 kHz PCM16 to the
   frontend over a binary Channel; see `docs/audio-capture.md`.
 - `updater.rs` — auto-update: background check of `latest.json` at startup and every 24 h (skipped
-  in debug builds), silent download, a single `update-status` event channel
+  in debug builds; GitHub first, the `saytype.taotao.au/download` mirror first in mainland China
+  time zones, see `RELEASING.md` "Distribution"), silent download, a single `update-status` event channel
   (idle | checking | downloading | ready | upToDate | error); install + restart only on user action
   (tray entry / settings button). Updates are minisign-verified against the pubkey in
   `tauri.conf.json`. `createUpdaterArtifacts` lives only in `tauri.release.conf.json` (CI) and

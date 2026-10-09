@@ -177,10 +177,33 @@ files. Don't run `scripts/collect-artifacts.js` during it, or it overwrites the 
 
 ## Distribution
 
-GitHub Releases hosts the installers and is the auto-update source (the endpoint is baked into
-`tauri.conf.json`). That is reliable outside mainland China. Inside China GitHub is slow, so update
-checks and downloads there are best-effort: timeouts are logged and never crash. macOS builds stay
-universal.
+GitHub Releases hosts the installers and is the primary auto-update source. That is reliable outside
+mainland China. macOS builds stay universal.
+
+**Mainland-China mirror.** GitHub is slow or unreachable from mainland China, so the files a
+mainland user needs are also served from `https://saytype.taotao.au/download/`. That path is a
+rewrite in the `saytype-web` repo's `vercel.json` to the Vercel Blob store `saytype-downloads`
+(Hong Kong region, public), so nothing there needs ICP filing. It holds:
+
+- `runtime/…`: the llama.cpp and nemo-speech archives, uploaded by hand when a pinned runtime version
+  changes (`vercel blob put <file> --access public --pathname runtime/llama.cpp/<build>/<file>`, then
+  add the URL beside the GitHub one in `local_asr.rs` / `nemotron_asr.rs`).
+- `latest.json` and `releases/<tag>/…`: written by the `mirror` job of `release.yml`
+  (`scripts/mirror-release.mjs`) after the GitHub release is published. It copies the macOS and Windows
+  updater packages and the DMG, checks each one reads back with the same sha256, writes a `latest.json`
+  whose macOS and Windows URLs point at the mirror (Linux entries keep their GitHub URLs), and deletes
+  the previous release's files, so the store holds one release.
+
+The app lists both manifests in `tauri.conf.json`. `updater.rs` puts the mirror first on machines set
+to a mainland China time zone and GitHub first everywhere else; the model downloader orders its
+sources the same way. Packages are minisign-verified whichever host served them.
+
+The job needs the store's read-write token as the `SAYTYPE_DOWNLOADS_BLOB_TOKEN` secret (in the
+Vercel dashboard: Storage → saytype-downloads → `BLOB_READ_WRITE_TOKEN`); without it the job warns and
+skips. The plugin stops at the first endpoint that answers, so if the `mirror` job fails, mainland
+clients keep seeing the previous version until it is re-run: `gh run rerun <run-id> --failed`, or
+locally `BLOB_READ_WRITE_TOKEN=… node scripts/mirror-release.mjs vX.Y.Z`. Reachability from inside
+mainland China has not been measured yet.
 
 **Planned website download button (not built).** Keep the site a pure static frontend with no
 backend, which also avoids ICP filing: only mainland-hosted sites need 备案, and only mainland
@@ -202,8 +225,9 @@ fetch('https://api.github.com/repos/hellotaotao/saytype/releases/latest')
 
 GitHub's anonymous API limit (60 per hour) is per visitor IP, so a download button never hits it. The
 zero-JS alternative, uploading a version-less `SayType-macOS.dmg` with every release, adds a CI step
-and clutters the releases page. Putting the updater endpoint behind an own domain only makes sense as
-part of the China bundle.
+and clutters the releases page. The mirror above already carries each release's DMG at
+`https://saytype.taotao.au/download/releases/<tag>/…` (the tag and file names are in
+`releases/current.json`), which the button can use for mainland visitors.
 
 ---
 
@@ -360,13 +384,33 @@ Claude API(`claude-sonnet-5`)→ 面向用户的中英双语说明,用 `gh relea
 
 ## 分发
 
-GitHub Releases 托管安装包,也是自动更新的来源(端点写死在 `tauri.conf.json` 里)。在中国大陆以外稳定可靠;大陆
-访问 GitHub 慢,那里的更新检查和下载只能尽力而为,超时会写日志,不会崩溃。macOS 继续构建通用二进制。
+GitHub Releases 托管安装包,也是自动更新的主要来源,在中国大陆以外稳定可靠。macOS 继续构建通用二进制。
+
+**大陆镜像。** 大陆访问 GitHub 很慢甚至连不上,所以大陆用户需要的文件在 `https://saytype.taotao.au/download/`
+也放了一份。这个路径是 `saytype-web` 仓库 `vercel.json` 里的一条转发规则,指向 Vercel Blob 存储
+`saytype-downloads`(香港区,公开读),所以不涉及 ICP 备案。里面有:
+
+- `runtime/…`:llama.cpp 和 nemo-speech 的运行时包。锁定的运行时版本变了才需要手动重传
+  (`vercel blob put <文件> --access public --pathname runtime/llama.cpp/<版本>/<文件>`,再到 `local_asr.rs` /
+  `nemotron_asr.rs` 里把新地址加在 GitHub 地址旁边)。
+- `latest.json` 和 `releases/<tag>/…`:由 `release.yml` 的 `mirror` 任务(`scripts/mirror-release.mjs`)在 GitHub
+  release 发布之后写入。它复制 macOS 和 Windows 的更新包以及 DMG,逐个下载回来核对 sha256,写一份 macOS 和
+  Windows 地址指向镜像的 `latest.json`(Linux 条目保留 GitHub 地址),再删掉上一个版本的文件,所以存储里始终只有
+  一个版本。
+
+`tauri.conf.json` 里两份清单都列着。`updater.rs` 在系统时区是大陆时区的机器上把镜像排第一,其他地方 GitHub
+排第一;模型下载器用的是同一套排序。无论从哪边下载,更新包都要过 minisign 校验。
+
+这个任务需要存储的读写令牌,配成 `SAYTYPE_DOWNLOADS_BLOB_TOKEN` 这个 secret(Vercel 后台:Storage →
+saytype-downloads → `BLOB_READ_WRITE_TOKEN`);没配的话任务只给警告并跳过。更新插件在第一个有响应的端点就停,所以
+`mirror` 任务失败时,大陆用户会一直看到上一个版本,直到重跑:`gh run rerun <run-id> --failed`,或者本地执行
+`BLOB_READ_WRITE_TOKEN=… node scripts/mirror-release.mjs vX.Y.Z`。大陆境内的实际连通性和速度还没有实测过。
 
 **计划中的官网下载按钮(还没做)。** 官网保持纯静态前端、不要后端,这样也不需要 ICP 备案:只有托管在大陆的站点
 才需要备案,而真正能解决大陆速度的也只有大陆托管/CDN,所以等中国成为真实市场再一起做。按钮用几行前端 JS 指向
 最新的 DMG,代码见英文部分。
 
 GitHub 匿名 API 限额(每小时 60 次)按访客 IP 计算,下载按钮碰不到。不写 JS 的替代方案是每次发版额外上传一个不带
-版本号的 `SayType-macOS.dmg`,但要多一个 CI 步骤,还会让 releases 页面更乱。给更新端点套自己的域名,只在做大陆那
-一揽子方案时才值得。
+版本号的 `SayType-macOS.dmg`,但要多一个 CI 步骤,还会让 releases 页面更乱。上面的镜像已经带着每个
+版本的 DMG,地址是 `https://saytype.taotao.au/download/releases/<tag>/…`(tag 和文件名在
+`releases/current.json` 里),下载按钮可以给大陆访客用这个地址。
