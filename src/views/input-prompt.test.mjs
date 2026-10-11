@@ -1724,6 +1724,42 @@ test("the VAD is not consulted for an uncut dictation or a long remainder", asyn
   assert.deepEqual(long.decoded, [0, 1]);
 });
 
+test("a long remainder is VAD-checked only when it is quiet against the previous chunk", async () => {
+  const run = async (remainderLevel) => {
+    const vadCalls = [];
+    const decoded = [];
+    const VoiceInputPrompt = loadForRemainderVad(async (channel, ...args) => {
+      if (channel !== "transcribe-audio") return null;
+      decoded.push(args[3]);
+      return `chunk${args[3]}`;
+    }, { hasSpeech: async (pcm) => { vadCalls.push(pcm.length); return false; } });
+    const prompt = createBarePrompt(VoiceInputPrompt);
+    const chunked = makeChunked();
+    const push = (seconds, level) => {
+      for (let i = 0; i < seconds * 25; i++) {
+        const block = new Float32Array(640).fill(level);
+        chunked.blocks.push(block);
+        chunked.blockSamples += block.length;
+        chunkDecision.pushFrame(chunked.state, level, block.length);
+      }
+    };
+    push(2, 0.2);
+    prompt.closeChunk(chunked, chunked.blockSamples, "silence");
+    push(9, remainderLevel);
+    prompt.closeChunk(chunked, chunked.blockSamples, "release");
+    await chunked.queue;
+    return { vadCalls, decoded };
+  };
+
+  const quiet = await run(0.001);
+  assert.deepEqual(quiet.vadCalls, [9 * 16000], "9 s of room noise goes to the VAD");
+  assert.deepEqual(quiet.decoded, [0], "and is dropped on its no-speech verdict");
+
+  const spoken = await run(0.2);
+  assert.deepEqual(spoken.vadCalls, [], "9 s of speech is decoded unchecked, as before");
+  assert.deepEqual(spoken.decoded, [0, 1]);
+});
+
 test("a failing or missing VAD fails open to decoding the remainder", async () => {
   const failing = await dictateWithRemainder(async () => { throw new Error("ort blew up"); });
   assert.deepEqual(failing.decoded, [0, 1]);

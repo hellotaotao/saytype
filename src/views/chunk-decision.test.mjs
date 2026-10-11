@@ -3,11 +3,14 @@ import assert from "node:assert/strict";
 import {
   SOFT_TARGET_S,
   HARD_MAX_S,
+  EARLY_TARGET_S,
+  EARLY_PAUSE_S,
   MIN_PAUSE_S,
   frameRms,
   createChunkState,
   pushFrame,
   decideCut,
+  loudSamples,
   stateAfterCut,
   joinChunkTexts,
 } from "./chunk-decision.mjs";
@@ -39,18 +42,55 @@ test("frameRms: silence is 0, a constant level is that level", () => {
   assert.ok(Math.abs(frameRms(alternating) - 0.5) < 1e-9);
 });
 
-// ---- no cut before the soft target ----
+// ---- early cuts need a long pause ----
 
-test("a dictation shorter than the soft target is never cut", () => {
+test("a dictation with no pause is not cut before the soft target", () => {
   const state = createChunkState();
   assert.equal(feed(state, SOFT_TARGET_S - 5, 0.1), null);
 });
 
-test("silence before the soft target does not trigger a cut", () => {
+test("silence before the early target does not trigger a cut", () => {
   const state = createChunkState();
-  feed(state, 10, 0.1); // establish a speech level
-  assert.equal(feed(state, 20, 0.0), null, "a 20 s pause at 10 s in must not cut");
-  assert.ok(state.samples < SOFT_TARGET_S * RATE);
+  feed(state, EARLY_TARGET_S - 10, 0.1); // establish a speech level
+  assert.equal(feed(state, 5, 0.0), null, "a 5 s pause ending before the early target must not cut");
+  assert.ok(state.samples < EARLY_TARGET_S * RATE);
+});
+
+test("just past the early target only a long pause cuts", () => {
+  const state = createChunkState();
+  feed(state, EARLY_TARGET_S + 1, 0.1);
+  assert.equal(feed(state, EARLY_PAUSE_S / 2, 0.0), null, "a word-picking pause is not enough");
+  feed(state, 1, 0.1);
+  const before = state.samples;
+  const cut = feed(state, EARLY_PAUSE_S + 0.5, 0.0);
+  assert.ok(cut, "a pause of EARLY_PAUSE_S cuts");
+  assert.equal(cut.reason, "silence");
+  const pause = (cut.cutAtSample - before) / RATE;
+  assert.ok(pause <= EARLY_PAUSE_S && pause > EARLY_PAUSE_S * 0.9, `cut after ${pause} s of quiet`);
+});
+
+test("the pause a cut needs shrinks toward the soft target", () => {
+  const needed = (atS) => {
+    const state = createChunkState();
+    feed(state, atS, 0.1);
+    const before = state.samples;
+    const cut = feed(state, EARLY_PAUSE_S + 1, 0.0);
+    return (cut.cutAtSample - before) / RATE;
+  };
+  const early = needed(EARLY_TARGET_S + 1);
+  const middle = needed((EARLY_TARGET_S + SOFT_TARGET_S) / 2);
+  const late = needed(SOFT_TARGET_S - 1);
+  assert.ok(early > middle && middle > late, `${early} > ${middle} > ${late}`);
+  assert.ok(late >= MIN_PAUSE_S, "never less than MIN_PAUSE_S");
+});
+
+test("loudSamples counts audio above a reference chunk's pause level", () => {
+  const state = createChunkState();
+  pushFrame(state, 0.001, FRAME); // room noise
+  pushFrame(state, 0.1, FRAME); // speech
+  pushFrame(state, 0.002, FRAME);
+  assert.equal(loudSamples(state, 0.2), FRAME, "0.1 is above 3% of 0.2, the noise is not");
+  assert.equal(loudSamples(state, 0.01), FRAME * 3, "against a quiet reference everything counts");
 });
 
 // ---- cutting on silence ----

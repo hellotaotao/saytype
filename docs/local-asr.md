@@ -200,10 +200,11 @@ audio). Qwen does not segment internally.
 
 ### How it works (implemented 2026-08-29)
 
-- PCM captured during recording is cut into 55–75 s chunks (`chunk-decision.mjs`:
-  `SOFT_TARGET_S = 55`, `HARD_MAX_S = 75`). After 55 s the first pause closes the chunk: at
-  least `MIN_PAUSE_S` (100 ms) of consecutive audio at or below `loudRef × QUIET_RATIO`. If none
-  arrives by 75 s, the cut goes after the quietest 100 ms stretch of the 55–75 s window. Both are
+- PCM captured during recording is cut into chunks of 20–75 s (`chunk-decision.mjs`:
+  `EARLY_TARGET_S = 20`, `SOFT_TARGET_S = 55`, `HARD_MAX_S = 75`). From 20 s on, a long enough
+  pause closes the chunk: consecutive audio at or below `loudRef × QUIET_RATIO` lasting
+  `EARLY_PAUSE_S` (1.0 s) at 20 s, shrinking linearly to `MIN_PAUSE_S` (100 ms) at 55 s. If no
+  pause arrives by 75 s, the cut goes after the quietest 100 ms stretch of the 55–75 s window. Both are
   measured in samples, because capture blocks are 40 ms on macOS but ~2.7 ms on the WebKit path,
   where one quiet block (the closure of a stop consonant) used to count as a pause. `loudRef`
   resets after each cut, so the rule behaves the same at any mic gain.
@@ -263,6 +264,22 @@ repetition loop, which chunking confines to a single chunk.
   1.20%, 11.37 s decode plus 0.42 s prewarm, last chunk 2.18 s. All four seams kept the words in
   order with nothing lost or duplicated. The slightly lower chunked WER is normal variation, not an
   improvement.
+- Early cuts (2026-10-12). Before them nothing was cut until 55 s, so in ~550 logged dictations
+  on the maintainer's machine (1.7B) a 30–60 s hold waited 3.3 s after release at the median
+  (4.9 s at p90), longer than a hold past 60 s (2.4 s); decode costs about 85 ms per second of
+  the last chunk. Replayed on 60 archived real clips of 30–62 s (`debugSaveAudio`), cutting from
+  20 s takes the last chunk of a 30–45 s clip from 36.5 s to 11.0 s at the median (41 s to 21 s at
+  p90), an estimated 3.4 s to 1.2 s of waiting. Whole clip against chunks, 1.7B one-shot, punctuation
+  ignored: with a 0.5 s early pause 98 cuts changed 0.88% of characters, with 1.0 s 79 cuts changed
+  0.64%, with 1.5 s 72 cuts changed 0.64%. The changes go both ways (a name fixed in one clip,
+  garbled in another) and there is no ground truth, so this measures disturbance, not error rate.
+  0.5 s barely selects anything: the clips are 43% quiet frames with about 15 pauses of 0.5 s per
+  minute, and 16 of 60 were already inside one on reaching 20 s.
+- The same replay showed a silent remainder longer than the 3 s VAD limit: holding the key for
+  ~9 s of silence after a cut made Qwen emit a 22–57 character Spanish sentence. A release
+  remainder is now also VAD-checked, whatever its length, when under 0.3 s of it is louder than
+  the previous chunk's pause level (`REMAINDER_QUIET_LOUD_S`); in the replay silent remainders
+  measured ≤ 0.04 s and spoken ones ≥ 0.44 s. The VAD verdict still decides, and fails open.
 - Not yet verified: real multi-minute microphone dictation, seam punctuation, release-tail p50/p95,
   and whether the old 13-minute cliff is gone on real speech.
 

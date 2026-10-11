@@ -17,6 +17,17 @@
 export const SOFT_TARGET_S = 55;
 export const HARD_MAX_S = 75;
 
+// Cutting may start well before the soft target, but only at a long pause. The
+// post-release wait grows with the last chunk (~85 ms per audio-second on the
+// 1.7B model), and with nothing cut before 55 s a 30-60 s dictation waited
+// longer than a two-minute one. The pause a cut needs shrinks linearly from
+// EARLY_PAUSE_S at EARLY_TARGET_S to MIN_PAUSE_S at SOFT_TARGET_S: the closer
+// the chunk gets to the hard max, the less it can afford to wait for one.
+// 1.0 s rather than 0.5 s because the maintainer's dictation has ~15 pauses of
+// 0.5 s per minute, most of them mid-sentence; measurements in docs/local-asr.md.
+export const EARLY_TARGET_S = 20;
+export const EARLY_PAUSE_S = 1.0;
+
 // A frame this far below the chunk's own speech level counts as a pause. It is
 // a RATIO, not an absolute level, so the same decisions hold across mic gains
 // (see the scale-invariance test). The threshold only decides whether a cut
@@ -59,18 +70,24 @@ export function pushFrame(state, rms, length) {
 export function decideCut(state, sampleRate, opts = {}) {
   const softTarget = (opts.softTargetS ?? SOFT_TARGET_S) * sampleRate;
   const hardMax = (opts.hardMaxS ?? HARD_MAX_S) * sampleRate;
-  if (state.samples < softTarget) return null;
+  const earlyTarget = Math.min((opts.earlyTargetS ?? EARLY_TARGET_S) * sampleRate, softTarget);
+  if (state.samples < earlyTarget) return null;
 
   const minPause = (opts.minPauseS ?? MIN_PAUSE_S) * sampleRate;
+  const earlyPause = Math.max((opts.earlyPauseS ?? EARLY_PAUSE_S) * sampleRate, minPause);
+  const progress = softTarget > earlyTarget
+    ? Math.min(1, (state.samples - earlyTarget) / (softTarget - earlyTarget))
+    : 1;
+  const neededPause = earlyPause + (minPause - earlyPause) * progress;
 
-  // Past the soft target, the first real pause wins — cutting on silence is the
-  // whole point, and waiting for a "better" pause only grows the tail.
+  // The first pause that is long enough wins — cutting on silence is the whole
+  // point, and waiting for a "better" pause only grows the tail.
   const quiet = state.loudRef * (opts.quietRatio ?? QUIET_RATIO);
   let pause = 0;
-  for (let i = state.frames.length - 1; i >= 0 && pause < minPause && state.frames[i].rms <= quiet; i--) {
+  for (let i = state.frames.length - 1; i >= 0 && pause < neededPause && state.frames[i].rms <= quiet; i--) {
     pause += state.frames[i].length;
   }
-  if (pause >= minPause) {
+  if (pause >= neededPause) {
     return { cutAtSample: state.samples, reason: "silence" };
   }
 
@@ -101,6 +118,18 @@ export function decideCut(state, sampleRate, opts = {}) {
   }
 
   return null;
+}
+
+// Samples of the current chunk louder than a pause would be, judged against
+// `reference` (an earlier chunk's loudRef) instead of this chunk's own level: a
+// remainder that is all room noise has no speech of its own to compare with.
+export function loudSamples(state, reference, quietRatio = QUIET_RATIO) {
+  const quiet = reference * quietRatio;
+  let total = 0;
+  for (const frame of state.frames) {
+    if (frame.rms > quiet) total += frame.length;
+  }
+  return total;
 }
 
 // Carry the post-cut remainder into a fresh chunk. Frames are re-based to the
@@ -153,11 +182,14 @@ if (typeof window !== "undefined") {
   window.SayTypeChunk = {
     SOFT_TARGET_S,
     HARD_MAX_S,
+    EARLY_TARGET_S,
+    EARLY_PAUSE_S,
     MIN_PAUSE_S,
     frameRms,
     createChunkState,
     pushFrame,
     decideCut,
+    loudSamples,
     stateAfterCut,
     joinChunkTexts,
   };

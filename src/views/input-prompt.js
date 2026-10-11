@@ -30,6 +30,12 @@ const AUDIO_STAGE_TIMEOUT_MS = 30000;
 // Silero takes ~10 ms per second of audio, so longer remainders are not worth
 // holding the post-release path for; they contain speech almost always.
 const REMAINDER_VAD_MAX_S = 3;
+// A longer remainder is checked too when it holds less than this much audio
+// above the previous chunk's pause level. Holding the key through a long
+// silence after a cut leaves seconds of room noise, which Qwen has turned into
+// a full Spanish sentence. Speech-bearing remainders measured 0.44 s or more
+// and silent ones 0.04 s or less, and the VAD still makes the actual call.
+const REMAINDER_QUIET_LOUD_S = 0.3;
 const REMAINDER_VAD_TIMEOUT_MS = 1500;
 // Native transcription has its own 420 s whole-request deadline. Leave time
 // for IPC delivery without imposing one deadline on a multi-chunk recording.
@@ -1855,6 +1861,7 @@ class VoiceInputPrompt {
       blocks: [],
       blockSamples: 0,
       state: window.SayTypeChunk.createChunkState(),
+      previousLoudRef: 0,
       nextChunkIndex: 0,
       results: [],
       failedChunks: 0,
@@ -2013,13 +2020,17 @@ class VoiceInputPrompt {
     }
     chunked.blocks = tail;
     chunked.blockSamples = tail.reduce((total, block) => total + block.length, 0);
+    const quietRemainder = reason === "release" && chunked.previousLoudRef > 0 &&
+      window.SayTypeChunk.loudSamples(chunked.state, chunked.previousLoudRef) <
+        REMAINDER_QUIET_LOUD_S * chunked.sampleRate;
+    chunked.previousLoudRef = chunked.state.loudRef;
     chunked.state = window.SayTypeChunk.stateAfterCut(chunked.state, cutAtSample);
     if (head.length) {
-      this.enqueueChunkDecode(chunked, head, reason);
+      this.enqueueChunkDecode(chunked, head, reason, quietRemainder);
     }
   }
 
-  enqueueChunkDecode(chunked, pcm, reason = "manual") {
+  enqueueChunkDecode(chunked, pcm, reason = "manual", quietRemainder = false) {
     const recordingSession = chunked.recordingSession ||
       this.recordingSessions?.get(chunked.sessionId) || { id: chunked.sessionId, chunked };
     this.ensureRecordingSession(recordingSession);
@@ -2040,7 +2051,7 @@ class VoiceInputPrompt {
         return;
       }
       if (reason === "release" && chunkIndex > 0 &&
-        pcm.length <= REMAINDER_VAD_MAX_S * chunked.sampleRate &&
+        (quietRemainder || pcm.length <= REMAINDER_VAD_MAX_S * chunked.sampleRate) &&
         await this.remainderIsSilent(pcm, chunked.sampleRate)) {
         if (chunked.aborted) return;
         accounting.submittedSamples += pcm.length;
