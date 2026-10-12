@@ -4166,7 +4166,7 @@ dependencies = [
 
 [[package]]
 name = "saytype"
-version = "1.19.2"
+version = "1.19.3"
 dependencies = [
  "anyhow",
  "arboard",
