@@ -815,6 +815,9 @@ function toggleProviderFields(providerChoice) {
   if (languageSelect) {
     languageSelect.disabled = isQwen;
   }
+  // Qwen has nothing to choose here, so the whole row goes rather than sitting
+  // there with a note and no control.
+  document.getElementById("languageSettingItem")?.classList.toggle("hidden", isQwen);
   document.getElementById("languageLocalNote")?.classList.toggle("hidden", !isQwen);
   document.getElementById("languageDescription")?.classList.toggle("hidden", isQwen);
   document.getElementById("languageControl")?.classList.toggle("hidden", isQwen);

@@ -511,6 +511,9 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut }) {
   }
   const allReady = hasKey && micOk && axOk;
   card.replaceChildren();
+  // With nothing to fix, the card is one line: the full layout said "ready" five
+  // ways and pushed Recent halfway down the window.
+  card.classList.toggle("compact", allReady);
 
   const head = document.createElement("div");
   head.className = "readiness-head";
@@ -528,7 +531,7 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut }) {
   sub.className = "readiness-sub";
   sub.textContent = allReady ? t("home.readyHint") : t("home.setupHint");
   titles.appendChild(title);
-  titles.appendChild(sub);
+  if (!allReady) titles.appendChild(sub);
 
   const badge = document.createElement("div");
   badge.className = `readiness-badge ${allReady ? "ok" : "warn"}`;
@@ -539,7 +542,6 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut }) {
 
   head.appendChild(iconWrap);
   head.appendChild(titles);
-  head.appendChild(badge);
   card.appendChild(head);
 
   const shortcuts = document.createElement("div");
@@ -555,6 +557,13 @@ function renderReadiness({ hasKey, micOk, axOk, recordShortcut }) {
     group.appendChild(keycapRow(shortcut));
     shortcuts.appendChild(group);
   });
+  if (allReady) {
+    head.appendChild(shortcuts);
+    head.appendChild(badge);
+    renderEngineCard();
+    return;
+  }
+  head.appendChild(badge);
   card.appendChild(shortcuts);
 
   const divider = document.createElement("div");
@@ -2050,6 +2059,10 @@ function activityDisplayText(activity) {
   return activity.success === false ? localizeRetryError(savedText) : savedText;
 }
 
+// Rows the user opened to read in full. Kept by id because every
+// "activity-updated" rebuilds the list, which would otherwise fold them again.
+const expandedActivityIds = new Set();
+
 function buildActivityRow(activity) {
   const rawText = activityDisplayText(activity);
   // A hung local decode that the input-prompt saved for recovery: no text yet,
@@ -2079,7 +2092,31 @@ function buildActivityRow(activity) {
       text.classList.add("failed");
     }
     text.textContent = rawText;
-    text.title = rawText;
+    // A long dictation is a paragraph; one truncated line cannot be read back.
+    const setExpanded = (expanded) => {
+      item.classList.toggle("expanded", expanded);
+      text.setAttribute("aria-expanded", String(expanded));
+      text.title = expanded ? "" : rawText;
+      if (expanded) expandedActivityIds.add(activity.id);
+      else expandedActivityIds.delete(activity.id);
+    };
+    const toggleExpanded = () => {
+      const expanded = item.classList.contains("expanded");
+      // Selecting text in an open row must not fold it, and a row that already
+      // fits on one line has nothing to open.
+      if (expanded && String(window.getSelection?.() ?? "")) return;
+      if (!expanded && text.scrollWidth <= text.clientWidth) return;
+      setExpanded(!expanded);
+    };
+    text.tabIndex = 0;
+    text.setAttribute("role", "button");
+    setExpanded(expandedActivityIds.has(activity.id));
+    text.addEventListener("click", toggleExpanded);
+    text.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      toggleExpanded();
+    });
   }
 
   const actions = document.createElement("div");
@@ -2528,9 +2565,19 @@ async function refreshDictionaryLocalNote() {
   } catch (error) {
     console.error("Failed to load settings:", error);
   }
-  document
-    .getElementById("dictionaryLocalNote")
-    ?.classList.toggle("hidden", cachedSettings?.provider !== "local");
+  applyDictionaryEngine();
+}
+
+// A local engine ignores the word list, so the section that does work there,
+// automatic replacements, goes first.
+function applyDictionaryEngine() {
+  const isLocal = cachedSettings?.provider === "local";
+  document.getElementById("dictionaryLocalNote")?.classList.toggle("hidden", !isLocal);
+  const words = document.getElementById("dictionaryWordsSection");
+  const replacements = document.getElementById("dictionaryReplaceSection");
+  if (!words || !replacements || !words.parentNode?.insertBefore) return;
+  if (isLocal) words.parentNode.insertBefore(replacements, words);
+  else words.parentNode.insertBefore(words, replacements);
 }
 
 async function loadDictionary() {
@@ -2584,9 +2631,7 @@ async function loadDictionary() {
   document.getElementById("replacementWanted").addEventListener("keydown", (event) => {
     if (event.isComposing && event.key === "Enter") event.preventDefault();
   });
-  document
-    .getElementById("dictionaryLocalNote")
-    ?.classList.toggle("hidden", cachedSettings?.provider !== "local");
+  applyDictionaryEngine();
   renderDictionary();
 }
 
@@ -2594,11 +2639,16 @@ async function loadDictionary() {
 
 async function showPage(pageId, options = {}) {
   if (pageId === "settings") pauseOnboarding();
+  const page = document.getElementById(`${pageId}-page`);
+  const alreadyShown = !!page?.classList.contains("active");
   document.querySelectorAll(".page").forEach((page) => {
     page.classList.remove("active");
   });
-  const page = document.getElementById(`${pageId}-page`);
   if (page) {
+    // Pages share one scroller; without this a page opens wherever the last
+    // one was left, with its title scrolled out of view.
+    const scroller = document.querySelector(".main-content");
+    if (scroller && !alreadyShown) scroller.scrollTop = 0;
     page.classList.add("active");
   }
   document.querySelectorAll(".nav-item[data-page]").forEach((item) => {

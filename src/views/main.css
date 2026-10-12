@@ -366,6 +366,28 @@ body {
   gap: 13px;
 }
 
+/* Everything ready: one line with the shortcut, no pills. */
+.readiness-card.compact {
+  padding: 11px 16px;
+}
+
+.readiness-card.compact .readiness-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.readiness-card.compact .readiness-icon .material-icons {
+  font-size: 18px;
+}
+
+.readiness-card.compact .readiness-title {
+  font-size: 15px;
+}
+
+.readiness-card.compact .readiness-shortcuts {
+  margin-top: 0;
+}
+
 .readiness-icon {
   width: 42px;
   height: 42px;
@@ -1477,6 +1499,27 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.activity-text[role="button"] {
+  cursor: pointer;
+}
+
+.activity-item.expanded {
+  align-items: flex-start;
+}
+
+.activity-item.expanded .activity-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.activity-item.expanded .activity-time {
+  line-height: 22px;
 }
 
 .activity-text.failed {

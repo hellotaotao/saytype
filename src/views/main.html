@@ -228,12 +228,12 @@
         <p data-i18n="dictionary.subtitle">Names, brands and terms you want transcribed correctly.</p>
       </div>
 
-      <section class="dictionary-section">
+      <section class="dictionary-section" id="dictionaryWordsSection">
         <h3 id="dictionaryWordsTitle" data-i18n="dictionary.wordsTitle">Words</h3>
         <p class="dictionary-section-desc" data-i18n="dictionary.wordsDesc">Helps cloud engines spell these words right.</p>
         <div class="dictionary-local-note hidden" id="dictionaryLocalNote">
           <span class="material-icons" aria-hidden="true">info_outline</span>
-          <span data-i18n="dictionary.localNote">The local engine doesn't use these words. Automatic replacements below work with every engine.</span>
+          <span data-i18n="dictionary.localNote">The local engine doesn't use these words. Automatic replacements work with every engine.</span>
         </div>
         <div class="dictionary-editor" id="dictionaryEditor" role="list" aria-labelledby="dictionaryWordsTitle">
           <input
@@ -252,7 +252,7 @@
         </div>
       </section>
 
-      <section class="dictionary-section">
+      <section class="dictionary-section" id="dictionaryReplaceSection">
         <h3 id="replacementTitle" data-i18n="dictionary.replaceTitle">Automatic replacements</h3>
         <p class="dictionary-section-desc" data-i18n="dictionary.replaceDesc">A word keeps coming out wrong? Enter how it comes out and what it should be, and SayType fixes it from then on. Works with every engine.</p>
         <form class="replacement-form" id="replacementForm" autocomplete="off">
@@ -396,7 +396,7 @@
           </div>
 
           <div class="setting-group" id="dictationOptions">
-            <div class="setting-item">
+            <div class="setting-item" id="languageSettingItem">
               <div class="setting-info">
                 <div class="setting-title" data-i18n="settings.transcriptionLanguage.title">Dictation language</div>
                 <div class="setting-description" id="languageDescription" data-i18n="settings.transcriptionLanguage.description">
