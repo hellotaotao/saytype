@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copies a published release's macOS and Windows packages to the
 // mainland-China mirror (the saytype-downloads Blob store behind
-// saytype.taotao.au/download) and writes the mirror's own latest.json there.
+// typealoud.app/download) and writes the mirror's own latest.json there.
 // Run by release.yml after the GitHub release is published; safe to re-run.
 //
 //   BLOB_READ_WRITE_TOKEN=... node scripts/mirror-release.mjs v1.19.0

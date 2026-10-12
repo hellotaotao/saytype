@@ -17,8 +17,8 @@ SayType has no account and no sign-up.
 
 | When | Where | What is sent |
 | --- | --- | --- |
-| At startup and every 24 hours | GitHub (`github.com`) or the SayType website (`saytype.taotao.au`) | A request for the latest version manifest. No data about you or your use. |
-| When you download a local model | Hugging Face, ModelScope, GitHub or the SayType website (`saytype.taotao.au`) | Ordinary file downloads. |
+| At startup and every 24 hours | GitHub (`github.com`) or the SayType website (`typealoud.app`) | A request for the latest version manifest. No data about you or your use. |
+| When you download a local model | Hugging Face, ModelScope, GitHub or the SayType website (`typealoud.app`) | Ordinary file downloads. |
 | Only if you choose a cloud engine | OpenAI or Groq, directly with your own key | The recorded audio of each dictation, and the dictionary's words (for an automatic replacement, only the corrected spelling). SayType's servers are not involved. |
 | Once a day, unless turned off | PostHog, EU region (Frankfurt) | Anonymous usage statistics, described below. |
 
@@ -104,8 +104,8 @@ SayType 没有账号，也不需要注册。
 
 | 什么时候 | 连到哪里 | 发送什么 |
 | --- | --- | --- |
-| 启动时，之后每 24 小时 | GitHub（`github.com`）或 SayType 官网（`saytype.taotao.au`） | 请求最新版本清单，不含任何关于你或你使用情况的数据 |
-| 下载本地模型时 | Hugging Face、ModelScope、GitHub 或 SayType 官网（`saytype.taotao.au`） | 普通的文件下载 |
+| 启动时，之后每 24 小时 | GitHub（`github.com`）或 SayType 官网（`typealoud.app`） | 请求最新版本清单，不含任何关于你或你使用情况的数据 |
+| 下载本地模型时 | Hugging Face、ModelScope、GitHub 或 SayType 官网（`typealoud.app`） | 普通的文件下载 |
 | 仅当你选择云端引擎 | OpenAI 或 Groq，用你自己的 key 直连 | 每次听写的录音和词典，不经过 SayType 的服务器 |
 | 每天一次（可关闭） | PostHog 欧盟节点（法兰克福） | 匿名使用统计，见下文 |
 

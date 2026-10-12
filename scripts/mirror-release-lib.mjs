@@ -2,7 +2,7 @@
 // mainland-China mirror and how the mirrored update manifest differs from
 // GitHub's.
 
-export const MIRROR_BASE = "https://saytype.taotao.au/download";
+export const MIRROR_BASE = "https://typealoud.app/download";
 
 // Linux stays on GitHub: its packages are several times the size of the other
 // two platforms together, and its manifest entries keep working unchanged.

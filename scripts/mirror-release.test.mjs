@@ -20,11 +20,11 @@ test("the mirrored manifest moves macOS and Windows packages and nothing else", 
   const mirrored = mirrorManifest(manifest, "v1.19.0");
   assert.equal(
     mirrored.platforms["darwin-aarch64"].url,
-    "https://saytype.taotao.au/download/releases/v1.19.0/SayType_universal.app.tar.gz",
+    "https://typealoud.app/download/releases/v1.19.0/SayType_universal.app.tar.gz",
   );
   assert.equal(
     mirrored.platforms["windows-x86_64"].url,
-    "https://saytype.taotao.au/download/releases/v1.19.0/SayType_1.19.0_x64-setup.exe",
+    "https://typealoud.app/download/releases/v1.19.0/SayType_1.19.0_x64-setup.exe",
   );
   assert.deepEqual(mirrored.platforms["linux-x86_64"], manifest.platforms["linux-x86_64"]);
   for (const [platform, entry] of Object.entries(mirrored.platforms)) {

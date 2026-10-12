@@ -210,7 +210,7 @@ jobs:
 
   mirror:
     # Copies the published macOS and Windows packages, plus a latest.json that
-    # points at them, to saytype.taotao.au/download for mainland China, where
+    # points at them, to typealoud.app/download for mainland China, where
     # GitHub is unreliable (RELEASING.md, "Distribution"). It runs after publish,
     # so the mirror never announces a version GitHub doesn't have. A failure here
     # leaves the release itself fine and the mirror on the previous version:
