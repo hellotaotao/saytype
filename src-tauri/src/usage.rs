@@ -230,7 +230,12 @@ pub fn record_onboarding_step(step: &str) -> Result<(), String> {
   if !ONBOARDING_STEPS.contains(&step) {
     return Err(format!("unknown onboarding step: {step}"));
   }
-  update(|store, _| apply_onboarding_step(store, step));
+  // Help replays the wizard on finished installs; those views are not onboarding.
+  update(|store, config| {
+    if !config.onboarding_completed {
+      apply_onboarding_step(store, step);
+    }
+  });
   Ok(())
 }
 

@@ -631,12 +631,17 @@ pub fn save_settings(
 #[tauri::command]
 pub fn set_onboarding_completed() -> Result<bool, String> {
   log::info!("command:set_onboarding_completed");
+  let mut first_time = false;
   settings::mutate_config(|config| {
+    first_time = !config.onboarding_completed;
     config.onboarding_completed = true;
     Ok(())
   })
   .map_err(stringify_error)?;
-  crate::usage::record_onboarding_completed();
+  // Help replays the wizard on finished installs; only the first pass counts.
+  if first_time {
+    crate::usage::record_onboarding_completed();
+  }
   Ok(true)
 }
 
