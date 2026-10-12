@@ -40,8 +40,10 @@ somewhere the user can retry or copy it. How to test this on real devices is in
 - Settings has a common "Merge spelled-out letters" toggle (`mergeSpelledLetters`), enabled by
   default for new and existing configurations. Disabling it preserves letter spacing without
   disabling the existing hallucination filter.
-- Two or more independent ASCII capital letters separated only by ordinary spaces merge without
-  a dictionary (`A P I` becomes `API`). Punctuation, tabs and line breaks interrupt the run;
+- Independent ASCII letters separated only by ordinary spaces merge without a dictionary: two or
+  more capitals (`A P I` becomes `API`), or three or more letters in any case (`c p p` becomes
+  `cpp`), since the engine picks the case. Two letters with a lowercase one stay apart (`a b`,
+  `I a`). Punctuation, tabs and line breaks interrupt the run;
   cleanup and chunk joining preserve these separators. Incomplete recovery keeps its existing
   preservation path rather than treating partial text as a successful final.
 - Settings has a "Remove filler words" toggle (`removeFillerWords`), enabled by default. It runs

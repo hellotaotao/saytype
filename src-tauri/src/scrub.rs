@@ -41,10 +41,19 @@ pub fn finalize_transcription(text: &str, options: FinalTextOptions) -> String {
   // ASCII word boundaries keep us out of words and identifiers while allowing
   // adjacent CJK text. Only literal spaces join letters, not tabs or newlines.
   let pattern = SPELLED_LETTERS.get_or_init(|| {
-    Regex::new(r"(?-u:\b)[A-Z](?: +[A-Z])+(?-u:\b)").expect("spelled letters regex")
+    Regex::new(r"(?-u:\b)[A-Za-z](?: +[A-Za-z])+(?-u:\b)").expect("spelled letters regex")
   });
+  // The engine picks the case, so "c p p" is as much a spelling as "C P P".
+  // Two letters merge only when both are capitals: "a b" and "I a" can be
+  // ordinary words, while three single letters in a row are not prose.
   pattern.replace_all(&text, |caps: &regex::Captures<'_>| {
-    caps[0].replace(' ', "")
+    let run = &caps[0];
+    let letters = run.chars().filter(|c| *c != ' ').count();
+    if letters >= 3 || !run.chars().any(|c| c.is_ascii_lowercase()) {
+      run.replace(' ', "")
+    } else {
+      run.to_string()
+    }
   }).into_owned()
 }
 
@@ -238,6 +247,9 @@ mod tests {
       ("A P\tI B", "AP\tIB"),
       ("OpenA P I", "OpenA PI"),
       ("A P I2", "AP I2"),
+      ("a p i", "api"),
+      ("这个c p p文件", "这个cpp文件"),
+      ("C p p and n P m", "Cpp and nPm"),
     ] {
       assert_eq!(finalize_transcription(input, LETTERS), expected, "{input:?}");
     }
@@ -246,7 +258,7 @@ mod tests {
   #[test]
   fn final_text_preserves_words_and_non_space_separators() {
     for input in [
-      "", "A", "a p i", "API", "AP I", "OpenA I", "A PIs", "A 2P",
+      "", "A", "a b", "I a", "A b", "plan a or b", "API", "AP I", "OpenA I", "A PIs", "A 2P",
       "A P_", "A_P I", "1A B", "A-P-I", "A/P/I", "A, P, I", "A、P、I",
       "A\tP\tI", "A\nP\nI", "A\u{00a0}P\u{00a0}I", "A\u{3000}P\u{3000}I",
       "I am here. A good day.",

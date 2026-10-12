@@ -320,7 +320,7 @@
         },
         mergeSpelledLetters: {
           title: "Merge spelled-out letters",
-          description: "Join separated capital letters, for example A P I → API.",
+          description: "Join letters spelled one at a time, for example A P I → API.",
         },
         autoLaunch: {
           title: "Start with system",
@@ -906,7 +906,7 @@
         },
         mergeSpelledLetters: {
           title: "自动合并拼读字母",
-          description: "把分开的大写字母连起来，例如 A P I → API。",
+          description: "把一个个分开念的字母连起来，例如 A P I → API。",
         },
         autoLaunch: {
           title: "开机自启",

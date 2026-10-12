@@ -176,7 +176,7 @@ cloud provider (Groq/OpenAI), and inserts the text into the focused app.
 - `scrub.rs` — strips known ASR boilerplate and prompt leaks and always corrects a short built-in
   list of misheard names ("cloud code" → "Claude Code"). `finalize_transcription` then removes
   hesitation fillers (`filler.rs`, when `remove_filler_words` is enabled) and merges space-separated
-  capital letters (when `merge_spelled_letters` is enabled); both default on. Run it only on
+  single letters (when `merge_spelled_letters` is enabled); both default on. Run it only on
   complete results before History/insertion, never on individual chunks or live partials.
 - `dictionary.rs` — parses the user dictionary (one stored string, same separators as the
   Dictionary page). Plain entries and the wanted side of `heard => wanted` rules form the cloud
