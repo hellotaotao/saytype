@@ -9,12 +9,17 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { MIRROR_BASE, mirrorManifest, mirroredAssetNames, mirrorPath, stalePaths } from "./mirror-release-lib.mjs";
 
-const VERCEL_CLI = "vercel@58.9.1";
+// The SDK is installed into the scratch directory per run, so the repo keeps
+// no JS dependency for it. The `vercel blob` CLI is not an option here: it
+// demands a Vercel login even when handed the store's own token.
+const BLOB_SDK = "@vercel/blob@2.8.1";
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
 // Blob's shortest cache lifetime; the manifest and index change every release.
 const MANIFEST_MAX_AGE = 60;
@@ -27,14 +32,16 @@ if (!/^v\d+\.\d+\.\d+/.test(tag ?? "") || !token) {
   process.exit(2);
 }
 
-function blob(...args) {
-  execFileSync("npx", ["--yes", VERCEL_CLI, "blob", ...args, "--rw-token", token], {
-    stdio: ["ignore", "ignore", "inherit"],
+async function put(sdk, file, path, maxAge) {
+  const { url } = await sdk.put(path, readFileSync(file), {
+    access: "public",
+    token,
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    cacheControlMaxAge: maxAge,
+    multipart: true,
   });
-}
-
-function put(file, path, maxAge) {
-  blob("put", file, "--access", "public", "--pathname", path, "--allow-overwrite", "true", "--cache-control-max-age", String(maxAge));
+  return url;
 }
 
 function sha256(bytes) {
@@ -47,8 +54,17 @@ async function fetchMirror(path) {
   return response.ok ? Buffer.from(await response.arrayBuffer()) : null;
 }
 
+function writeJson(name, value) {
+  const file = join(dir, name);
+  writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+  return file;
+}
+
 const dir = mkdtempSync(join(tmpdir(), "saytype-mirror-"));
 try {
+  execFileSync("npm", ["install", "--silent", "--no-audit", "--no-fund", "--prefix", dir, BLOB_SDK], { stdio: "inherit" });
+  const sdk = await import(pathToFileURL(createRequire(join(dir, "package.json")).resolve("@vercel/blob")).href);
+
   const release = JSON.parse(execFileSync("gh", ["release", "view", tag, "--json", "assets,isDraft"], { encoding: "utf8" }));
   if (release.isDraft) throw new Error(`${tag} is still a draft; mirror only published releases`);
   execFileSync("gh", ["release", "download", tag, "--dir", dir, "--pattern", "latest.json"]);
@@ -61,7 +77,7 @@ try {
 
   for (const name of names) {
     execFileSync("gh", ["release", "download", tag, "--dir", dir, "--pattern", name]);
-    put(join(dir, name), mirrorPath(tag, name), YEAR_SECONDS);
+    await put(sdk, join(dir, name), mirrorPath(tag, name), YEAR_SECONDS);
     const served = await fetchMirror(mirrorPath(tag, name));
     if (!served || sha256(served) !== sha256(readFileSync(join(dir, name)))) {
       throw new Error(`${name} does not read back intact from the mirror`);
@@ -70,16 +86,13 @@ try {
   }
 
   // The manifest goes last, so clients never see one whose packages are missing.
-  const mirrored = join(dir, "mirror-latest.json");
-  writeFileSync(mirrored, `${JSON.stringify(mirrorManifest(manifest, tag), null, 2)}\n`);
-  put(mirrored, "latest.json", MANIFEST_MAX_AGE);
-  const index = join(dir, "current.json");
-  writeFileSync(index, `${JSON.stringify({ tag, paths }, null, 2)}\n`);
-  put(index, INDEX_PATH, MANIFEST_MAX_AGE);
+  const manifestUrl = await put(sdk, writeJson("mirror-latest.json", mirrorManifest(manifest, tag)), "latest.json", MANIFEST_MAX_AGE);
+  await put(sdk, writeJson("current.json", { tag, paths }), INDEX_PATH, MANIFEST_MAX_AGE);
   console.log(`mirror manifest now serves ${tag}`);
 
+  const storeBase = manifestUrl.slice(0, -"latest.json".length);
   for (const path of stalePaths(previousIndex, paths)) {
-    blob("del", path);
+    await sdk.del(storeBase + path, { token });
     console.log(`removed ${path}`);
   }
 } finally {
