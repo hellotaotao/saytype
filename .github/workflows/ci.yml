@@ -1,6 +1,6 @@
 # Cross-platform build verification + installer artifacts.
 #
-# This is SayType's "build farm": every push/PR compiles the app on macOS,
+# This is TypeAloud's "build farm": every push/PR compiles the app on macOS,
 # Windows, and Linux and uploads the resulting installers as downloadable
 # workflow artifacts. It lets a Mac-only developer get + smoke-test Windows and
 # Linux builds without owning those machines. It does NOT publish GitHub

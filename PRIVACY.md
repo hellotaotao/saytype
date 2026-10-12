@@ -1,6 +1,6 @@
 # Privacy
 
-SayType is built so that your voice stays on your computer. This page lists every connection the
+TypeAloud is built so that your voice stays on your computer. This page lists every connection the
 app makes and exactly what the anonymous usage statistics contain.
 
 [中文版见下方](#隐私说明)
@@ -11,20 +11,20 @@ app makes and exactly what the anonymous usage statistics contain.
 - **Transcribed text, History and the dictionary.** They are stored only in the app's data folder.
 - **API keys** you enter, apart from being sent to the provider they belong to.
 
-SayType has no account and no sign-up.
+TypeAloud has no account and no sign-up.
 
 ## Connections the app makes
 
 | When | Where | What is sent |
 | --- | --- | --- |
-| At startup and every 24 hours | GitHub (`github.com`) or the SayType website (`typealoud.app`) | A request for the latest version manifest. No data about you or your use. |
-| When you download a local model | Hugging Face, ModelScope, GitHub or the SayType website (`typealoud.app`) | Ordinary file downloads. |
-| Only if you choose a cloud engine | OpenAI or Groq, directly with your own key | The recorded audio of each dictation, and the dictionary's words (for an automatic replacement, only the corrected spelling). SayType's servers are not involved. |
+| At startup and every 24 hours | GitHub (`github.com`) or the TypeAloud website (`typealoud.app`) | A request for the latest version manifest. No data about you or your use. |
+| When you download a local model | Hugging Face, ModelScope, GitHub or the TypeAloud website (`typealoud.app`) | Ordinary file downloads. |
+| Only if you choose a cloud engine | OpenAI or Groq, directly with your own key | The recorded audio of each dictation, and the dictionary's words (for an automatic replacement, only the corrected spelling). TypeAloud's servers are not involved. |
 | Once a day, unless turned off | PostHog, EU region (Frankfurt) | Anonymous usage statistics, described below. |
 
 ## Anonymous usage statistics
 
-These tell us how many people use SayType, whether they come back day after day, and how much they
+These tell us how many people use TypeAloud, whether they come back day after day, and how much they
 dictate. They are on by default. The onboarding privacy page and **Settings → App Settings → Anonymous usage
 statistics** both carry the switch.
 
@@ -83,14 +83,14 @@ counts wait on disk and are sent later; anything older than 30 days is dropped.
   including the random ID. Turning it back on starts with a new ID.
 - Development builds never send anything.
 
-Data is kept for at most 12 months, is used only to understand how SayType is used, and is never
+Data is kept for at most 12 months, is used only to understand how TypeAloud is used, and is never
 sold or shared.
 
 ---
 
 # 隐私说明
 
-SayType 的设计原则是声音留在你的电脑上。本页列出 App 发起的每一种网络连接，以及匿名使用统计的具体内容。
+TypeAloud 的设计原则是声音留在你的电脑上。本页列出 App 发起的每一种网络连接，以及匿名使用统计的具体内容。
 
 ## 不会离开你电脑的东西
 
@@ -98,20 +98,20 @@ SayType 的设计原则是声音留在你的电脑上。本页列出 App 发起�
 - **转写出的文字、历史记录和词典**：只保存在 App 的数据文件夹里。
 - **你填写的 API key**：只发给它所属的服务商。
 
-SayType 没有账号，也不需要注册。
+TypeAloud 没有账号，也不需要注册。
 
 ## App 会发起的连接
 
 | 什么时候 | 连到哪里 | 发送什么 |
 | --- | --- | --- |
-| 启动时，之后每 24 小时 | GitHub（`github.com`）或 SayType 官网（`typealoud.app`） | 请求最新版本清单，不含任何关于你或你使用情况的数据 |
-| 下载本地模型时 | Hugging Face、ModelScope、GitHub 或 SayType 官网（`typealoud.app`） | 普通的文件下载 |
-| 仅当你选择云端引擎 | OpenAI 或 Groq，用你自己的 key 直连 | 每次听写的录音和词典，不经过 SayType 的服务器 |
+| 启动时，之后每 24 小时 | GitHub（`github.com`）或 TypeAloud 官网（`typealoud.app`） | 请求最新版本清单，不含任何关于你或你使用情况的数据 |
+| 下载本地模型时 | Hugging Face、ModelScope、GitHub 或 TypeAloud 官网（`typealoud.app`） | 普通的文件下载 |
+| 仅当你选择云端引擎 | OpenAI 或 Groq，用你自己的 key 直连 | 每次听写的录音和词典，不经过 TypeAloud 的服务器 |
 | 每天一次（可关闭） | PostHog 欧盟节点（法兰克福） | 匿名使用统计，见下文 |
 
 ## 匿名使用统计
 
-用来了解有多少人在用 SayType、是不是每天都回来用、平均听写多少。默认开启，引导里的隐私页和**设置 → 应用设置 → 匿名使用统计**都有开关。
+用来了解有多少人在用 TypeAloud、是不是每天都回来用、平均听写多少。默认开启，引导里的隐私页和**设置 → 应用设置 → 匿名使用统计**都有开关。
 
 ### 发送什么
 
@@ -137,4 +137,4 @@ App 运行过的每一天对应一条，第二天发出。字段和上面英文�
 - 关掉开关后立即停止记录和发送，本地还没发出的计数连同随机 ID 一起删除。重新打开会生成新的 ID。
 - 开发版从不发送。
 
-数据最多保存 12 个月，只用来了解 SayType 的使用情况，不出售，也不分享给任何人。
+数据最多保存 12 个月，只用来了解 TypeAloud 的使用情况，不出售，也不分享给任何人。

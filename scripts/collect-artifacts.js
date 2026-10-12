@@ -8,7 +8,7 @@
 // top-level dist/ folder, so every built version is archived there, and reveal
 // it in Finder.
 //
-// With --install (opt-in convenience): also mount that .dmg, copy SayType.app
+// With --install (opt-in convenience): also mount that .dmg, copy TypeAloud.app
 // into /Applications over the old version, detach, and relaunch it.
 //
 // Usage: node scripts/collect-artifacts.js [target-triple] [--install]
@@ -77,23 +77,27 @@ if (process.platform === "darwin") {
 }
 
 function installToApplications(dmgPath) {
-  const appName = "SayType.app";
+  const appName = "TypeAloud.app";
   const destApp = path.join("/Applications", appName);
 
   // Quit the currently running app so the bundle can be replaced.
   try {
-    execFileSync("osascript", ["-e", 'tell application "SayType" to quit']);
+    execFileSync("osascript", ["-e", 'tell application "TypeAloud" to quit']);
   } catch {
     /* not running */
   }
-  try {
-    execFileSync("pkill", ["-f", "SayType.app/Contents/MacOS/"]);
-  } catch {
-    /* not running */
+  // SayType.app is the pre-rename bundle: same identifier, so a running copy
+  // would hand the launch below back to itself.
+  for (const bundle of [appName, "SayType.app"]) {
+    try {
+      execFileSync("pkill", ["-f", `${bundle}/Contents/MacOS/`]);
+    } catch {
+      /* not running */
+    }
   }
 
   // Mount at a unique temp path so a leftover/duplicate volume name can't
-  // collide (which would mount as "SayType 1" and leak), and detach is exact.
+  // collide (which would mount as "TypeAloud 1" and leak), and detach is exact.
   const mountPoint = fs.mkdtempSync(path.join(os.tmpdir(), "saytype-dmg-"));
   let mounted = false;
   try {

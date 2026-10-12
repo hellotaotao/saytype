@@ -1,6 +1,6 @@
 # Local ASR
 
-Reference for SayType's on-device transcription, checked against `a183354` (1.15.1) on
+Reference for TypeAloud's on-device transcription, checked against `a183354` (1.15.1) on
 2026-09-11. It replaces four older documents that now live only in git history: the Qwen3-ASR
 design (2026-07-12), the long-audio chunking design (2026-07-22), the `--no-warmup` macOS TODO
 and the MLX evaluation (2026-07-30).
@@ -80,14 +80,14 @@ Decided 2026-07-13 after two rounds of measurement on the maintainer's machines.
 | Candidate | Outcome |
 |---|---|
 | llama.cpp subprocess, official `ggml-org/Qwen3-ASR-*-GGUF` | **Chosen.** On an M4: Metal decode RTF 0.05–0.18, peak RSS about 1.34 GB and flat, no slowdown with the CPU saturated. Cancelling means killing the child. |
-| sherpa-onnx in-process, int8 | Rejected. Quality matched, but CPU-only: RTF about 0.30, 2.1 GB decode peak, 1.6 GB resident that SayType would have to unload itself, and it degraded badly when the machine was busy. |
+| sherpa-onnx in-process, int8 | Rejected. Quality matched, but CPU-only: RTF about 0.30, 2.1 GB decode peak, 1.6 GB resident that TypeAloud would have to unload itself, and it degraded badly when the machine was busy. |
 | antirez/qwen-asr (C + BLAS) | Rejected: BF16 only, 2.77 GiB static memory, no Windows. |
 | second-state/qwen3_asr_rs | Rejected: libtorch/MLX underneath, very large dynamic libraries to ship. |
 | MLX via `mlx-audio` (evaluated 2026-07-30) | Not adopted. It needs a Python/MLX runtime and separate weights, since the GGUF files can't be loaded. Bar for revisiting: at least 20% faster than the llama.cpp worker on both warm decode and first partial, no quality loss, idle memory actually released, no orphan workers, and only as an optional macOS backend that leaves the ~1 GB default download alone. |
 | Native Swift rewrite | Rejected. The Metal speed comes from llama.cpp, not from the host language. |
 
 Every platform runs the same code path; only the downloaded archive differs. llama.cpp must be at
-least `b9173`, which fixed a Qwen3-ASR repetition loop (llama.cpp #22357). SayType pins `b9960`,
+least `b9173`, which fixed a Qwen3-ASR repetition loop (llama.cpp #22357). TypeAloud pins `b9960`,
 and an upgrade needs a regression pass.
 
 Quality notes from the original comparison (M4, 2026-07-12/13): on clean speech Q8_0 matched sherpa
@@ -115,7 +115,7 @@ have since been discarded. The figures in this section are what was kept from th
   switching between 0.6B and 1.7B never reuses the other model's worker.
 - `SettingsPayload.engine_ready` reports availability independently of selection. For local engines,
   missing assets produce `engine_blocker = "local-model-missing"`; selecting that engine is still allowed.
-- SayType briefly built its own patched llama.cpp. The private builds shipped link and CPU-variant
+- TypeAloud briefly built its own patched llama.cpp. The private builds shipped link and CPU-variant
   defects that upstream's packs don't have, so it went back to upstream; see
   `vendor/llama.cpp/README.md`.
 
@@ -298,7 +298,7 @@ already use Metal. Linux would need its own verified pack.
 Intel HD 630 lists 12 GiB), so a memory threshold would choose the GPU on exactly the hardware
 where it loses. On the i5-7400 + HD 630, 19.5 s clip, alternating and both primed, n=10 each: CPU
 median 7.92 s, Vulkan median 15.12 s, all 20 transcripts byte-identical, spreads 0.87 s and 0.67 s.
-The heavy CPU tail once recorded against SayType's own single-variant build does not reproduce on
+The heavy CPU tail once recorded against TypeAloud's own single-variant build does not reproduce on
 upstream's per-arch pack. Changing the default needs numbers from discrete GPUs.
 
 A GPU worker that fails to start or dies mid-decode sets `GPU_DISABLED` for the process

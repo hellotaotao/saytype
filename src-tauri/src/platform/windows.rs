@@ -60,7 +60,7 @@ mod tests {
   #[test]
   #[ignore = "Requires an interactive Windows desktop and replaces clipboard contents"]
   fn explicit_clipboard_copy_round_trips_unicode() {
-    let text = "SayType 中文 🎙️\nSecond line";
+    let text = "TypeAloud 中文 🎙️\nSecond line";
     copy_to_clipboard(text).unwrap();
     assert_eq!(arboard::Clipboard::new().unwrap().get_text().unwrap(), text);
   }

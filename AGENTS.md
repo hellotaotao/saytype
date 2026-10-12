@@ -4,7 +4,7 @@ Guidance for coding agents working in this repository. Codex reads this file dir
 reads it through `CLAUDE.md`, which only imports it. Keep shared rules here so both tools follow
 the same instructions.
 
-> **Note:** SayType is a **Tauri 2 + Rust** desktop app (migrated from Electron, which has been fully removed). Don't reintroduce Electron dependencies.
+> **Note:** TypeAloud is a **Tauri 2 + Rust** desktop app (migrated from Electron, which has been fully removed). Don't reintroduce Electron dependencies.
 
 This file holds the rules and invariants to respect when changing code. The reasons, measurements
 and history behind them live in the documents below; read the relevant one before re-deriving or
@@ -52,7 +52,7 @@ builds never auto-bump.
 `build`, `build:mac` and `build:mac:install` set `CI=true` (tauri's Finder-prettifying AppleScript
 fails in non-interactive shells) and run `scripts/collect-artifacts.js`, which **always copies the
 built `.dmg` into `dist/`**, the kept archive of every version's installer, so don't skip it.
-`build:mac:install` also mounts that dmg, copies `SayType.app` over the one in `/Applications` and
+`build:mac:install` also mounts that dmg, copies `TypeAloud.app` over the one in `/Applications` and
 relaunches it.
 
 **Dev vs official build identity:** `src-tauri/build.rs` embeds a channel at compile time. CI's
@@ -91,7 +91,7 @@ Secrets, AI release notes, verification, rollback and the localhost updater e2e 
 
 ## Architecture Overview
 
-SayType is a Tauri 2 voice-input app: a **Rust backend** (`src-tauri/src/`) hosting a **web
+TypeAloud is a Tauri 2 voice-input app: a **Rust backend** (`src-tauri/src/`) hosting a **web
 frontend** (`src/views/`). It runs in the system tray with a global hold-to-record hotkey,
 transcribes locally by default (Qwen3-ASR through llama.cpp, or Nemotron) or through an optional
 cloud provider (Groq/OpenAI), and inserts the text into the focused app.

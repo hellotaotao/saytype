@@ -53,20 +53,20 @@
         localModel: "Local model",
         engine: "Transcription engine",
         axGuide: {
-          title: "Allow SayType to use Accessibility",
-          lead: "macOS asks for this permission so SayType can do exactly two things:",
+          title: "Allow TypeAloud to use Accessibility",
+          lead: "macOS asks for this permission so TypeAloud can do exactly two things:",
           useInsert: "Type your dictated text into whatever app you're using",
           useHotkey: "Notice the hold-to-dictate shortcut while you're in any app",
           privacy:
-            "This permission is only used to respond to the shortcut and type text. SayType never logs your keystrokes or watches other apps.",
+            "This permission is only used to respond to the shortcut and type text. TypeAloud never logs your keystrokes or watches other apps.",
           open: "Open Accessibility Settings",
           waiting: "Waiting for permission…",
           waitingHint:
-            "In System Settings, turn on the switch next to SayType — this screen continues automatically once it's on.",
+            "In System Settings, turn on the switch next to TypeAloud — this screen continues automatically once it's on.",
           retryHint:
-            "Permission not detected yet. Turn on SayType in the Accessibility list, or try again.",
-          revealApp: "Reveal SayType in Finder",
-          revealHint: "Can't find SayType in the list? Drag it in from Finder — same as clicking +.",
+            "Permission not detected yet. Turn on TypeAloud in the Accessibility list, or try again.",
+          revealApp: "Reveal TypeAloud in Finder",
+          revealHint: "Can't find TypeAloud in the list? Drag it in from Finder — same as clicking +.",
         },
       },
       onboarding: {
@@ -98,13 +98,13 @@
             "Once a day: how many dictations and characters, which engine, app and system version. Never audio, text or anything that identifies you. You can turn this off in Settings any time.",
         },
         mic: {
-          title: "Let SayType hear you",
+          title: "Let TypeAloud hear you",
           lead: "It records only while you hold the shortcut — release, and it stops.",
           enable: "Enable microphone",
           enableHint: "Your system will ask for microphone access — allow it to continue.",
           granted: "Microphone ready",
           denied:
-            "Microphone access was denied. Turn on SayType under System Settings → Privacy & Security → Microphone — this page continues automatically.",
+            "Microphone access was denied. Turn on TypeAloud under System Settings → Privacy & Security → Microphone — this page continues automatically.",
           unknown: "Not yet tested with a recording",
           openSettings: "Open Microphone Settings",
         },
@@ -202,7 +202,7 @@
         wordsDesc: "Helps cloud engines spell these words right.",
         placeholder: "Add a word, press Enter",
         replaceTitle: "Automatic replacements",
-        replaceDesc: "A word keeps coming out wrong? Enter how it comes out and what it should be, and SayType fixes it from then on. Works with every engine.",
+        replaceDesc: "A word keeps coming out wrong? Enter how it comes out and what it should be, and TypeAloud fixes it from then on. Works with every engine.",
         replaceHeard: "Comes out as, e.g. cloud code",
         replaceWanted: "Should be, e.g. Claude Code",
         replaceAdd: "Add",
@@ -216,7 +216,7 @@
         aboutHow: "When you use a cloud engine, these words go to the model as a reference. They are more likely to come out right, but not every time.",
         localNote: "The local engine doesn't use these words. Automatic replacements work with every engine.",
         punctuationTitle: "Automatic punctuation for Chinese",
-        punctuationDesc: "When Whisper transcribes Chinese, SayType sends the example below to the model to help it add punctuation. The example is fixed and contains none of your data; GPT models and other languages don't use it.",
+        punctuationDesc: "When Whisper transcribes Chinese, TypeAloud sends the example below to the model to help it add punctuation. The example is fixed and contains none of your data; GPT models and other languages don't use it.",
         saveError: "Error saving dictionary: {message}",
       },
       activity: {
@@ -242,7 +242,7 @@
         retranscribeFailedReason: "Re-transcribe failed: {reason}",
       },
       settings: {
-        title: "Settings - SayType",
+        title: "Settings - TypeAloud",
         pageTitle: "Settings",
         pageSubtitle: "Settings save automatically.",
         tabsAria: "Settings sections",
@@ -275,7 +275,7 @@
         },
         microphone: {
           title: "Microphone Permission",
-          description: "SayType needs the microphone to record.",
+          description: "TypeAloud needs the microphone to record.",
         },
         permission: {
           checking: "Checking...",
@@ -324,13 +324,13 @@
         },
         autoLaunch: {
           title: "Start with system",
-          description: "Automatically start SayType when your computer starts up.",
+          description: "Automatically start TypeAloud when your computer starts up.",
           aria: "Start with system",
         },
         startMinimized: {
           title: "Start minimized",
           description:
-            "Every launch keeps the main window hidden and runs SayType in the background; the shortcut still works.",
+            "Every launch keeps the main window hidden and runs TypeAloud in the background; the shortcut still works.",
           aria: "Start minimized",
         },
         updates: {
@@ -502,7 +502,7 @@
           statusDownloading: "Downloading GPU acceleration… {done} / {total}",
           statusReady: "Using {device}.",
           statusNoDevice: "GPU acceleration is installed, but the GPU can't be used right now — still on the CPU. Try updating your graphics driver.",
-          statusFellBack: "The GPU failed, so SayType switched to the CPU. It will try the GPU again after a restart.",
+          statusFellBack: "The GPU failed, so TypeAloud switched to the CPU. It will try the GPU again after a restart.",
           download: "Download GPU acceleration",
           retry: "Retry download",
           cancel: "Cancel download",
@@ -643,18 +643,18 @@
         localModel: "本地模型",
         engine: "转写引擎",
         axGuide: {
-          title: "允许 SayType 使用辅助功能",
-          lead: "macOS 需要这项权限，SayType 才能做到这两件事：",
+          title: "允许 TypeAloud 使用辅助功能",
+          lead: "macOS 需要这项权限，TypeAloud 才能做到这两件事：",
           useInsert: "把听写好的文字直接输入到你正在用的应用里",
           useHotkey: "在任意应用中响应“按住说话”快捷键",
           privacy:
-            "这项权限只用来响应快捷键和输入文字。SayType 不会记录你的按键，也不会监控其他应用。",
+            "这项权限只用来响应快捷键和输入文字。TypeAloud 不会记录你的按键，也不会监控其他应用。",
           open: "打开辅助功能设置",
           waiting: "等待授权中…",
-          waitingHint: "在系统设置里打开 SayType 旁边的开关，授权后这里会自动继续。",
-          retryHint: "还没检测到授权。请在辅助功能列表中打开 SayType，或再试一次。",
-          revealApp: "在 Finder 中显示 SayType",
-          revealHint: "列表里找不到 SayType？把它从 Finder 拖进列表即可（等同于点 +）。",
+          waitingHint: "在系统设置里打开 TypeAloud 旁边的开关，授权后这里会自动继续。",
+          retryHint: "还没检测到授权。请在辅助功能列表中打开 TypeAloud，或再试一次。",
+          revealApp: "在 Finder 中显示 TypeAloud",
+          revealHint: "列表里找不到 TypeAloud？把它从 Finder 拖进列表即可（等同于点 +）。",
         },
       },
       onboarding: {
@@ -686,17 +686,17 @@
             "每天一次：听写了几次、多少字，用的哪个引擎、软件和系统版本。不含录音、文字，也没有能认出你的信息。随时可以在设置里关掉。",
         },
         mic: {
-          title: "先让 SayType 听到你",
+          title: "先让 TypeAloud 听到你",
           lead: "只在你按住快捷键时录音，松手即停。",
           enable: "启用麦克风",
           enableHint: "系统会询问是否允许使用麦克风，允许后即可继续。",
           granted: "麦克风已就绪",
-          denied: "麦克风被拒绝了。请在 系统设置 → 隐私与安全性 → 麦克风 里打开 SayType，授权后这里会自动继续。",
+          denied: "麦克风被拒绝了。请在 系统设置 → 隐私与安全性 → 麦克风 里打开 TypeAloud，授权后这里会自动继续。",
           unknown: "还没实际录过音",
           openSettings: "打开麦克风设置",
         },
         ax: {
-          title: "让 SayType 为你输入文字",
+          title: "让 TypeAloud 为你输入文字",
           granted: "辅助功能已就绪",
         },
         key: {
@@ -802,7 +802,7 @@
         aboutHow: "用云端引擎转写时，这些词会一起发给模型作参考。加进来的词更容易写对，但不保证每次都对。",
         localNote: "本地引擎不会参考这些词。自动替换对所有引擎都有效。",
         punctuationTitle: "中文标点自动优化",
-        punctuationDesc: "用 Whisper 转写中文时，SayType 会把下面这句示例一起发给模型，帮它加上标点。这句话是固定的，不含你的任何信息；GPT 模型和其他语言不会用到。",
+        punctuationDesc: "用 Whisper 转写中文时，TypeAloud 会把下面这句示例一起发给模型，帮它加上标点。这句话是固定的，不含你的任何信息；GPT 模型和其他语言不会用到。",
         saveError: "保存词典出错：{message}",
       },
       activity: {
@@ -828,7 +828,7 @@
         retranscribeFailedReason: "重新转写失败：{reason}",
       },
       settings: {
-        title: "设置 - SayType",
+        title: "设置 - TypeAloud",
         pageTitle: "设置",
         pageSubtitle: "设置会自动保存。",
         tabsAria: "设置分类",
@@ -861,7 +861,7 @@
         },
         microphone: {
           title: "麦克风权限",
-          description: "SayType 需要麦克风来录音。",
+          description: "TypeAloud 需要麦克风来录音。",
         },
         permission: {
           checking: "检查中...",
@@ -910,7 +910,7 @@
         },
         autoLaunch: {
           title: "开机自启",
-          description: "电脑启动时自动运行 SayType。",
+          description: "电脑启动时自动运行 TypeAloud。",
           aria: "开机自启",
         },
         startMinimized: {
@@ -1085,7 +1085,7 @@
           statusDownloading: "正在下载显卡加速组件… {done} / {total}",
           statusReady: "正在使用 {device}。",
           statusNoDevice: "显卡加速组件已安装，但暂时用不了显卡，当前仍用 CPU。可以试试更新显卡驱动。",
-          statusFellBack: "显卡运行失败，已改用 CPU。重启 SayType 后会再试显卡。",
+          statusFellBack: "显卡运行失败，已改用 CPU。重启 TypeAloud 后会再试显卡。",
           download: "下载显卡加速组件",
           retry: "重新下载",
           cancel: "取消下载",

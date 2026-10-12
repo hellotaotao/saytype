@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>SayType</string>
+  <string>TypeAloud</string>
   <key>CFBundleName</key>
-  <string>SayType</string>
+  <string>TypeAloud</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>SayType needs microphone access to transcribe your voice input.</string>
+  <string>TypeAloud needs microphone access to transcribe your voice input.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>SayType needs Apple Events access to insert text into other applications.</string>
+  <string>TypeAloud needs Apple Events access to insert text into other applications.</string>
   <key>LSMinimumSystemVersion</key>
   <string>10.15.0</string>
 </dict>

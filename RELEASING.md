@@ -2,8 +2,8 @@
 
 **English** · [中文说明 ↓](#发布中文)
 
-SayType ships installers for **macOS, Windows and Linux** on the project's
-[GitHub Releases](https://github.com/hellotaotao/saytype/releases) page. They are built by the
+TypeAloud ships installers for **macOS, Windows and Linux** on the project's
+[GitHub Releases](https://github.com/hellotaotao/typealoud/releases) page. They are built by the
 [`Release`](.github/workflows/release.yml) GitHub Actions workflow; nothing is built or uploaded by
 hand.
 
@@ -68,7 +68,7 @@ the bad version until a newer one is published, so the real fix is another patch
 ### Signing & notarization (macOS)
 
 Without these secrets the workflow still **succeeds**, but the `.dmg` is **unsigned**: downloaders
-hit a Gatekeeper warning and must right-click → Open (or run `xattr -cr /Applications/SayType.app`).
+hit a Gatekeeper warning and must right-click → Open (or run `xattr -cr /Applications/TypeAloud.app`).
 The "Configure Apple signing" step passes the `APPLE_*` values to tauri-cli only when
 `APPLE_CERTIFICATE` is set, so adding them later needs no workflow change.
 
@@ -117,7 +117,7 @@ ignored. The matching public key is in `tauri.conf.json`.
 
 | Secret | Value |
 | --- | --- |
-| `SAYTYPE_POSTHOG_KEY` | The project API key (`phc_…`) of the SayType project in PostHog's EU region. It is write-only and public by design. |
+| `SAYTYPE_POSTHOG_KEY` | The project API key (`phc_…`) of the TypeAloud project in PostHog's EU region. It is write-only and public by design. |
 
 It is compiled into official builds (`usage.rs`). Without it a release still builds and records
 counts locally, but never sends them. In the PostHog project settings, turn on "Discard client IP
@@ -138,23 +138,23 @@ missing or the call fails, the step warns and the release keeps its default body
 
 **Notarization**, on the downloaded app:
 
-- `spctl -a -t exec -vv SayType.app` → `accepted … source=Notarized Developer ID`
-- `xcrun stapler validate SayType.app` → `The validate action worked!`
+- `spctl -a -t exec -vv TypeAloud.app` → `accepted … source=Notarized Developer ID`
+- `xcrun stapler validate TypeAloud.app` → `The validate action worked!`
 
 **Auto-update end to end without publishing**, using `src-tauri/tauri.updater-e2e.conf.json`
-(localhost endpoint). This replaces `/Applications/SayType.app` and temporarily bumps the version
+(localhost endpoint). This replaces `/Applications/TypeAloud.app` and temporarily bumps the version
 files. Don't run `scripts/collect-artifacts.js` during it, or it overwrites the archived installer in
 `dist/`.
 
-1. Quit SayType and build the "old" version:
+1. Quit TypeAloud and build the "old" version:
    `CI=true sh -c '. ./scripts/sign.env; npx tauri build --target aarch64-apple-darwin --config src-tauri/tauri.updater-e2e.conf.json'`.
-   Replace `/Applications/SayType.app` with
-   `src-tauri/target/aarch64-apple-darwin/release/bundle/macos/SayType.app`.
+   Replace `/Applications/TypeAloud.app` with
+   `src-tauri/target/aarch64-apple-darwin/release/bundle/macos/TypeAloud.app`.
 2. Run `npm run version:tauri:patch` (don't commit) and build again with the same command. Check that
-   `SayType.app.tar.gz` and its `.sig` exist in that bundle directory.
+   `TypeAloud.app.tar.gz` and its `.sig` exist in that bundle directory.
 3. Copy the `.tar.gz` into a scratch directory and write a `latest.json` next to it: the new `version`,
    and a `platforms["darwin-aarch64"]` entry whose `signature` is the `.sig` contents and whose `url`
-   is `http://127.0.0.1:8765/SayType.app.tar.gz`. Serve that directory with
+   is `http://127.0.0.1:8765/TypeAloud.app.tar.gz`. Serve that directory with
    `python3 -m http.server 8765`.
 4. Restore the version files with
    `git checkout -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock`,
@@ -211,9 +211,9 @@ hosting/CDN would actually fix China speed, so defer that until China is a real 
 button at the newest DMG with a little client-side JS:
 
 ```html
-<a id="dl-mac" href="https://github.com/hellotaotao/saytype/releases/latest">Download for macOS</a>
+<a id="dl-mac" href="https://github.com/hellotaotao/typealoud/releases/latest">Download for macOS</a>
 <script>
-fetch('https://api.github.com/repos/hellotaotao/saytype/releases/latest')
+fetch('https://api.github.com/repos/hellotaotao/typealoud/releases/latest')
   .then(r => r.json())
   .then(rel => {
     const dmg = rel.assets.find(a => a.name.endsWith('.dmg'));
@@ -224,7 +224,7 @@ fetch('https://api.github.com/repos/hellotaotao/saytype/releases/latest')
 ```
 
 GitHub's anonymous API limit (60 per hour) is per visitor IP, so a download button never hits it. The
-zero-JS alternative, uploading a version-less `SayType-macOS.dmg` with every release, adds a CI step
+zero-JS alternative, uploading a version-less `TypeAloud-macOS.dmg` with every release, adds a CI step
 and clutters the releases page. The mirror above already carries each release's DMG at
 `https://typealoud.app/download/releases/<tag>/…` (the tag and file names are in
 `releases/current.json`), which the button can use for mainland visitors.
@@ -237,8 +237,8 @@ and clutters the releases page. The mirror above already carries each release's 
 
 [↑ English](#releasing)
 
-SayType 面向 **macOS、Windows、Linux** 三平台发布安装包到项目的
-[GitHub Releases](https://github.com/hellotaotao/saytype/releases) 页面。安装包由
+TypeAloud 面向 **macOS、Windows、Linux** 三平台发布安装包到项目的
+[GitHub Releases](https://github.com/hellotaotao/typealoud/releases) 页面。安装包由
 [`Release`](.github/workflows/release.yml) GitHub Actions workflow 自动构建,不需要手动构建或上传。
 
 ## workflow 做了什么
@@ -293,7 +293,7 @@ git tag vX.Y.Z && git push origin main --tags
 ### 签名与公证(macOS)
 
 没有这些 secrets,workflow 仍然会**成功**,只是 `.dmg` **没有签名**:下载者会遇到 Gatekeeper 警告,必须右键
-→ 打开(或运行 `xattr -cr /Applications/SayType.app`)。"Configure Apple signing" 步骤只在设置了
+→ 打开(或运行 `xattr -cr /Applications/TypeAloud.app`)。"Configure Apple signing" 步骤只在设置了
 `APPLE_CERTIFICATE` 时才把 `APPLE_*` 传给 tauri-cli,所以之后再补 secrets 也不用改 workflow。
 
 公证就是 Apple 扫描签过名的 app,返回一张 ticket 并 **staple 进 bundle**,别的 Mac 上 Gatekeeper 才会放行、
@@ -335,7 +335,7 @@ bundler 只认 `TAURI_SIGNING_PRIVATE_KEY`(路径或内容都行),`_PATH` 变体
 
 | Secret | 值 |
 | --- | --- |
-| `SAYTYPE_POSTHOG_KEY` | PostHog 欧盟区 SayType 项目的 project API key(`phc_…`),只能写入,本来就是公开的 |
+| `SAYTYPE_POSTHOG_KEY` | PostHog 欧盟区 TypeAloud 项目的 project API key(`phc_…`),只能写入,本来就是公开的 |
 
 它被编译进正式版(`usage.rs`)。没有它照样能发版,统计只在本地记录、从不发送。PostHog 项目设置里要打开 "Discard client IP data"。发送内容见 `PRIVACY.md`。
 
@@ -353,21 +353,21 @@ Claude API(`claude-sonnet-5`)→ 面向用户的中英双语说明,用 `gh relea
 
 **公证**,对下载下来的 app:
 
-- `spctl -a -t exec -vv SayType.app` → `accepted … source=Notarized Developer ID`
-- `xcrun stapler validate SayType.app` → `The validate action worked!`
+- `spctl -a -t exec -vv TypeAloud.app` → `accepted … source=Notarized Developer ID`
+- `xcrun stapler validate TypeAloud.app` → `The validate action worked!`
 
 **不发布也能跑通自动更新全链路**,用 `src-tauri/tauri.updater-e2e.conf.json`(localhost 端点)。这会替换
-`/Applications/SayType.app` 并临时改版本号文件。过程中不要运行 `scripts/collect-artifacts.js`,否则会覆盖
+`/Applications/TypeAloud.app` 并临时改版本号文件。过程中不要运行 `scripts/collect-artifacts.js`,否则会覆盖
 `dist/` 里归档的安装包。
 
-1. 退出 SayType,构建"旧"版本:
+1. 退出 TypeAloud,构建"旧"版本:
    `CI=true sh -c '. ./scripts/sign.env; npx tauri build --target aarch64-apple-darwin --config src-tauri/tauri.updater-e2e.conf.json'`。
-   用 `src-tauri/target/aarch64-apple-darwin/release/bundle/macos/SayType.app` 替换 `/Applications/SayType.app`。
+   用 `src-tauri/target/aarch64-apple-darwin/release/bundle/macos/TypeAloud.app` 替换 `/Applications/TypeAloud.app`。
 2. 运行 `npm run version:tauri:patch`(不要提交),用同一条命令再构建一次。确认该 bundle 目录里有
-   `SayType.app.tar.gz` 和对应的 `.sig`。
+   `TypeAloud.app.tar.gz` 和对应的 `.sig`。
 3. 把 `.tar.gz` 复制到一个临时目录,在旁边写一个 `latest.json`:`version` 填新版本号,
    `platforms["darwin-aarch64"]` 的 `signature` 填 `.sig` 的内容、`url` 填
-   `http://127.0.0.1:8765/SayType.app.tar.gz`。然后在该目录运行 `python3 -m http.server 8765`。
+   `http://127.0.0.1:8765/TypeAloud.app.tar.gz`。然后在该目录运行 `python3 -m http.server 8765`。
 4. 用 `git checkout -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock`
    还原版本号文件,打开已安装的 app,设置 →"检查更新"。应依次看到检查中 → 下载中 → 已就绪,托盘出现
    "重启以更新到 vX.Y.Z",重启后是新版本,听写照常,没有新的权限弹窗。
@@ -411,6 +411,6 @@ saytype-downloads → `BLOB_READ_WRITE_TOKEN`);没配的话任务只给警告并
 最新的 DMG,代码见英文部分。
 
 GitHub 匿名 API 限额(每小时 60 次)按访客 IP 计算,下载按钮碰不到。不写 JS 的替代方案是每次发版额外上传一个不带
-版本号的 `SayType-macOS.dmg`,但要多一个 CI 步骤,还会让 releases 页面更乱。上面的镜像已经带着每个
+版本号的 `TypeAloud-macOS.dmg`,但要多一个 CI 步骤,还会让 releases 页面更乱。上面的镜像已经带着每个
 版本的 DMG,地址是 `https://typealoud.app/download/releases/<tag>/…`(tag 和文件名在
 `releases/current.json` 里),下载按钮可以给大陆访客用这个地址。

@@ -12,7 +12,7 @@ const WINDOW_LABEL: &str = "ax-cloud";
 static ATTACH_OVERLAY: std::sync::Once = std::sync::Once::new();
 
 /// Show the cloud. Returns false when it was NOT shown — a dev bare binary has
-/// no .app bundle, and dragging it into the list would not grant SayType
+/// no .app bundle, and dragging it into the list would not grant TypeAloud
 /// anything, so it is better not to appear at all.
 pub fn show(app: &AppHandle) -> bool {
   if crate::platform::app_bundle_path().is_none() {

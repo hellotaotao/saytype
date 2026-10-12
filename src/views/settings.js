@@ -1806,7 +1806,7 @@ function renderAccessibilityStatus(result) {
 
   // Once granted there's nothing to act on, so hide the check button.
   document.getElementById("checkAccessibility")?.classList.toggle("hidden", ok);
-  // The Finder route matters only while the grant is missing: a SayType row
+  // The Finder route matters only while the grant is missing: a TypeAloud row
   // that never appears in the Accessibility list is fixed by dragging the app in.
   document.getElementById("accessibilityRevealRow")?.classList.toggle("hidden", ok);
   permissionState.accessibility = ok;
@@ -2099,7 +2099,7 @@ async function renderBuildLine() {
     if (!info) {
       return;
     }
-    const parts = [`SayType ${info.version}`];
+    const parts = [`TypeAloud ${info.version}`];
     if (info.channel !== "official") {
       parts.push(`dev.${info.buildNumber}`);
       parts.push(`${info.gitHash}${info.gitDirty ? " (dirty)" : ""}`);

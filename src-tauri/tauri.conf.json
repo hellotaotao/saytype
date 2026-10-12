@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "SayType",
+  "productName": "TypeAloud",
   "version": "1.19.3",
   "identifier": "com.tao.saytype",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SayType",
+        "title": "TypeAloud",
         "url": "main.html",
         "width": 1200,
         "height": 800,
@@ -98,7 +98,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFOUFGNjI3QTdFQjg0NwpSV1JIdUg1NllxL3BDenA2WExRcHJVOXMvSUF2cmwzMUZ2ZTB5NHZLTWJKMy9yMUtyenFncWtsNgo=",
       "endpoints": [
-        "https://github.com/hellotaotao/saytype/releases/latest/download/latest.json",
+        "https://github.com/hellotaotao/typealoud/releases/latest/download/latest.json",
         "https://typealoud.app/download/latest.json"
       ],
       "windows": {

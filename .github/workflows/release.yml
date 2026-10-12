@@ -27,7 +27,7 @@ jobs:
             echo "Release ${GITHUB_REF_NAME} already exists; reusing it."
           else
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
-              --title "SayType ${GITHUB_REF_NAME}" --notes "下载对应平台的安装包。"
+              --title "TypeAloud ${GITHUB_REF_NAME}" --notes "下载对应平台的安装包。"
           fi
 
   release:
@@ -146,7 +146,7 @@ jobs:
           args: ${{ matrix.build-args }}
           # Use the triggering tag as the Release tag and title
           tagName: ${{ github.ref_name }}
-          releaseName: "SayType ${{ github.ref_name }}"
+          releaseName: "TypeAloud ${{ github.ref_name }}"
           releaseBody: "下载对应平台的安装包。"
           # Upload into the draft; the publish job below releases it (see RELEASING.md).
           releaseDraft: true

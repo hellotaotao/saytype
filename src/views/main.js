@@ -363,7 +363,7 @@ async function startAccessibilityFlow() {
   axGuideTimedOut = false;
 
   // Prompt first (prompt:true): the one-time system dialog is what pre-adds
-  // SayType to the Accessibility list — deep-linking without it lands a
+  // TypeAloud to the Accessibility list — deep-linking without it lands a
   // first-run user on a list with nothing to toggle.
   try {
     const result = await ipc.invoke("request-accessibility-permission");
@@ -439,10 +439,10 @@ function stopAxPolling() {
 // Shown as soon as the user is sent to System Settings (waiting state) and
 // kept in the timed-out state, in both the readiness-card guide and the
 // wizard's Accessibility page. Covers the one case the prompt+deep-link flow
-// can't fix: the user once removed SayType from the Accessibility list, and
+// can't fix: the user once removed TypeAloud from the Accessibility list, and
 // TCC won't reliably re-add the row — dragging the app in from Finder (same
 // as clicking "+") always works. Whoever needs this discovers it the moment
-// they see a list without SayType in it, so it must not hide behind a delay.
+// they see a list without TypeAloud in it, so it must not hide behind a delay.
 function buildAxRevealRow() {
   const row = document.createElement("div");
   row.className = "ax-reveal-row";

@@ -827,7 +827,7 @@ mod tests {
 
   #[test]
   fn settings_payload_nemotron_supported_follows_platform() {
-    // Nemotron runs wherever upstream publishes a runtime SayType wires up:
+    // Nemotron runs wherever upstream publishes a runtime TypeAloud wires up:
     // Apple Silicon (Metal) and Windows x86_64 (CPU). Elsewhere the frontend
     // hides the engine instead of offering a backend that cannot start.
     let payload = SettingsPayload::from_config_with(&AppConfig::default(), false);

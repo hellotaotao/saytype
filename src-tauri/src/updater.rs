@@ -244,7 +244,7 @@ mod endpoint_order_tests {
   #[test]
   fn the_china_mirror_leads_only_when_preferred() {
     let configured = vec![
-      "https://github.com/hellotaotao/saytype/releases/latest/download/latest.json".to_string(),
+      "https://github.com/hellotaotao/typealoud/releases/latest/download/latest.json".to_string(),
       "https://typealoud.app/download/latest.json".to_string(),
     ];
     assert_eq!(ordered_endpoints(&configured, false), configured);

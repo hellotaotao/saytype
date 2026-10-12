@@ -233,11 +233,11 @@ test("Accessibility action remains connected to the native permission flow", () 
   assert.equal(opens,1);
 });
 
-test("Accessibility heading names SayType as the actor", () => {
+test("Accessibility heading names TypeAloud as the actor", () => {
   const context=vm.createContext({window:{},document:{documentElement:{setAttribute(){}}},navigator:{language:"zh"}});
   vm.runInContext(readFileSync(new URL("./i18n.js",import.meta.url),"utf8"),context);
   context.window.SayTypeI18n.setLanguage("zh");
-  assert.equal(context.window.SayTypeI18n.t("onboarding.ax.title"),"让 SayType 为你输入文字");
+  assert.equal(context.window.SayTypeI18n.t("onboarding.ax.title"),"让 TypeAloud 为你输入文字");
 });
 
 test("compact practice summary reflects verified state and applicable platform steps", () => {

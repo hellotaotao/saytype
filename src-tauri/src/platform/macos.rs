@@ -74,7 +74,7 @@ pub fn open_microphone_settings() -> Result<()> {
   Ok(())
 }
 
-/// The `.app` bundle three levels above the executable (exe = SayType.app/Contents/MacOS/x).
+/// The `.app` bundle three levels above the executable (exe = TypeAloud.app/Contents/MacOS/x).
 /// A bare binary (dev build) returns None.
 fn app_bundle_of(exe: &std::path::Path) -> Option<&std::path::Path> {
   exe
@@ -83,14 +83,14 @@ fn app_bundle_of(exe: &std::path::Path) -> Option<&std::path::Path> {
     .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
 }
 
-/// What to reveal in Finder for "drag SayType into the Accessibility list":
+/// What to reveal in Finder for "drag TypeAloud into the Accessibility list":
 /// the .app bundle when running installed, else the bare executable.
 fn finder_reveal_target(exe: &std::path::Path) -> &std::path::Path {
   app_bundle_of(exe).unwrap_or(exe)
 }
 
 /// Payload path for the drag cloud. **Only a real bundle is useful**: dragging a bare binary into
-/// the Accessibility list doesn't grant SayType the permission, so this returns None and the
+/// the Accessibility list doesn't grant TypeAloud the permission, so this returns None and the
 /// caller hides the cloud.
 pub fn app_bundle_path() -> Option<std::path::PathBuf> {
   let exe = std::env::current_exe().ok()?;
@@ -115,7 +115,7 @@ pub fn attach_app_drag_source(ns_view: *mut c_void) -> bool {
 }
 
 // Recovery path for the one case the prompt+deep-link flow can't fix: after
-// the user removes SayType from the Accessibility list, TCC's re-registration
+// the user removes TypeAloud from the Accessibility list, TCC's re-registration
 // via the prompt is unreliable, so the row may never reappear. Dropping the
 // app file onto the list (same as clicking "+") always works — this reveals
 // the bundle in Finder so the user can drag it in.
@@ -580,27 +580,27 @@ mod tests {
   fn finder_reveal_prefers_the_app_bundle_over_the_binary() {
     use std::path::Path;
     assert_eq!(
-      finder_reveal_target(Path::new("/Applications/SayType.app/Contents/MacOS/saytype")),
-      Path::new("/Applications/SayType.app")
+      finder_reveal_target(Path::new("/Applications/TypeAloud.app/Contents/MacOS/saytype")),
+      Path::new("/Applications/TypeAloud.app")
     );
     // Bare dev binary (no bundle ancestor) → reveal the executable itself.
     assert_eq!(
-      finder_reveal_target(Path::new("/Users/tao/code/SayType/target/debug/saytype")),
-      Path::new("/Users/tao/code/SayType/target/debug/saytype")
+      finder_reveal_target(Path::new("/Users/tao/code/TypeAloud/target/debug/saytype")),
+      Path::new("/Users/tao/code/TypeAloud/target/debug/saytype")
     );
   }
 
   #[test]
   fn app_bundle_is_some_only_inside_a_real_bundle() {
     use std::path::Path;
-    // Installed: exe = SayType.app/Contents/MacOS/saytype, and three levels up is the bundle.
+    // Installed: exe = TypeAloud.app/Contents/MacOS/saytype, and three levels up is the bundle.
     assert_eq!(
-      app_bundle_of(Path::new("/Applications/SayType.app/Contents/MacOS/saytype")),
-      Some(Path::new("/Applications/SayType.app"))
+      app_bundle_of(Path::new("/Applications/TypeAloud.app/Contents/MacOS/saytype")),
+      Some(Path::new("/Applications/TypeAloud.app"))
     );
     // Dev bare binary: no .app ancestor → None (so the cloud stays hidden).
     assert_eq!(
-      app_bundle_of(Path::new("/Users/tao/code/SayType/target/debug/saytype")),
+      app_bundle_of(Path::new("/Users/tao/code/TypeAloud/target/debug/saytype")),
       None
     );
     // Three levels up exists but isn't a .app, so it doesn't count either.
@@ -657,7 +657,7 @@ mod tests {
     let sample = "我你好，测试 Claude！";
 
     // Baseline: strip the locale so pbcopy falls back to MacRoman, reproducing
-    // the exact condition SayType runs under. This MUST corrupt the text —
+    // the exact condition TypeAloud runs under. This MUST corrupt the text —
     // if it doesn't, the guard below proves nothing on this machine.
     let mut stripped = Command::new("pbcopy");
     stripped

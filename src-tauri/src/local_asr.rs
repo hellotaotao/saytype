@@ -845,7 +845,7 @@ const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(20);
 /// thresholds it guards are tens of seconds, so a 1 s cadence is plenty.
 const WATCHDOG_POLL: Duration = Duration::from_secs(1);
 
-/// Skip llama.cpp's per-process device-memory fitting pass. SayType already
+/// Skip llama.cpp's per-process device-memory fitting pass. TypeAloud already
 /// supplies a bounded context size, and real-device benchmarks show that
 /// re-running the automatic fit calculation on every short transcription adds
 /// measurable latency without changing output or peak memory.
@@ -1222,7 +1222,7 @@ pub fn finish_resident_session(session_id: u64) -> bool {
   }
 }
 
-/// Stop the warm local worker when SayType exits, switches away from local, or
+/// Stop the warm local worker when TypeAloud exits, switches away from local, or
 /// removes the model files.
 pub fn sync_selected_model(model: &str) {
   static SELECTED_MODEL: AtomicBool = AtomicBool::new(false);

@@ -1455,7 +1455,7 @@ pub fn open_microphone_settings(app: AppHandle, state: State<'_, AppState>) -> R
 // Accessibility recovery: reveal the app bundle in Finder so the user can
 // drag it into the Accessibility list — the drop equals clicking "+". Needed
 // when the row is absent and the one-shot system prompt won't re-add it
-// (typically after the user once removed SayType from the list).
+// (typically after the user once removed TypeAloud from the list).
 #[tauri::command]
 pub fn reveal_app_in_finder() -> Result<(), String> {
   platform::reveal_app_in_finder();

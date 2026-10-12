@@ -44,7 +44,7 @@ static MODEL_ASSET: Asset = Asset {
 
 /// Everything about the runtime that differs per platform.
 ///
-/// SayType used to compile its own macOS runtime from NeMo-Speech.cpp. That is
+/// TypeAloud used to compile its own macOS runtime from NeMo-Speech.cpp. That is
 /// gone: the pinned source commit turned out to *be* upstream's v0.1.0 tag, and
 /// upstream's archives are self-contained — SentencePiece linked statically (no
 /// Homebrew dylib, which is what the private build's patches existed to avoid),
@@ -106,7 +106,7 @@ static RUNTIME: Option<RuntimeSpec> = Some(RuntimeSpec {
 static RUNTIME: Option<RuntimeSpec> = None;
 
 /// Whether this build can run Nemotron at all — i.e. whether upstream publishes
-/// a runtime for it that SayType wires up. Where it doesn't, the engine is not
+/// a runtime for it that TypeAloud wires up. Where it doesn't, the engine is not
 /// merely undownloaded but unavailable, and no UI offers it.
 pub fn supported() -> bool {
   RUNTIME.is_some()

@@ -366,7 +366,7 @@ test("cloud models explain cost and tradeoffs without a single-choice button", (
 });
 
 test("the Settings accessibility row offers the Finder route while the grant is missing", () => {
-  // A SayType row that never appears in the Accessibility list can only be fixed
+  // A TypeAloud row that never appears in the Accessibility list can only be fixed
   // by dragging the app in. Home already offered the Finder reveal and the drag
   // cloud; the Settings route to the same pane now offers both too.
   assert.match(mainHtml, /id="accessibilityRevealRow"/);

@@ -1,6 +1,6 @@
 # Audio capture
 
-How SayType records a dictation on each platform and why, checked against `a183354` (1.15.1) on
+How TypeAloud records a dictation on each platform and why, checked against `a183354` (1.15.1) on
 2026-09-11. It merges the capture sections that used to live in `CLAUDE.md` with the 2026-09-05
 native-capture handover (now only in git history).
 
@@ -161,7 +161,7 @@ grep -aE "audio-capture|audio-onset|audio-envelope" ~/Library/Logs/com.tao.sayty
 `probe_native_capture` exercises the native path directly. A recording can be driven without a human
 by posting `flagsChanged` CGEvents for Ctrl+Shift, as long as the app's event tap is alive. An
 ad-hoc-signed local build silently loses the Accessibility grant; `CGGetEventTapList` shows whether
-SayType's tap exists. For per-session lifecycle counts, use the offline report described in
+TypeAloud's tap exists. For per-session lifecycle counts, use the offline report described in
 [RELIABILITY_ACCEPTANCE.md](RELIABILITY_ACCEPTANCE.md).
 
 ## Open items

@@ -3,7 +3,7 @@
 //! Why objc is unavoidable: Cmd+Tab (and the app switcher, and Mission Control)
 //! only *activates* the app. macOS sends the Launch Services reopen event that
 //! `RunEvent::Reopen` rides on for Dock clicks / Spotlight / `open -a`, but a
-//! plain activation sends nothing — so with every window hidden, SayType comes
+//! plain activation sends nothing — so with every window hidden, TypeAloud comes
 //! to the front owning the menu bar and showing no window at all, which reads
 //! as a broken app. AppKit's `NSApplicationDidBecomeActiveNotification` is the
 //! only signal that covers activation, and Tauri does not surface it.
