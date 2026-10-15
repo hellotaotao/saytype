@@ -31,7 +31,7 @@
 | **陌生人能自己装好**（阻塞） | 没验证过 | 10/13–10/26 微信找 5–10 个熟人试一周：只给下载链接、不讲怎么装，记下每个人卡在哪、一周后还用不用 |
 | README 首屏 | 10/13 已改：一句话 + 下载 + 官网放在最上面 | 还缺一张 15 秒动图（按住→说一句中英混合的话→字出现在光标处），录好放 `assets/` 并插到首屏 |
 | 仓库信息 | 没有 topics，没有官网链接 | 填 homepage、topics（speech-to-text、dictation、voice-input、qwen、tauri、macos、windows） |
-| 官网（`saytype-web` 仓库） | `src/App.tsx` 第 139、173、174 行仍写云端翻译（v1.16.0 已删）；没提开源 | 删翻译字样；加"开源 · GitHub"链接 |
+| 官网（`typealoud-web` 仓库） | `src/App.tsx` 第 139、173、174 行仍写云端翻译（v1.16.0 已删）；没提开源 | 删翻译字样；加"开源 · GitHub"链接 |
 | 反馈入口 | 10/13 已加 issue 模板 | 建一个微信群或 Telegram 群，二维码放官网和 README |
 | 数据 | 匿名用量统计已接 PostHog；GitHub 下载数和来源可查 | 每波之后跑一次 `launch-report.py hellotaotao/typealoud TypeAloud`，记到文末 |
 | 平台说法 | Windows 没在真机走通全流程 | 对外写"Mac 为主，Windows 测试版"，不写三平台 |
